@@ -39,12 +39,129 @@ This writes the key to `job-search-tool/.env`. You can create an API key at
 
 Data is stored locally in `job-search-tool/job_search.sqlite3`.
 
+API keys can also be updated from the app's Configuration panel. Saved keys are
+written to `job-search-tool/.env`, applied to the running process, and displayed
+only in masked form.
+
+Rotating structured API logs are written as newline-delimited JSON to:
+
+```text
+job-search-tool/logs/api.log
+```
+
+The logs capture job-board request URL, method, status code, elapsed time, error
+type, and a short response excerpt. They are intended for troubleshooting board
+blocks such as Indeed `403` responses.
+
+Filtering, discovery, duplicate-skip, capture, replay, and GPT-disabled
+decisions are written as structured newline-delimited JSON to:
+
+```text
+job-search-tool/logs/job-search.log
+```
+
+Replayable request/response captures are stored under:
+
+```text
+job-search-tool/captures/
+```
+
+Captured job-board responses are keyed by request payload, so rerunning the same
+search can replay the saved response instead of repeatedly hitting LinkedIn or
+Indeed. OpenAI request/response payloads use the same capture mechanism when GPT
+scoring is enabled.
+
+Manual searches include a `Force refresh` checkbox. When checked, the search
+bypasses replay and makes live LinkedIn, Indeed, and OpenAI requests, then writes
+the fresh responses back to captures. Scheduled searches always force refresh so
+daily automation checks the boards instead of replaying old responses.
+
+GPT scoring is disabled by default. To re-enable it, set this in the app's
+Configuration panel or in `job-search-tool/.env`:
+
+```text
+JOB_SEARCH_ENABLE_GPT_SCORING=1
+```
+
+Response replay is enabled by default. To force live requests, set:
+
+```text
+JOB_SEARCH_USE_CAPTURE_CACHE=0
+```
+
+## Automated Search
+
+The app can run saved LinkedIn and Indeed searches:
+
+- automatically on a daily cadence
+- manually from the Search panel
+
+The default queries are derived from `supporting-documents/20260731-job-search-guidance.md`.
+
+There are at least eight seeded searches:
+
+- Executive IC on LinkedIn
+- Executive IC on Indeed
+- Office of the CTO on LinkedIn
+- Office of the CTO on Indeed
+- Adjacent industries on LinkedIn
+- Adjacent industries on Indeed
+- Wildcards on LinkedIn
+- Wildcards on Indeed
+
+Those searches cover the four pipelines:
+
+- Executive IC
+- Office of the CTO
+- Adjacent industries
+- Wildcards
+
+Set `JOB_SEARCH_AUTORUN=0` in `job-search-tool/.env` to disable scheduled daily searches.
+
+Set `JOB_SEARCH_INTERVAL_SECONDS` to change the cadence.
+
+Each time a saved search runs, the app uses the scored discoveries from that pipeline and board to refine the saved keywords and criteria. The refinement loop is intentionally based on the pipeline descriptions and score outcomes in this tool, not on your LinkedIn or Indeed profile searches.
+
+Important limitation:
+
+- LinkedIn and Indeed public docs primarily expose partner/employer/ATS APIs, not open candidate job-search APIs.
+- This tool uses best-effort public search adapters for LinkedIn and Indeed and records source errors in search runs when a board blocks, rate-limits, or changes markup.
+- If proper partner APIs or callback/webhook access becomes available, the app is structured so those can replace the current adapters.
+
+## Location Filtering
+
+Search queries may stay broad, but discovered results pass through a separate
+global location filter before tracking.
+
+Included results:
+
+- US-based remote roles.
+- Seattle-based or Seattle-area roles.
+
+Excluded results are written to `discovered_jobs` as rejected discoveries and to
+the structured decision log with the location rejection reason.
+
+## Level Filtering
+
+Levels.fyi is the canonical source for Oracle level equivalence:
+
+`https://www.levels.fyi/companies/oracle/salaries/software-engineer/levels/ic-6`
+
+The app treats Oracle Software Engineer `IC-6` as `Architect` and asks GPT to judge whether each listing appears Oracle IC6-equivalent or higher.
+
+Discovery rule:
+
+- If a discovered job appears downlevel from Oracle IC6-equivalent, it is rejected and not tracked unless GPT score is `80` or higher.
+- Rejected discoveries remain visible in the discovery log with the rejection reason.
+- Jobs below the normal GPT threshold are tracked but filtered from the default job list only when GPT scoring is enabled.
+- When GPT scoring is disabled, low or missing GPT scores do not filter jobs.
+
 ## Product Rules
 
 - The rubric is based on `supporting-documents/20260731-job-search-guidance.md`.
 - GPT score threshold defaults to `40`.
 - User score threshold defaults to `60`.
-- A job is filtered when either score is below its threshold.
+- A job is filtered when user score is below threshold, or when GPT scoring is enabled and GPT score is below threshold.
 - GPT scoring includes recent user-scored examples as calibration context, so the model can adapt to Eric's preferences over time.
 - Thresholds are editable in the UI and persisted in SQLite.
 
@@ -57,3 +174,5 @@ Data is stored locally in `job-search-tool/job_search.sqlite3`.
 - Track application status.
 - Track people, conversations, notes, and next steps.
 - Filter low-fit jobs.
+- Run saved LinkedIn and Indeed searches on demand or daily.
+- Reject downlevel discoveries unless they have exceptional GPT fit.
