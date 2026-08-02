@@ -2345,6 +2345,14 @@ INDEX_HTML = r"""<!doctype html>
     .toolbar { display: flex; gap: 10px; align-items: end; margin-bottom: 12px; }
     .toolbar.wrap { flex-wrap: wrap; }
     .toolbar label { margin-top: 0; }
+    .filter-rollup {
+      width: 100%;
+      margin-top: 4px;
+    }
+    .filter-rollup[open] {
+      display: grid;
+      gap: 10px;
+    }
     .filter-controls {
       display: grid;
       grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -2476,34 +2484,37 @@ INDEX_HTML = r"""<!doctype html>
               <h2>Tracked Jobs</h2>
               <div id="job_filter_summary" class="small">Master list of tracked jobs. Select a row to edit CRM details below.</div>
             </div>
-            <div class="filter-controls">
-              <div>
-                <label>Pipeline</label>
-                <select id="pipeline_view_filter" onchange="saveJobTableFilters(); renderJobs()"></select>
+            <details id="job_filter_rollup" class="filter-rollup" ontoggle="saveJobFilterRollupState()">
+              <summary>Edit table filters</summary>
+              <div class="filter-controls">
+                <div>
+                  <label>Pipeline</label>
+                  <select id="pipeline_view_filter" onchange="saveJobTableFilters(); renderJobs()"></select>
+                </div>
+                <div>
+                  <label>Source</label>
+                  <select id="source_view_filter" onchange="saveJobTableFilters(); renderJobs()"></select>
+                </div>
+                <div>
+                  <label>Visibility</label>
+                  <select id="visibility_filter" onchange="saveJobTableFilters(); renderJobs()">
+                    <option value="active">Hide filtered/downlevel</option>
+                    <option value="all">Show all</option>
+                    <option value="filtered">Only filtered</option>
+                    <option value="downlevel">Only downlevel</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Search</label>
+                  <input id="job_text_filter" placeholder="Company, title, location" oninput="saveJobTableFilters(); renderJobs()">
+                </div>
               </div>
               <div>
-                <label>Source</label>
-                <select id="source_view_filter" onchange="saveJobTableFilters(); renderJobs()"></select>
+                <label>Status</label>
+                <div id="status_filter_list" class="status-filter-list"></div>
               </div>
-              <div>
-                <label>Visibility</label>
-                <select id="visibility_filter" onchange="saveJobTableFilters(); renderJobs()">
-                  <option value="active">Hide filtered/downlevel</option>
-                  <option value="all">Show all</option>
-                  <option value="filtered">Only filtered</option>
-                  <option value="downlevel">Only downlevel</option>
-                </select>
-              </div>
-              <div>
-                <label>Search</label>
-                <input id="job_text_filter" placeholder="Company, title, location" oninput="saveJobTableFilters(); renderJobs()">
-              </div>
-            </div>
-            <div>
-              <label>Status</label>
-              <div id="status_filter_list" class="status-filter-list"></div>
-            </div>
-            <button class="secondary" onclick="resetJobTableFilters()">Reset table filters</button>
+              <button class="secondary" onclick="resetJobTableFilters()">Reset table filters</button>
+            </details>
           </div>
           <div id="jobs" class="table-wrap"></div>
         </div>
@@ -2588,15 +2599,29 @@ INDEX_HTML = r"""<!doctype html>
     const companyStatuses = ["watching","target","active_conversation","paused","not_interested"];
     let state = { jobs: [], settings: {}, pipelines: [], rubric_fields: rubric };
     let selectedId = null;
+    let selectedJob = null;
     let selectedCompanyId = null;
     let jobTableFilters = loadJobTableFilters();
+    let jobFilterRollupOpen = localStorage.getItem("jobFilterRollupOpen") === "1";
     let currentPage = "jobs";
     let searchRunning = false;
     let splitInitialized = false;
 
-    const pretty = s => s.replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
+    const pretty = s => s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
     const scoreClass = n => n == null ? "" : n >= 70 ? "score-good" : n >= 40 ? "score-warn" : "score-bad";
     const levelStatus = item => item.level_assessment || "Unknown - level not assessed";
+    const scoreText = value => value == null ? "n/a" : value;
+    const fieldValue = (object, field, fallback) => object && object[field] != null ? object[field] : fallback;
+    const elementValue = (id, fallback = "") => {
+      const element = document.getElementById(id);
+      return element ? element.value : fallback;
+    };
+    const normalizeCompanyName = value => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+    function findCompanyInterestByName(companyName) {
+      const normalized = normalizeCompanyName(companyName);
+      return (state.company_interests || []).find(company => normalizeCompanyName(company.company) === normalized);
+    }
 
     function loadJobTableFilters() {
       try {
@@ -2608,7 +2633,7 @@ INDEX_HTML = r"""<!doctype html>
           text: parsed.text || "",
           statuses: Array.isArray(parsed.statuses) && parsed.statuses.length ? parsed.statuses : defaultVisibleStatuses,
         };
-      } catch {
+      } catch (err) {
         return { pipeline: "", source: "", visibility: "active", text: "", statuses: defaultVisibleStatuses };
       }
     }
@@ -2616,10 +2641,10 @@ INDEX_HTML = r"""<!doctype html>
     function saveJobTableFilters() {
       const checkedStatuses = [...document.querySelectorAll("#status_filter_list input:checked")].map(input => input.value);
       jobTableFilters = {
-        pipeline: document.getElementById("pipeline_view_filter")?.value || "",
-        source: document.getElementById("source_view_filter")?.value || "",
-        visibility: document.getElementById("visibility_filter")?.value || "active",
-        text: document.getElementById("job_text_filter")?.value || "",
+        pipeline: elementValue("pipeline_view_filter"),
+        source: elementValue("source_view_filter"),
+        visibility: elementValue("visibility_filter", "active"),
+        text: elementValue("job_text_filter"),
         statuses: checkedStatuses,
       };
       localStorage.setItem("jobTableFilters", JSON.stringify(jobTableFilters));
@@ -2630,6 +2655,13 @@ INDEX_HTML = r"""<!doctype html>
       localStorage.setItem("jobTableFilters", JSON.stringify(jobTableFilters));
       renderJobTableFilterControls();
       renderJobs();
+    }
+
+    function saveJobFilterRollupState() {
+      const rollup = document.getElementById("job_filter_rollup");
+      if (!rollup) return;
+      jobFilterRollupOpen = rollup.open;
+      localStorage.setItem("jobFilterRollupOpen", rollup.open ? "1" : "0");
     }
 
     async function api(path, options = {}) {
@@ -2652,6 +2684,8 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("search_pipeline").innerHTML = state.pipelines.map(p => `<option>${p}</option>`).join("");
       const pipelineView = document.getElementById("pipeline_view_filter");
       pipelineView.innerHTML = '<option value="">All pipelines</option>' + state.pipelines.map(p => `<option>${p}</option>`).join("");
+      const filterRollup = document.getElementById("job_filter_rollup");
+      if (filterRollup) filterRollup.open = jobFilterRollupOpen;
       renderJobTableFilterControls();
       renderSearchState();
       renderConfigStatus();
@@ -2784,8 +2818,8 @@ INDEX_HTML = r"""<!doctype html>
                 <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
                 <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
                 <td>${escapeHtml(job.status || "")}${job.filtered ? '<div class="small">filtered/downlevel hidden by default</div>' : ""}</td>
-                <td><b class="${scoreClass(job.gpt_score)}">${job.gpt_score ?? "n/a"}</b></td>
-                <td><b class="${scoreClass(job.user_score)}">${job.user_score ?? "n/a"}</b></td>
+                <td><b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></td>
+                <td><b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></td>
                 <td>${escapeHtml(levelStatus(job))}${job.downlevel ? '<div class="small">downlevel</div>' : ""}</td>
                 <td>${escapeHtml(job.source_board || "manual")}</td>
               </tr>
@@ -2854,7 +2888,7 @@ INDEX_HTML = r"""<!doctype html>
               <tr class="${company.id === selectedCompanyId ? "active" : ""}" onclick="selectCompany(${company.id})">
                 <td><b>${escapeHtml(company.company)}</b><div class="small">${escapeHtml(company.contacts || "")}</div></td>
                 <td>${escapeHtml(company.status || "")}</td>
-                <td><b class="${scoreClass(company.interest_score)}">${company.interest_score ?? "n/a"}</b></td>
+                <td><b class="${scoreClass(company.interest_score)}">${scoreText(company.interest_score)}</b></td>
                 <td>${company.tracked_job_count || 0}</td>
                 <td>${escapeHtml(company.next_step || "")}</td>
               </tr>
@@ -2886,7 +2920,7 @@ INDEX_HTML = r"""<!doctype html>
             <div><label>Company</label><input id="edit_company_name" value="${escapeAttr(company.company)}"></div>
             <div><label>Status</label><select id="edit_company_status">${companyStatuses.map(s => `<option ${company.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
           </div>
-          <label>Interest score</label><input id="edit_company_interest_score" type="number" min="0" max="100" value="${company.interest_score ?? ""}">
+          <label>Interest score</label><input id="edit_company_interest_score" type="number" min="0" max="100" value="${company.interest_score == null ? "" : company.interest_score}">
           <label>Rationale</label><textarea id="edit_company_rationale">${escapeHtml(company.rationale || "")}</textarea>
           <label>Contacts</label><textarea id="edit_company_contacts">${escapeHtml(company.contacts || "")}</textarea>
           <label>Next step</label><input id="edit_company_next_step" value="${escapeAttr(company.next_step || "")}">
@@ -2902,7 +2936,7 @@ INDEX_HTML = r"""<!doctype html>
                   <td>${escapeHtml(job.title)}${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
                   <td>${escapeHtml(job.status || "")}${job.downlevel ? '<div class="small">downlevel</div>' : ""}${job.filtered ? '<div class="small">filtered</div>' : ""}</td>
                   <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
-                  <td>GPT ${job.gpt_score ?? "n/a"} · Mine ${job.user_score ?? "n/a"}</td>
+                  <td>GPT ${scoreText(job.gpt_score)} · Mine ${scoreText(job.user_score)}</td>
                 </tr>
               `).join("")}</tbody>
             </table>
@@ -2914,12 +2948,14 @@ INDEX_HTML = r"""<!doctype html>
     async function selectJob(id, rerender = true) {
       selectedId = id;
       const { job } = await api(`/api/jobs/${id}`);
+      selectedJob = job;
       renderDetail(job);
       if (rerender) renderJobs();
     }
 
     function renderDetail(job) {
       const detail = document.getElementById("detail");
+      const companyInterest = findCompanyInterestByName(job.company);
       detail.innerHTML = `
         <div class="panel">
           <div class="toolbar">
@@ -2932,11 +2968,12 @@ INDEX_HTML = r"""<!doctype html>
               <select id="status">${statusOptions.map(s => `<option ${job.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
             </div>
             <button onclick="saveStatus(${job.id})">Save status</button>
+            <button class="secondary" onclick="trackCompanyFromSelectedJob()">${companyInterest ? "View company interest" : "Track company interest"}</button>
           </div>
           <div class="chips">
             <span class="chip">Pipeline: ${escapeHtml(job.pipeline || "Unassigned")}</span>
-            <span class="chip">GPT: <b class="${scoreClass(job.gpt_score)}">${job.gpt_score ?? "n/a"}</b></span>
-            <span class="chip">Mine: <b class="${scoreClass(job.user_score)}">${job.user_score ?? "n/a"}</b></span>
+            <span class="chip">GPT: <b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></span>
+            <span class="chip">Mine: <b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></span>
             <span class="chip">Level: ${escapeHtml(levelStatus(job))}</span>
             ${job.downlevel ? '<span class="chip">Downlevel</span>' : ""}
             ${job.filtered ? '<span class="chip">Filtered</span>' : ""}
@@ -2948,7 +2985,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel">
           <h2>My Scorecard</h2>
           <div class="score-grid">${rubric.map(field => `
-            <label>${pretty(field)}<input id="user_${field}" type="number" list="score_options" min="0" max="10" step="1" value="${job.user_scorecard?.[field] ?? ""}"></label>
+            <label>${pretty(field)}<input id="user_${field}" type="number" list="score_options" min="0" max="10" step="1" value="${fieldValue(job.user_scorecard, field, "")}"></label>
           `).join("")}</div>
           <label>Rationale</label><textarea id="user_rationale">${escapeHtml(job.user_rationale || "")}</textarea>
           <button onclick="saveUserScore(${job.id})">Save my score</button>
@@ -2957,7 +2994,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="panel">
           <h2>GPT Scorecard</h2>
           <div class="score-grid">${rubric.map(field => `
-            <div><span class="small">${pretty(field)}</span><br><b>${job.gpt_scorecard?.[field] ?? "n/a"}</b></div>
+            <div><span class="small">${pretty(field)}</span><br><b>${fieldValue(job.gpt_scorecard, field, "n/a")}</b></div>
           `).join("")}</div>
         </div>
 
@@ -3000,7 +3037,7 @@ INDEX_HTML = r"""<!doctype html>
               <div class="meta">${escapeHtml(d.board)} · ${escapeHtml(d.location || "")} · ${d.url ? `<a href="${escapeAttr(d.url)}" target="_blank">posting</a>` : ""}</div>
               <div class="chips">
                 <span class="chip">Decision: ${escapeHtml(d.decision)}</span>
-                <span class="chip">GPT: <b class="${scoreClass(d.gpt_score)}">${d.gpt_score ?? "n/a"}</b></span>
+                <span class="chip">GPT: <b class="${scoreClass(d.gpt_score)}">${scoreText(d.gpt_score)}</b></span>
                 <span class="chip">Level: ${escapeHtml(levelStatus(d))}</span>
                 ${d.downlevel ? '<span class="chip">Downlevel</span>' : ""}
               </div>
@@ -3041,6 +3078,35 @@ INDEX_HTML = r"""<!doctype html>
       selectedCompanyId = company.id;
       ["company_interest_name","company_interest_score","company_interest_rationale","company_interest_contacts","company_interest_next_step","company_interest_notes"].forEach(id => document.getElementById(id).value = "");
       await load();
+    }
+
+    async function trackCompanyFromSelectedJob() {
+      if (!selectedJob) return;
+      await trackCompanyFromJob(selectedJob.company, selectedJob.title);
+    }
+
+    async function trackCompanyFromJob(companyName, title) {
+      const existing = findCompanyInterestByName(companyName);
+      if (existing) {
+        selectedCompanyId = existing.id;
+        showPage("companies");
+        await selectCompany(existing.id);
+        return;
+      }
+      const payload = {
+        company: companyName,
+        status: "watching",
+        interest_score: null,
+        rationale: `Interested via tracked role: ${title}`,
+        contacts: "",
+        next_step: "",
+        notes: "",
+      };
+      const { company } = await api("/api/companies", { method: "POST", body: JSON.stringify(payload) });
+      selectedCompanyId = company.id;
+      await load();
+      showPage("companies");
+      await selectCompany(company.id);
     }
 
     async function saveCompanyInterest(id) {
@@ -3136,6 +3202,7 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({ confirm: confirmText })
       });
       selectedId = null;
+      selectedJob = null;
       document.getElementById("detail").innerHTML = '<div class="empty">Select a job from the table.</div>';
       await load();
     }
@@ -3183,9 +3250,9 @@ INDEX_HTML = r"""<!doctype html>
 
     function showPage(page) {
       currentPage = page;
-      document.getElementById("jobs_page").classList.toggle("hidden", page !== "jobs");
-      document.getElementById("companies_page").classList.toggle("hidden", page !== "companies");
-      document.getElementById("queries_page").classList.toggle("hidden", page !== "queries");
+      setPageVisible("jobs", page === "jobs");
+      setPageVisible("companies", page === "companies");
+      setPageVisible("queries", page === "queries");
       document.getElementById("jobs_nav").classList.toggle("secondary", page !== "jobs");
       document.getElementById("companies_nav").classList.toggle("secondary", page !== "companies");
       document.getElementById("queries_nav").classList.toggle("secondary", page !== "queries");
@@ -3193,6 +3260,13 @@ INDEX_HTML = r"""<!doctype html>
         syncJobsPageHeight();
         initializeJobSplit();
       });
+    }
+
+    function setPageVisible(pageName, visible) {
+      const element = document.getElementById(`${pageName}_page`);
+      if (!element) return;
+      element.classList.toggle("hidden", !visible);
+      element.style.display = visible ? "" : "none";
     }
 
     function syncJobsPageHeight() {
@@ -3268,7 +3342,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function escapeHtml(s) {
-      return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+      return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
     }
     function escapeAttr(s) { return escapeHtml(s).replace(/`/g, "&#96;"); }
     configureJobSplitDrag();
