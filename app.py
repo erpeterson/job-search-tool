@@ -2174,7 +2174,7 @@ INDEX_HTML = r"""<!doctype html>
       font-family: "Avenir Next", "Segoe UI", sans-serif;
     }
     header {
-      padding: 22px 28px 12px;
+      padding: 10px 18px;
       border-bottom: 1px solid var(--line);
       background: rgba(251,252,250,.82);
       position: sticky;
@@ -2182,15 +2182,26 @@ INDEX_HTML = r"""<!doctype html>
       z-index: 5;
       backdrop-filter: blur(14px);
     }
-    h1 { margin: 0 0 6px; font-size: 28px; }
-    .subtitle { color: var(--muted); max-width: 950px; }
-    nav { display: flex; gap: 8px; margin-top: 14px; }
-    nav button { width: auto; padding: 8px 12px; }
+    .header-inner {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 14px;
+      align-items: center;
+    }
+    h1 { margin: 0; font-size: 20px; line-height: 1.05; white-space: nowrap; }
+    .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.25;
+      max-width: 850px;
+    }
+    nav { display: flex; gap: 6px; margin: 0; }
+    nav button { width: auto; padding: 6px 10px; }
     main {
       display: grid;
       grid-template-columns: 300px 1fr;
       gap: 18px;
-      padding: 18px;
+      padding: 12px 18px 18px;
       align-items: start;
     }
     section, .panel {
@@ -2342,12 +2353,20 @@ INDEX_HTML = r"""<!doctype html>
       padding-top: 10px;
       margin-top: 10px;
     }
-    .toolbar { display: flex; gap: 10px; align-items: end; margin-bottom: 12px; }
+    .toolbar { display: flex; gap: 10px; align-items: end; margin-bottom: 8px; }
     .toolbar.wrap { flex-wrap: wrap; }
     .toolbar label { margin-top: 0; }
+    .compact-heading {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    .compact-heading h2 { margin: 0; }
     .filter-rollup {
       width: 100%;
-      margin-top: 4px;
+      margin-top: 0;
+      padding-top: 6px;
     }
     .filter-rollup[open] {
       display: grid;
@@ -2396,6 +2415,8 @@ INDEX_HTML = r"""<!doctype html>
       padding: 8px 0;
     }
     @media (max-width: 980px) {
+      .header-inner { grid-template-columns: 1fr; gap: 8px; }
+      h1 { white-space: normal; }
       main { grid-template-columns: 1fr; }
       #jobs_page { height: auto; min-height: 0; }
       .jobs-master-panel, .detail { min-height: 0; overflow: visible; }
@@ -2406,13 +2427,15 @@ INDEX_HTML = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <h1>Job Search Console</h1>
-    <div class="subtitle">Score opportunities against the ideal problem set, track applications like a CRM, and preserve learning from every conversation.</div>
-    <nav>
-      <button id="jobs_nav" onclick="showPage('jobs')">Jobs</button>
-      <button id="companies_nav" class="secondary" onclick="showPage('companies')">Companies</button>
-      <button id="queries_nav" class="secondary" onclick="showPage('queries')">Queries</button>
-    </nav>
+    <div class="header-inner">
+      <h1>Job Search Console</h1>
+      <div class="subtitle">Score opportunities against the ideal problem set, track applications like a CRM, and preserve learning from every conversation.</div>
+      <nav>
+        <button id="jobs_nav" onclick="showPage('jobs')">Jobs</button>
+        <button id="companies_nav" class="secondary" onclick="showPage('companies')">Companies</button>
+        <button id="queries_nav" class="secondary" onclick="showPage('queries')">Queries</button>
+      </nav>
+    </div>
   </header>
   <main>
     <aside>
@@ -2480,7 +2503,7 @@ INDEX_HTML = r"""<!doctype html>
       <section id="jobs_page" class="page">
         <div class="panel jobs-master-panel">
           <div class="toolbar wrap">
-            <div>
+            <div class="compact-heading">
               <h2>Tracked Jobs</h2>
               <div id="job_filter_summary" class="small">Master list of tracked jobs. Select a row to edit CRM details below.</div>
             </div>
