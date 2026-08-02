@@ -1469,6 +1469,25 @@ def api_update_config():
         )
 
 
+@app.post("/api/admin/purge-jobs")
+def api_purge_jobs():
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirm") != "PURGE":
+        return jsonify({"error": "Type PURGE to confirm tracked job deletion."}), 400
+    with connect() as conn:
+        before = conn.execute("SELECT COUNT(*) AS count FROM jobs").fetchone()["count"]
+        conn.execute("UPDATE discovered_jobs SET tracked_job_id = NULL WHERE tracked_job_id IS NOT NULL")
+        conn.execute("DELETE FROM jobs")
+        log_event("admin_purge_jobs", deleted_jobs=before)
+        return jsonify(
+            {
+                "deleted_jobs": before,
+                "jobs": list_jobs(conn, include_filtered=True),
+                "discoveries": list_discoveries(conn),
+            }
+        )
+
+
 @app.post("/api/jobs/<int:job_id>/score-gpt")
 def api_score_gpt(job_id):
     with connect() as conn:
@@ -1698,6 +1717,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     button.secondary { background: white; color: var(--ink); border-color: var(--line); }
     button.warn { background: var(--accent-2); border-color: var(--accent-2); }
+    button.danger { background: var(--danger); border-color: var(--danger); }
     details {
       border-top: 1px solid var(--line);
       margin-top: 12px;
@@ -1845,6 +1865,11 @@ INDEX_HTML = r"""<!doctype html>
           <label>Use captured responses</label><select id="config_JOB_SEARCH_USE_CAPTURE_CACHE"><option value="1">enabled</option><option value="0">disabled</option></select>
           <button class="secondary" onclick="saveConfig()">Save configuration</button>
           <div id="config_status" class="small"></div>
+        </details>
+        <details>
+          <summary>Advanced commands</summary>
+          <p class="small">For user-acceptance testing. This deletes tracked jobs and their CRM notes/interactions, but keeps searches, settings, logs, captures, and discovery history.</p>
+          <button class="danger" onclick="purgeTrackedJobs()">Purge tracked jobs</button>
         </details>
       </section>
       <section class="sidebar-block">
@@ -2264,6 +2289,18 @@ INDEX_HTML = r"""<!doctype html>
       });
       await api("/api/config", { method: "POST", body: JSON.stringify(payload) });
       ["OPENAI_API_KEY"].forEach(key => document.getElementById(`config_${key}`).value = "");
+      await load();
+    }
+
+    async function purgeTrackedJobs() {
+      const confirmText = prompt("Type PURGE to delete all tracked jobs and their CRM notes/interactions.");
+      if (confirmText !== "PURGE") return;
+      await api("/api/admin/purge-jobs", {
+        method: "POST",
+        body: JSON.stringify({ confirm: confirmText })
+      });
+      selectedId = null;
+      document.getElementById("detail").innerHTML = '<div class="empty">Select a job from the table.</div>';
       await load();
     }
 

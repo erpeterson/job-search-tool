@@ -164,6 +164,7 @@ Discovery rule:
 - A job is filtered when user score is below threshold, or when GPT scoring is enabled and GPT score is below threshold.
 - GPT scoring includes recent user-scored examples as calibration context, so the model can adapt to Eric's preferences over time.
 - Thresholds are editable in the UI and persisted in SQLite.
+- The Configuration panel includes an advanced `Purge tracked jobs` command for user-acceptance testing. It requires typing `PURGE`, deletes tracked jobs and their CRM notes/interactions, and preserves searches, settings, logs, captures, and discovery history.
 
 ## Current Scope
 
