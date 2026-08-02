@@ -147,6 +147,11 @@ Discovered results with explicit compensation below `$200,000/year` are rejected
 before tracking. Missing compensation is not rejected because many postings omit
 pay. Hourly and monthly amounts are annualized before evaluation.
 
+## Sales Role Filtering
+
+Search criteria explicitly exclude Account Executive and other sales roles.
+Discovered results with sales-role titles are rejected before tracking.
+
 ## Level Filtering
 
 Levels.fyi is the canonical source for Oracle level equivalence:

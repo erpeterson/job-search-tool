@@ -106,13 +106,26 @@ PIPELINE_CRITERIA = {
     },
 }
 
+SALES_ROLE_EXCLUSION_QUERY = '-"Account Executive" -"Sales Executive" -"Sales Director" -"Account Manager" -"Business Development" -sales'
+SALES_ROLE_EXCLUSION_CRITERIA = "Exclude Account Executive and other sales roles."
+SALES_ROLE_TITLE_TERMS = (
+    "account executive",
+    "sales executive",
+    "sales director",
+    "sales manager",
+    "sales representative",
+    "account manager",
+    "account director",
+    "business development",
+)
+
 DEFAULT_SEARCH_QUERIES = [
     {
         "board": board,
         "pipeline": pipeline,
-        "keywords": config["keywords"],
+        "keywords": f'{config["keywords"]} {SALES_ROLE_EXCLUSION_QUERY}',
         "location": "Remote",
-        "criteria": config["description"],
+        "criteria": f'{config["description"]} {SALES_ROLE_EXCLUSION_CRITERIA}',
         "seeded": 1,
     }
     for pipeline, config in PIPELINE_CRITERIA.items()
@@ -290,12 +303,26 @@ def ensure_column(conn, table, column, definition):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def with_sales_role_exclusion_keywords(keywords):
+    keywords = clean_text(keywords or "")
+    if "Account Executive" in keywords or SALES_ROLE_EXCLUSION_QUERY in keywords:
+        return keywords
+    return clean_text(f"{keywords} {SALES_ROLE_EXCLUSION_QUERY}")
+
+
+def with_sales_role_exclusion_criteria(criteria):
+    criteria = clean_text(criteria or "")
+    if "Account Executive" in criteria and "sales roles" in criteria.lower():
+        return criteria
+    return clean_text(f"{criteria} {SALES_ROLE_EXCLUSION_CRITERIA}")
+
+
 def seed_search_queries(conn):
     ts = now()
     for query in DEFAULT_SEARCH_QUERIES:
         existing = conn.execute(
             """
-            SELECT id FROM search_queries
+            SELECT id, keywords, criteria FROM search_queries
             WHERE board = ? AND pipeline = ? AND seeded = 1
             LIMIT 1
             """,
@@ -305,12 +332,17 @@ def seed_search_queries(conn):
             conn.execute(
                 """
                 UPDATE search_queries
-                SET criteria = COALESCE(criteria, ?),
-                    keywords = CASE WHEN keywords IS NULL OR keywords = '' THEN ? ELSE keywords END,
+                SET criteria = ?,
+                    keywords = ?,
                     location = COALESCE(location, ?)
                 WHERE id = ?
                 """,
-                (query["criteria"], query["keywords"], query["location"], existing["id"]),
+                (
+                    with_sales_role_exclusion_criteria(existing["criteria"] or query["criteria"]),
+                    with_sales_role_exclusion_keywords(existing["keywords"] or query["keywords"]),
+                    query["location"],
+                    existing["id"],
+                ),
             )
             continue
         conn.execute(
@@ -885,6 +917,13 @@ def compensation_filter_decision(result):
     return True, f"Explicit compensation meets threshold; highest parsed annualized value is ${int(high):,}"
 
 
+def sales_role_filter_decision(result):
+    title = clean_text(result.get("title", "")).lower()
+    if any(term in title for term in SALES_ROLE_TITLE_TERMS):
+        return False, f"Sales role excluded by title: {result.get('title') or 'unknown'}"
+    return True, "Not a sales-role title"
+
+
 def run_job_search(trigger="manual", force_refresh=False):
     started = now()
     log_event("search_started", trigger=trigger, force_refresh=force_refresh)
@@ -919,6 +958,45 @@ def run_job_search(trigger="manual", force_refresh=False):
             result["criteria"] = query.get("criteria") or ""
             found_count += 1
             with connect() as conn:
+                sales_allowed, sales_reason = sales_role_filter_decision(result)
+                if not sales_allowed:
+                    rejected_count += 1
+                    log_event(
+                        "discovery_rejected",
+                        reason=sales_reason,
+                        filter="sales_role",
+                        board=result.get("board"),
+                        company=result.get("company"),
+                        title=result.get("title"),
+                        location=result.get("location"),
+                        url=result.get("url"),
+                        query_id=query["id"],
+                        run_id=run_id,
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO discovered_jobs(
+                            run_id, query_id, created_at, board, source_job_id, company, title, location, url, snippet,
+                            gpt_score, gpt_rationale, gpt_scorecard_json, level_assessment, downlevel,
+                            decision, rejection_reason, tracked_job_id
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '{}', '', 0, 'rejected', ?, NULL)
+                        """,
+                        (
+                            run_id,
+                            query["id"],
+                            now(),
+                            result.get("board"),
+                            result.get("source_job_id"),
+                            result.get("company"),
+                            result.get("title"),
+                            result.get("location"),
+                            result.get("url"),
+                            result.get("snippet"),
+                            sales_reason,
+                        ),
+                    )
+                    continue
                 location_allowed, location_reason = location_filter_decision(result)
                 if not location_allowed:
                     rejected_count += 1
@@ -1124,6 +1202,7 @@ def refine_search_query(conn, query_id, force_refresh=False):
             "Improve the keywords so the next run is more likely to find high-scoring roles for this pipeline.",
             "Prefer query terms that imply Oracle IC6 Architect-equivalent or higher scope.",
             "Avoid terms that produced downlevel or low-score results.",
+            "Explicitly exclude Account Executive and other sales roles.",
             "Keep the query concise enough for LinkedIn or Indeed public search boxes.",
             "Do not use Eric's personal LinkedIn or Indeed profile data.",
         ],
@@ -1304,6 +1383,7 @@ def score_with_openai(conn, job, force_refresh=False):
             "Score each rubric item from 0-10.",
             "Reward cross-cutting architecture, organizational scaling, engineering effectiveness, developer experience, AI-enabled development, technical strategy, and technical decision quality.",
             "Penalize line management, heavy operational ownership, firefighting, incremental feature ownership, narrow service ownership, and roles that only value hands-on coding.",
+            "Reject or heavily penalize Account Executive, account management, business development, quota-carrying, and other sales roles.",
             "Use the calibration examples to adjust future scoring toward Eric's own scores.",
             "Classify whether this role appears Oracle IC6-equivalent or higher using the Levels.fyi reference: Oracle IC-6 is Architect.",
             "Treat Principal Engineer, Architect, Senior Principal Engineer, Distinguished Engineer, Fellow, Chief Architect, CTO advisor, and equivalent strategic IC roles as potentially IC6-equivalent or higher depending on scope.",
