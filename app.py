@@ -3,6 +3,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import threading
 import textwrap
@@ -125,6 +126,7 @@ ORACLE_IC6_LEVEL_REFERENCE = (
     "Treat IC6-equivalent as Architect / Principal-plus / Staff-plus scope with broad technical influence, "
     "cross-team architecture, durable technical direction, or organization-level engineering judgment."
 )
+MIN_ANNUAL_COMPENSATION = 200_000
 
 
 def connect():
@@ -832,6 +834,57 @@ def location_filter_decision(result):
     return False, f"Location is not US-based remote or Seattle-based: {location or 'unknown'}"
 
 
+def normalize_money_value(raw_value, suffix=""):
+    value = float(raw_value.replace(",", ""))
+    if suffix and suffix.lower() == "k":
+        value *= 1000
+    return value
+
+
+def annualize_compensation(value, period):
+    period = (period or "year").lower()
+    if period in ("hour", "hr"):
+        return value * 2080
+    if period in ("month", "mo"):
+        return value * 12
+    return value
+
+
+def extract_annual_compensation_values(text):
+    values = []
+    money = r"\$?\s*([0-9]{2,3}(?:,[0-9]{3})?(?:\.\d+)?)\s*([kK]?)"
+    range_pattern = re.compile(
+        rf"{money}\s*(?:-|–|—|to)\s*{money}\s*(?:per\s+|/)?(year|yr|annually|annual|hour|hr|month|mo)?",
+        re.IGNORECASE,
+    )
+    single_pattern = re.compile(
+        rf"{money}\s*(?:per\s+|/)(year|yr|annually|annual|hour|hr|month|mo)",
+        re.IGNORECASE,
+    )
+    for match in range_pattern.finditer(text):
+        low_value = normalize_money_value(match.group(1), match.group(2))
+        high_value = normalize_money_value(match.group(3), match.group(4))
+        period = match.group(5) or "year"
+        values.append(annualize_compensation(low_value, period))
+        values.append(annualize_compensation(high_value, period))
+    for match in single_pattern.finditer(text):
+        value = normalize_money_value(match.group(1), match.group(2))
+        period = match.group(3)
+        values.append(annualize_compensation(value, period))
+    return values
+
+
+def compensation_filter_decision(result):
+    text = clean_text(" ".join(str(result.get(field) or "") for field in ("title", "location", "snippet")))
+    values = extract_annual_compensation_values(text)
+    if not values:
+        return True, "No explicit compensation below threshold found"
+    high = max(values)
+    if high < MIN_ANNUAL_COMPENSATION:
+        return False, f"Explicit compensation below ${MIN_ANNUAL_COMPENSATION:,}/year; highest parsed annualized value is ${int(high):,}"
+    return True, f"Explicit compensation meets threshold; highest parsed annualized value is ${int(high):,}"
+
+
 def run_job_search(trigger="manual", force_refresh=False):
     started = now()
     log_event("search_started", trigger=trigger, force_refresh=force_refresh)
@@ -902,6 +955,45 @@ def run_job_search(trigger="manual", force_refresh=False):
                             result.get("url"),
                             result.get("snippet"),
                             location_reason,
+                        ),
+                    )
+                    continue
+                compensation_allowed, compensation_reason = compensation_filter_decision(result)
+                if not compensation_allowed:
+                    rejected_count += 1
+                    log_event(
+                        "discovery_rejected",
+                        reason=compensation_reason,
+                        filter="compensation",
+                        board=result.get("board"),
+                        company=result.get("company"),
+                        title=result.get("title"),
+                        location=result.get("location"),
+                        url=result.get("url"),
+                        query_id=query["id"],
+                        run_id=run_id,
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO discovered_jobs(
+                            run_id, query_id, created_at, board, source_job_id, company, title, location, url, snippet,
+                            gpt_score, gpt_rationale, gpt_scorecard_json, level_assessment, downlevel,
+                            decision, rejection_reason, tracked_job_id
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '{}', '', 0, 'rejected', ?, NULL)
+                        """,
+                        (
+                            run_id,
+                            query["id"],
+                            now(),
+                            result.get("board"),
+                            result.get("source_job_id"),
+                            result.get("company"),
+                            result.get("title"),
+                            result.get("location"),
+                            result.get("url"),
+                            result.get("snippet"),
+                            compensation_reason,
                         ),
                     )
                     continue
@@ -1688,6 +1780,7 @@ INDEX_HTML = r"""<!doctype html>
       grid-template-columns: 300px 1fr;
       gap: 18px;
       padding: 18px;
+      align-items: start;
     }
     section, .panel {
       background: var(--panel);
@@ -1733,6 +1826,44 @@ INDEX_HTML = r"""<!doctype html>
     .row { display: flex; gap: 8px; align-items: center; }
     .row > * { flex: 1; }
     .page { display: grid; gap: 14px; }
+    #jobs_page {
+      height: var(--jobs-page-height, calc(100vh - 132px));
+      min-height: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .jobs-master-panel {
+      flex: 1 1 auto;
+      min-height: 180px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .jobs-master-panel .table-wrap {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+    }
+    .split-divider {
+      flex: 0 0 12px;
+      cursor: row-resize;
+      display: grid;
+      place-items: center;
+      touch-action: none;
+    }
+    .split-divider::before {
+      content: "";
+      width: 72px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--line);
+      box-shadow: 0 1px 0 rgba(255,255,255,.7);
+    }
+    .split-divider:hover::before,
+    .split-divider.dragging::before {
+      background: var(--accent);
+    }
     .hidden { display: none; }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; background: white; border: 1px solid var(--line); }
@@ -1778,7 +1909,14 @@ INDEX_HTML = r"""<!doctype html>
       animation: spin .8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .detail { display: grid; gap: 14px; }
+    .detail {
+      flex: 0 0 var(--detail-height, 50%);
+      min-height: 180px;
+      overflow: auto;
+      display: grid;
+      gap: 14px;
+      padding-bottom: 18px;
+    }
     .score-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 8px; }
     .score-grid input { text-align: right; }
     .empty {
@@ -1812,6 +1950,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     @media (max-width: 980px) {
       main { grid-template-columns: 1fr; }
+      #jobs_page { height: auto; min-height: 0; }
+      .jobs-master-panel, .detail { min-height: 0; overflow: visible; }
+      .split-divider { display: none; }
       .score-grid { grid-template-columns: 1fr 1fr; }
     }
   </style>
@@ -1890,16 +2031,21 @@ INDEX_HTML = r"""<!doctype html>
     </aside>
     <div>
       <section id="jobs_page" class="page">
-        <div class="panel">
+        <div class="panel jobs-master-panel">
           <div class="toolbar">
             <div>
               <h2>Tracked Jobs</h2>
               <div class="small">Master list of tracked jobs. Select a row to edit CRM details below.</div>
             </div>
+            <div>
+              <label>Pipeline view</label>
+              <select id="pipeline_view_filter" onchange="renderJobs()"></select>
+            </div>
             <button class="secondary" onclick="toggleFiltered()">Show/Hide filtered</button>
           </div>
           <div id="jobs" class="table-wrap"></div>
         </div>
+        <div id="jobs_split_divider" class="split-divider" title="Drag to resize job detail pane"></div>
         <div id="detail" class="detail">
           <div class="empty">Select a job from the table.</div>
         </div>
@@ -1953,6 +2099,7 @@ INDEX_HTML = r"""<!doctype html>
     let includeFiltered = false;
     let currentPage = "jobs";
     let searchRunning = false;
+    let splitInitialized = false;
 
     const pretty = s => s.replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
     const scoreClass = n => n == null ? "" : n >= 70 ? "score-good" : n >= 40 ? "score-warn" : "score-bad";
@@ -1975,10 +2122,15 @@ INDEX_HTML = r"""<!doctype html>
       const pipeline = document.getElementById("pipeline");
       pipeline.innerHTML = '<option value=""></option>' + state.pipelines.map(p => `<option>${p}</option>`).join("");
       document.getElementById("search_pipeline").innerHTML = state.pipelines.map(p => `<option>${p}</option>`).join("");
+      const pipelineView = document.getElementById("pipeline_view_filter");
+      const currentPipelineView = pipelineView.value || "";
+      pipelineView.innerHTML = '<option value="">All pipelines</option>' + state.pipelines.map(p => `<option>${p}</option>`).join("");
+      pipelineView.value = state.pipelines.includes(currentPipelineView) ? currentPipelineView : "";
       renderSearchState();
       renderConfigStatus();
       renderJobs();
       renderQueryTable();
+      initializeJobSplit();
       if (selectedId) await selectJob(selectedId, false);
     }
 
@@ -2040,7 +2192,9 @@ INDEX_HTML = r"""<!doctype html>
 
     function renderJobs() {
       const jobs = document.getElementById("jobs");
-      if (!state.jobs.length) {
+      const pipelineFilter = document.getElementById("pipeline_view_filter")?.value || "";
+      const visibleJobs = pipelineFilter ? state.jobs.filter(job => (job.pipeline || "") === pipelineFilter) : state.jobs;
+      if (!visibleJobs.length) {
         jobs.innerHTML = '<div class="small">No jobs match the current filter.</div>';
         return;
       }
@@ -2059,7 +2213,7 @@ INDEX_HTML = r"""<!doctype html>
             </tr>
           </thead>
           <tbody>
-            ${state.jobs.map(job => `
+            ${visibleJobs.map(job => `
               <tr class="${job.filtered ? "filtered" : ""} ${job.id === selectedId ? "active" : ""}" onclick="selectJob(${job.id})">
                 <td><b>${escapeHtml(job.company)}</b><div class="small">${escapeHtml(job.location || "")}</div></td>
                 <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
@@ -2356,12 +2510,89 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("queries_page").classList.toggle("hidden", page !== "queries");
       document.getElementById("jobs_nav").classList.toggle("secondary", page !== "jobs");
       document.getElementById("queries_nav").classList.toggle("secondary", page !== "queries");
+      if (page === "jobs") requestAnimationFrame(() => {
+        syncJobsPageHeight();
+        initializeJobSplit();
+      });
+    }
+
+    function syncJobsPageHeight() {
+      if (window.matchMedia("(max-width: 980px)").matches) return;
+      const sidebar = document.querySelector("main > aside");
+      const page = document.getElementById("jobs_page");
+      if (!sidebar || !page || page.classList.contains("hidden")) return;
+      const sidebarHeight = Math.ceil(sidebar.getBoundingClientRect().height);
+      if (sidebarHeight > 0) {
+        page.style.setProperty("--jobs-page-height", `${sidebarHeight}px`);
+      }
+    }
+
+    function initializeJobSplit() {
+      if (splitInitialized || window.matchMedia("(max-width: 980px)").matches) return;
+      syncJobsPageHeight();
+      const page = document.getElementById("jobs_page");
+      const detail = document.getElementById("detail");
+      const divider = document.getElementById("jobs_split_divider");
+      if (!page || !detail || !divider || page.classList.contains("hidden")) return;
+      const height = page.getBoundingClientRect().height;
+      if (height > 0) {
+        detail.style.setProperty("--detail-height", `${Math.round(height * 0.5)}px`);
+        splitInitialized = true;
+      }
+    }
+
+    function configureJobSplitDrag() {
+      const page = document.getElementById("jobs_page");
+      const detail = document.getElementById("detail");
+      const divider = document.getElementById("jobs_split_divider");
+      if (!page || !detail || !divider) return;
+      const resize = event => {
+        const rect = page.getBoundingClientRect();
+        const minPane = 180;
+        const dividerHeight = divider.getBoundingClientRect().height || 12;
+        const rawDetailHeight = rect.bottom - event.clientY - dividerHeight / 2;
+        const maxDetailHeight = Math.max(minPane, rect.height - minPane - dividerHeight);
+        const nextHeight = Math.max(minPane, Math.min(maxDetailHeight, rawDetailHeight));
+        detail.style.setProperty("--detail-height", `${Math.round(nextHeight)}px`);
+        splitInitialized = true;
+      };
+      divider.addEventListener("pointerdown", event => {
+        if (window.matchMedia("(max-width: 980px)").matches) return;
+        event.preventDefault();
+        divider.classList.add("dragging");
+        divider.setPointerCapture(event.pointerId);
+        resize(event);
+      });
+      divider.addEventListener("pointermove", event => {
+        if (!divider.classList.contains("dragging")) return;
+        resize(event);
+      });
+      const stop = event => {
+        if (!divider.classList.contains("dragging")) return;
+        divider.classList.remove("dragging");
+        if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
+      };
+      divider.addEventListener("pointerup", stop);
+      divider.addEventListener("pointercancel", stop);
+      window.addEventListener("resize", () => {
+        splitInitialized = false;
+        syncJobsPageHeight();
+        initializeJobSplit();
+      });
+      const sidebar = document.querySelector("main > aside");
+      if (sidebar && "ResizeObserver" in window) {
+        new ResizeObserver(() => {
+          syncJobsPageHeight();
+          if (!splitInitialized) initializeJobSplit();
+        }).observe(sidebar);
+      }
     }
 
     function escapeHtml(s) {
       return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
     }
     function escapeAttr(s) { return escapeHtml(s).replace(/`/g, "&#96;"); }
+    configureJobSplitDrag();
     load();
   </script>
 </body>

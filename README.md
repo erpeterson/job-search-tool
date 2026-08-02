@@ -141,6 +141,12 @@ Included results:
 Excluded results are written to `discovered_jobs` as rejected discoveries and to
 the structured decision log with the location rejection reason.
 
+## Compensation Filtering
+
+Discovered results with explicit compensation below `$200,000/year` are rejected
+before tracking. Missing compensation is not rejected because many postings omit
+pay. Hourly and monthly amounts are annualized before evaluation.
+
 ## Level Filtering
 
 Levels.fyi is the canonical source for Oracle level equivalence:
@@ -164,6 +170,7 @@ Discovery rule:
 - A job is filtered when user score is below threshold, or when GPT scoring is enabled and GPT score is below threshold.
 - GPT scoring includes recent user-scored examples as calibration context, so the model can adapt to Eric's preferences over time.
 - Thresholds are editable in the UI and persisted in SQLite.
+- The tracked jobs table includes a `Pipeline view` filter so user-acceptance testing can focus on one pipeline at a time.
 - The Configuration panel includes an advanced `Purge tracked jobs` command for user-acceptance testing. It requires typing `PURGE`, deletes tracked jobs and their CRM notes/interactions, and preserves searches, settings, logs, captures, and discovery history.
 
 ## Current Scope
