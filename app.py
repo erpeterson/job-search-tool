@@ -132,14 +132,13 @@ DEFAULT_SEARCH_QUERIES = [
     for board in ("linkedin", "indeed")
 ]
 
-LEVELS_FYI_ORACLE_IC6_URL = "https://www.levels.fyi/companies/oracle/salaries/software-engineer/levels/ic-6"
 ORACLE_IC6_LEVEL_REFERENCE = (
-    "Use Levels.fyi as canonical source for Oracle level equivalence. "
-    "Oracle Software Engineer IC-6 is Architect. IC-5 is Consulting MTS; IC-7 is Distinguished Engineer. "
+    "Oracle Software Engineer IC-6 is Architect. "
     "Treat IC6-equivalent as Architect / Principal-plus / Staff-plus scope with broad technical influence, "
     "cross-team architecture, durable technical direction, or organization-level engineering judgment."
 )
 MIN_ANNUAL_COMPENSATION = 200_000
+UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
 
 
 def connect():
@@ -253,6 +252,38 @@ def init_db():
                 tracked_job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS level_equivalencies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company TEXT NOT NULL,
+                normalized_company TEXT NOT NULL,
+                title_pattern TEXT NOT NULL,
+                normalized_title_pattern TEXT NOT NULL,
+                source_level TEXT,
+                source_level_title TEXT,
+                oracle_level TEXT NOT NULL,
+                oracle_title TEXT NOT NULL,
+                downlevel INTEGER NOT NULL,
+                source_url TEXT,
+                notes TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(normalized_company, normalized_title_pattern)
+            );
+
+            CREATE TABLE IF NOT EXISTS company_interests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                company TEXT NOT NULL,
+                normalized_company TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'watching',
+                interest_score INTEGER,
+                rationale TEXT,
+                notes TEXT,
+                next_step TEXT,
+                contacts TEXT
+            );
+
             """
         )
         ensure_column(conn, "jobs", "source_board", "TEXT")
@@ -266,6 +297,8 @@ def init_db():
         ensure_column(conn, "search_queries", "seeded", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "discovered_jobs", "query_id", "INTEGER")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url) WHERE url IS NOT NULL AND url != ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_level_equivalencies_company ON level_equivalencies(normalized_company)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_company_interests_status ON company_interests(status)")
         defaults = {
             "gpt_threshold": "40",
             "user_threshold": "60",
@@ -278,6 +311,7 @@ def init_db():
                 (key, value),
             )
         seed_search_queries(conn)
+        remove_hardcoded_level_equivalency_seeds(conn)
         conn.execute(
             """
             UPDATE search_queries
@@ -361,8 +395,157 @@ def seed_search_queries(conn):
         )
 
 
+def remove_hardcoded_level_equivalency_seeds(conn):
+    conn.execute(
+        """
+        DELETE FROM level_equivalencies
+        WHERE normalized_company = 'atlassian'
+          AND normalized_title_pattern = 'principal engineer'
+          AND notes LIKE '%user-provided equivalency%'
+        """
+    )
+
+
+def lookup_level_equivalency(conn, company, title):
+    cached = lookup_cached_level_equivalency(conn, company, title)
+    if cached:
+        return cached
+    return estimate_and_cache_level_equivalency(conn, company, title)
+
+
+def estimate_level_equivalency(company, title):
+    normalized_title = normalize_lookup_text(title)
+    if not normalized_title:
+        return None
+
+    downlevel_patterns = (
+        r"^(new grad|entry level|junior|intern)\b",
+        r"^(software engineer|senior software engineer|staff software engineer|staff engineer)(\b|$)",
+        r"^engineering manager\b",
+    )
+    ic6_plus_patterns = (
+        r"\b(distinguished engineer|technical fellow|fellow|chief architect)\b",
+        r"\b(senior principal engineer|senior principal software engineer|senior principal architect|principal architect)\b",
+        r"\b(architect|enterprise architect|platform architect)\b",
+    )
+
+    if any(re.search(pattern, normalized_title) for pattern in ic6_plus_patterns):
+        return {
+            "source_level": "",
+            "source_level_title": clean_text(title),
+            "oracle_level": "IC6+",
+            "oracle_title": "Architect-equivalent or higher",
+            "downlevel": False,
+            "source_url": "",
+            "notes": "Estimated locally from title taxonomy because Levels.fyi runtime data is unavailable.",
+        }
+    if any(re.search(pattern, normalized_title) for pattern in downlevel_patterns):
+        return {
+            "source_level": "",
+            "source_level_title": clean_text(title),
+            "oracle_level": "BELOW_IC6",
+            "oracle_title": "Below Architect-equivalent",
+            "downlevel": True,
+            "source_url": "",
+            "notes": "Estimated locally from title taxonomy because Levels.fyi runtime data is unavailable.",
+        }
+    return None
+
+
+def estimate_and_cache_level_equivalency(conn, company, title):
+    equivalency = estimate_level_equivalency(company, title)
+    if not equivalency:
+        log_event("level_equivalency_unknown", company=company, title=title, reason="No cached calibration or reliable local title estimate.")
+        return None
+    ts = now()
+    conn.execute(
+        """
+        INSERT INTO level_equivalencies(
+            company, normalized_company, title_pattern, normalized_title_pattern,
+            source_level, source_level_title, oracle_level, oracle_title, downlevel,
+            source_url, notes, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(normalized_company, normalized_title_pattern) DO UPDATE SET
+            company = excluded.company,
+            title_pattern = excluded.title_pattern,
+            source_level = excluded.source_level,
+            source_level_title = excluded.source_level_title,
+            oracle_level = excluded.oracle_level,
+            oracle_title = excluded.oracle_title,
+            downlevel = excluded.downlevel,
+            source_url = excluded.source_url,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at
+        """,
+        (
+            clean_text(company),
+            normalize_lookup_text(company),
+            equivalency["source_level_title"],
+            normalize_lookup_text(equivalency["source_level_title"]),
+            equivalency["source_level"],
+            equivalency["source_level_title"],
+            equivalency["oracle_level"],
+            equivalency["oracle_title"],
+            1 if equivalency["downlevel"] else 0,
+            equivalency["source_url"],
+            equivalency["notes"],
+            ts,
+            ts,
+        ),
+    )
+    log_event(
+        "level_equivalency_cached",
+        company=company,
+        title=title,
+        source_level=equivalency["source_level"],
+        source_level_title=equivalency["source_level_title"],
+        oracle_level=equivalency["oracle_level"],
+        oracle_title=equivalency["oracle_title"],
+        downlevel=bool(equivalency["downlevel"]),
+        source_url=equivalency["source_url"],
+        source="local_title_taxonomy",
+    )
+    return lookup_cached_level_equivalency(conn, company, title)
+
+
+def lookup_cached_level_equivalency(conn, company, title):
+    normalized_company = normalize_lookup_text(company)
+    normalized_title = normalize_lookup_text(title)
+    rows = [
+        row_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT * FROM level_equivalencies
+            WHERE normalized_company = ?
+            ORDER BY LENGTH(normalized_title_pattern) DESC
+            """,
+            (normalized_company,),
+        )
+    ]
+    for row in rows:
+        pattern = row["normalized_title_pattern"]
+        if pattern and (normalized_title == pattern or normalized_title.startswith(f"{pattern} ")):
+            return row
+    return None
+
+
+def level_assessment_from_equivalency(equivalency):
+    if not equivalency:
+        return ""
+    source_level = f" {equivalency['source_level']}" if equivalency.get("source_level") else ""
+    return (
+        f"{equivalency['company']} {equivalency['source_level_title'] or equivalency['title_pattern']}{source_level} "
+        f"maps to Oracle {equivalency['oracle_level']} {equivalency['oracle_title']} per cached level calibration."
+    )
+
+
 def now():
     return int(time.time())
+
+
+def normalize_lookup_text(value):
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
 
 
 def row_to_dict(row):
@@ -506,10 +689,13 @@ def apply_filter(conn, job_id):
     gpt_threshold = int(cfg.get("gpt_threshold", "40"))
     user_threshold = int(cfg.get("user_threshold", "60"))
     use_gpt_threshold = gpt_scoring_enabled()
-    job = conn.execute("SELECT company, title, gpt_score, user_score FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute("SELECT company, title, gpt_score, user_score, downlevel FROM jobs WHERE id = ?", (job_id,)).fetchone()
     filtered = 0
     reasons = []
     if job:
+        if job["downlevel"]:
+            filtered = 1
+            reasons.append("downlevel relative to Oracle IC6-equivalent target")
         if use_gpt_threshold and job["gpt_score"] is not None and job["gpt_score"] < gpt_threshold:
             filtered = 1
             reasons.append(f"gpt_score {job['gpt_score']} below threshold {gpt_threshold}")
@@ -526,6 +712,7 @@ def apply_filter(conn, job_id):
             reasons=reasons,
             gpt_score=job["gpt_score"],
             user_score=job["user_score"],
+            downlevel=bool(job["downlevel"]),
             gpt_scoring_enabled=use_gpt_threshold,
         )
 
@@ -543,6 +730,48 @@ def list_jobs(conn, include_filtered=False):
         item["user_scorecard"] = parse_json_field(item.pop("user_scorecard_json"), {})
         jobs.append(item)
     return jobs
+
+
+def list_company_interests(conn):
+    rows = []
+    for row in conn.execute(
+        """
+        SELECT ci.*,
+               COUNT(j.id) AS tracked_job_count,
+               MAX(j.updated_at) AS latest_job_updated_at
+        FROM company_interests ci
+        LEFT JOIN jobs j ON lower(j.company) = lower(ci.company)
+        GROUP BY ci.id
+        ORDER BY
+          CASE ci.status
+            WHEN 'target' THEN 0
+            WHEN 'watching' THEN 1
+            WHEN 'active_conversation' THEN 2
+            WHEN 'paused' THEN 3
+            WHEN 'not_interested' THEN 4
+            ELSE 5
+          END,
+          COALESCE(ci.interest_score, -1) DESC,
+          ci.updated_at DESC
+        """
+    ):
+        rows.append(row_to_dict(row))
+    return rows
+
+
+def get_company_interest(conn, company_id):
+    row = conn.execute("SELECT * FROM company_interests WHERE id = ?", (company_id,)).fetchone()
+    if not row:
+        return None
+    company = row_to_dict(row)
+    company["jobs"] = [
+        row_to_dict(job)
+        for job in conn.execute(
+            "SELECT id, company, title, url, location, pipeline, status, gpt_score, user_score, filtered, downlevel FROM jobs WHERE lower(company) = lower(?) ORDER BY updated_at DESC",
+            (company["company"],),
+        )
+    ]
+    return company
 
 
 def get_job(conn, job_id):
@@ -1075,6 +1304,20 @@ def run_job_search(trigger="manual", force_refresh=False):
                         ),
                     )
                     continue
+                level_equivalency = lookup_level_equivalency(conn, result.get("company"), result.get("title"))
+                if level_equivalency:
+                    level_reason = level_assessment_from_equivalency(level_equivalency)
+                    result["cached_level_assessment"] = level_reason
+                    result["cached_downlevel"] = bool(level_equivalency["downlevel"])
+                    log_event(
+                        "level_equivalency_matched",
+                        company=result.get("company"),
+                        title=result.get("title"),
+                        oracle_level=level_equivalency["oracle_level"],
+                        oracle_title=level_equivalency["oracle_title"],
+                        downlevel=bool(level_equivalency["downlevel"]),
+                        source_url=level_equivalency.get("source_url"),
+                    )
                 seen_reason = already_seen_reason(conn, result.get("url"))
                 if seen_reason:
                     log_event(
@@ -1207,8 +1450,7 @@ def refine_search_query(conn, query_id, force_refresh=False):
             "Do not use Eric's personal LinkedIn or Indeed profile data.",
         ],
         "level_reference": {
-            "canonical_source": "Levels.fyi",
-            "oracle_ic6_url": LEVELS_FYI_ORACLE_IC6_URL,
+            "canonical_source": "local Oracle IC6 target definition",
             "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
         },
         "pipeline": query.get("pipeline"),
@@ -1258,7 +1500,7 @@ def classify_discovery(conn, result, force_refresh=False):
             reason=reason,
         )
         job_id = track_discovery_without_gpt(conn, result, reason)
-        return "tracked", reason, job_id, None, {}, "", False
+        return "tracked", reason, job_id, None, {}, result.get("cached_level_assessment", ""), bool(result.get("cached_downlevel"))
     if not os.environ.get("OPENAI_API_KEY"):
         reason = "OPENAI_API_KEY is unavailable; discovery tracked without GPT score."
         log_event(
@@ -1270,21 +1512,24 @@ def classify_discovery(conn, result, force_refresh=False):
             reason=reason,
         )
         job_id = track_discovery_without_gpt(conn, result, reason)
-        return "tracked", reason, job_id, None, {}, "", False
+        return "tracked", reason, job_id, None, {}, result.get("cached_level_assessment", ""), bool(result.get("cached_downlevel"))
 
     score = score_discovery_with_openai(conn, result, force_refresh=force_refresh)
     scorecard = score.get("scorecard", {})
     total = int(score.get("total_score", 0))
     downlevel = bool(score.get("downlevel", False))
-    level_assessment = score.get("level_assessment", "")
+    level_assessment = score.get("level_assessment", "") or result.get("cached_level_assessment", "") or UNKNOWN_LEVEL_ASSESSMENT
     pipeline = score.get("pipeline", "")
     if not pipeline:
         pipeline = result.get("pipeline", "")
 
+    if result.get("cached_downlevel"):
+        downlevel = True
+
     if downlevel and total < 80:
         log_event(
-            "discovery_rejected",
-            reason="Downlevel relative to IC6-equivalent and GPT score is below 80.",
+            "discovery_downlevel_tracked",
+            reason="Downlevel relative to IC6-equivalent; tracked and hidden by default.",
             company=result.get("company"),
             title=result.get("title"),
             url=result.get("url"),
@@ -1292,7 +1537,6 @@ def classify_discovery(conn, result, force_refresh=False):
             level_assessment=level_assessment,
             downlevel=downlevel,
         )
-        return "rejected", "Downlevel relative to IC6-equivalent and GPT score is below 80.", None, score, scorecard, level_assessment, downlevel
 
     ts = now()
     cur = conn.execute(
@@ -1332,13 +1576,15 @@ def classify_discovery(conn, result, force_refresh=False):
 def track_discovery_without_gpt(conn, result, reason):
     ts = now()
     pipeline = result.get("pipeline", "")
+    level_assessment = result.get("cached_level_assessment", "") or UNKNOWN_LEVEL_ASSESSMENT
+    downlevel = bool(result.get("cached_downlevel"))
     cur = conn.execute(
         """
         INSERT INTO jobs(
             created_at, updated_at, company, title, url, location, pipeline, status, posting_text, notes,
             filtered, source_board, source_job_id, discovered_at, level_assessment, downlevel
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?, 0, ?, ?, ?, '', 0)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?, 0, ?, ?, ?, ?, ?)
         """,
         (
             ts,
@@ -1353,6 +1599,8 @@ def track_discovery_without_gpt(conn, result, reason):
             result.get("board"),
             result.get("source_job_id"),
             ts,
+            level_assessment,
+            1 if downlevel else 0,
         ),
     )
     job_id = cur.lastrowid
@@ -1373,8 +1621,7 @@ def score_with_openai(conn, job, force_refresh=False):
     prompt = {
         "task": "Score this job for Eric Peterson's job search.",
         "level_reference": {
-            "canonical_source": "Levels.fyi",
-            "oracle_ic6_url": LEVELS_FYI_ORACLE_IC6_URL,
+            "canonical_source": "local Oracle IC6 target definition",
             "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
         },
         "instructions": [
@@ -1385,7 +1632,7 @@ def score_with_openai(conn, job, force_refresh=False):
             "Penalize line management, heavy operational ownership, firefighting, incremental feature ownership, narrow service ownership, and roles that only value hands-on coding.",
             "Reject or heavily penalize Account Executive, account management, business development, quota-carrying, and other sales roles.",
             "Use the calibration examples to adjust future scoring toward Eric's own scores.",
-            "Classify whether this role appears Oracle IC6-equivalent or higher using the Levels.fyi reference: Oracle IC-6 is Architect.",
+            "Classify whether this role appears Oracle IC6-equivalent or higher using the local target definition: Oracle IC-6 is Architect.",
             "Treat Principal Engineer, Architect, Senior Principal Engineer, Distinguished Engineer, Fellow, Chief Architect, CTO advisor, and equivalent strategic IC roles as potentially IC6-equivalent or higher depending on scope.",
             "Treat ordinary software engineer, senior engineer, staff engineer with narrow feature ownership, line-management-heavy manager roles, and single-service owner roles as downlevel unless the posting clearly indicates Architect-equivalent broad cross-org technical influence.",
             "Do not invent facts missing from the posting.",
@@ -1487,6 +1734,7 @@ def api_state():
                 "gpt_scoring_enabled": gpt_scoring_enabled(),
                 "capture_cache_enabled": capture_cache_enabled(),
                 "jobs": list_jobs(conn, include_filtered=include_filtered),
+                "company_interests": list_company_interests(conn),
                 "search_queries": list_search_queries(conn),
                 "search_runs": list_search_runs(conn),
                 "discoveries": list_discoveries(conn),
@@ -1503,6 +1751,89 @@ def api_job(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({"job": job})
+
+
+@app.get("/api/companies/<int:company_id>")
+def api_company_interest(company_id):
+    with connect() as conn:
+        company = get_company_interest(conn, company_id)
+    if not company:
+        return jsonify({"error": "Company interest not found"}), 404
+    return jsonify({"company": company})
+
+
+@app.post("/api/companies")
+def api_create_company_interest():
+    payload = request.get_json(silent=True) or {}
+    company_name = clean_text(payload.get("company", "")) or "Unknown company"
+    ts = now()
+    interest_score = payload.get("interest_score")
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO company_interests(
+                created_at, updated_at, company, normalized_company, status,
+                interest_score, rationale, notes, next_step, contacts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(normalized_company) DO UPDATE SET
+                company = excluded.company,
+                status = excluded.status,
+                interest_score = excluded.interest_score,
+                rationale = excluded.rationale,
+                notes = excluded.notes,
+                next_step = excluded.next_step,
+                contacts = excluded.contacts,
+                updated_at = excluded.updated_at
+            RETURNING id
+            """,
+            (
+                ts,
+                ts,
+                company_name,
+                normalize_lookup_text(company_name),
+                payload.get("status", "watching"),
+                interest_score if interest_score != "" else None,
+                payload.get("rationale", "").strip(),
+                payload.get("notes", "").strip(),
+                payload.get("next_step", "").strip(),
+                payload.get("contacts", "").strip(),
+            ),
+        )
+        company_id = cur.fetchone()["id"]
+        return jsonify({"company": get_company_interest(conn, company_id), "companies": list_company_interests(conn)}), 201
+
+
+@app.post("/api/companies/<int:company_id>")
+def api_update_company_interest(company_id):
+    payload = request.get_json(silent=True) or {}
+    with connect() as conn:
+        existing = get_company_interest(conn, company_id)
+        if not existing:
+            return jsonify({"error": "Company interest not found"}), 404
+        company_name = clean_text(payload.get("company", existing["company"])) or existing["company"]
+        interest_score = payload.get("interest_score")
+        conn.execute(
+            """
+            UPDATE company_interests
+            SET company = ?, normalized_company = ?, status = ?, interest_score = ?,
+                rationale = ?, notes = ?, next_step = ?, contacts = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                company_name,
+                normalize_lookup_text(company_name),
+                payload.get("status", existing["status"]),
+                interest_score if interest_score != "" else None,
+                payload.get("rationale", ""),
+                payload.get("notes", ""),
+                payload.get("next_step", ""),
+                payload.get("contacts", ""),
+                now(),
+                company_id,
+            ),
+        )
+        return jsonify({"company": get_company_interest(conn, company_id), "companies": list_company_interests(conn)})
 
 
 @app.post("/api/jobs")
@@ -2012,7 +2343,35 @@ INDEX_HTML = r"""<!doctype html>
       margin-top: 10px;
     }
     .toolbar { display: flex; gap: 10px; align-items: end; margin-bottom: 12px; }
+    .toolbar.wrap { flex-wrap: wrap; }
     .toolbar label { margin-top: 0; }
+    .filter-controls {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+      width: 100%;
+      align-items: end;
+    }
+    .status-filter-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+      max-width: 700px;
+    }
+    .status-filter-list label {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin: 0;
+      padding: 4px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(255,255,255,.55);
+    }
+    .status-filter-list input { width: auto; margin: 0; }
     .small { font-size: 12px; color: var(--muted); }
     .checkbox-row {
       display: flex;
@@ -2043,6 +2402,7 @@ INDEX_HTML = r"""<!doctype html>
     <div class="subtitle">Score opportunities against the ideal problem set, track applications like a CRM, and preserve learning from every conversation.</div>
     <nav>
       <button id="jobs_nav" onclick="showPage('jobs')">Jobs</button>
+      <button id="companies_nav" class="secondary" onclick="showPage('companies')">Companies</button>
       <button id="queries_nav" class="secondary" onclick="showPage('queries')">Queries</button>
     </nav>
   </header>
@@ -2057,7 +2417,6 @@ INDEX_HTML = r"""<!doctype html>
         <label>Model</label><input id="model">
         <div class="row" style="margin-top: 10px;">
           <button onclick="saveSettings()">Save</button>
-          <button class="secondary" onclick="toggleFiltered()">Show/Hide filtered</button>
         </div>
         <p class="small">Jobs are filtered when user score is below threshold. GPT threshold applies only when GPT scoring is enabled.</p>
       </section>
@@ -2066,7 +2425,7 @@ INDEX_HTML = r"""<!doctype html>
         <button id="run_search_button" class="warn" onclick="runSearch()">Run job search now</button>
         <label class="checkbox-row"><input id="force_refresh" type="checkbox"> Force refresh, bypass replay cache</label>
         <div id="search_status" class="status-pill">Idle</div>
-        <p class="small">Daily search runs use saved LinkedIn and Indeed queries. Downlevel jobs are rejected unless GPT score is 80+.</p>
+        <p class="small">Daily search runs use saved LinkedIn and Indeed queries. Downlevel jobs are tracked but hidden by default.</p>
         <details>
           <summary>Show enabled queries and recent runs</summary>
           <h3>Enabled Queries</h3>
@@ -2112,22 +2471,72 @@ INDEX_HTML = r"""<!doctype html>
     <div>
       <section id="jobs_page" class="page">
         <div class="panel jobs-master-panel">
-          <div class="toolbar">
+          <div class="toolbar wrap">
             <div>
               <h2>Tracked Jobs</h2>
-              <div class="small">Master list of tracked jobs. Select a row to edit CRM details below.</div>
+              <div id="job_filter_summary" class="small">Master list of tracked jobs. Select a row to edit CRM details below.</div>
+            </div>
+            <div class="filter-controls">
+              <div>
+                <label>Pipeline</label>
+                <select id="pipeline_view_filter" onchange="saveJobTableFilters(); renderJobs()"></select>
+              </div>
+              <div>
+                <label>Source</label>
+                <select id="source_view_filter" onchange="saveJobTableFilters(); renderJobs()"></select>
+              </div>
+              <div>
+                <label>Visibility</label>
+                <select id="visibility_filter" onchange="saveJobTableFilters(); renderJobs()">
+                  <option value="active">Hide filtered/downlevel</option>
+                  <option value="all">Show all</option>
+                  <option value="filtered">Only filtered</option>
+                  <option value="downlevel">Only downlevel</option>
+                </select>
+              </div>
+              <div>
+                <label>Search</label>
+                <input id="job_text_filter" placeholder="Company, title, location" oninput="saveJobTableFilters(); renderJobs()">
+              </div>
             </div>
             <div>
-              <label>Pipeline view</label>
-              <select id="pipeline_view_filter" onchange="renderJobs()"></select>
+              <label>Status</label>
+              <div id="status_filter_list" class="status-filter-list"></div>
             </div>
-            <button class="secondary" onclick="toggleFiltered()">Show/Hide filtered</button>
+            <button class="secondary" onclick="resetJobTableFilters()">Reset table filters</button>
           </div>
           <div id="jobs" class="table-wrap"></div>
         </div>
         <div id="jobs_split_divider" class="split-divider" title="Drag to resize job detail pane"></div>
         <div id="detail" class="detail">
           <div class="empty">Select a job from the table.</div>
+        </div>
+      </section>
+      <section id="companies_page" class="page hidden">
+        <div class="panel">
+          <div class="toolbar wrap">
+            <div>
+              <h2>Company Interest</h2>
+              <div class="small">Track company-level interest separately from individual roles.</div>
+            </div>
+          </div>
+          <details>
+            <summary>Add company interest</summary>
+            <div class="grid2">
+              <div><label>Company</label><input id="company_interest_name"></div>
+              <div><label>Status</label><select id="company_interest_status"><option>watching</option><option>target</option><option>active_conversation</option><option>paused</option><option>not_interested</option></select></div>
+            </div>
+            <label>Interest score</label><input id="company_interest_score" type="number" min="0" max="100">
+            <label>Rationale</label><textarea id="company_interest_rationale"></textarea>
+            <label>Contacts</label><textarea id="company_interest_contacts" placeholder="People, teams, recruiters, referrals"></textarea>
+            <label>Next step</label><input id="company_interest_next_step">
+            <label>Notes</label><textarea id="company_interest_notes"></textarea>
+            <button class="secondary" onclick="createCompanyInterest()">Track company</button>
+          </details>
+          <div id="company_table" class="table-wrap"></div>
+          <div id="company_detail" class="detail">
+            <div class="empty">Select a company.</div>
+          </div>
         </div>
       </section>
       <section id="queries_page" class="page hidden">
@@ -2174,15 +2583,54 @@ INDEX_HTML = r"""<!doctype html>
       "compensation",
       "mission",
     ];
+    const statusOptions = ["researching","interested","applied","interviewing","offer","rejected","declined","paused"];
+    const defaultVisibleStatuses = statusOptions.filter(s => !["rejected", "declined"].includes(s));
+    const companyStatuses = ["watching","target","active_conversation","paused","not_interested"];
     let state = { jobs: [], settings: {}, pipelines: [], rubric_fields: rubric };
     let selectedId = null;
-    let includeFiltered = false;
+    let selectedCompanyId = null;
+    let jobTableFilters = loadJobTableFilters();
     let currentPage = "jobs";
     let searchRunning = false;
     let splitInitialized = false;
 
     const pretty = s => s.replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
     const scoreClass = n => n == null ? "" : n >= 70 ? "score-good" : n >= 40 ? "score-warn" : "score-bad";
+    const levelStatus = item => item.level_assessment || "Unknown - level not assessed";
+
+    function loadJobTableFilters() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem("jobTableFilters") || "{}");
+        return {
+          pipeline: parsed.pipeline || "",
+          source: parsed.source || "",
+          visibility: parsed.visibility || "active",
+          text: parsed.text || "",
+          statuses: Array.isArray(parsed.statuses) && parsed.statuses.length ? parsed.statuses : defaultVisibleStatuses,
+        };
+      } catch {
+        return { pipeline: "", source: "", visibility: "active", text: "", statuses: defaultVisibleStatuses };
+      }
+    }
+
+    function saveJobTableFilters() {
+      const checkedStatuses = [...document.querySelectorAll("#status_filter_list input:checked")].map(input => input.value);
+      jobTableFilters = {
+        pipeline: document.getElementById("pipeline_view_filter")?.value || "",
+        source: document.getElementById("source_view_filter")?.value || "",
+        visibility: document.getElementById("visibility_filter")?.value || "active",
+        text: document.getElementById("job_text_filter")?.value || "",
+        statuses: checkedStatuses,
+      };
+      localStorage.setItem("jobTableFilters", JSON.stringify(jobTableFilters));
+    }
+
+    function resetJobTableFilters() {
+      jobTableFilters = { pipeline: "", source: "", visibility: "active", text: "", statuses: defaultVisibleStatuses };
+      localStorage.setItem("jobTableFilters", JSON.stringify(jobTableFilters));
+      renderJobTableFilterControls();
+      renderJobs();
+    }
 
     async function api(path, options = {}) {
       const response = await fetch(path, {
@@ -2195,7 +2643,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function load() {
-      state = await api(`/api/state?include_filtered=${includeFiltered ? "1" : "0"}`);
+      state = await api("/api/state?include_filtered=1");
       document.getElementById("gpt_threshold").value = state.settings.gpt_threshold;
       document.getElementById("user_threshold").value = state.settings.user_threshold;
       document.getElementById("model").value = state.settings.model;
@@ -2203,15 +2651,16 @@ INDEX_HTML = r"""<!doctype html>
       pipeline.innerHTML = '<option value=""></option>' + state.pipelines.map(p => `<option>${p}</option>`).join("");
       document.getElementById("search_pipeline").innerHTML = state.pipelines.map(p => `<option>${p}</option>`).join("");
       const pipelineView = document.getElementById("pipeline_view_filter");
-      const currentPipelineView = pipelineView.value || "";
       pipelineView.innerHTML = '<option value="">All pipelines</option>' + state.pipelines.map(p => `<option>${p}</option>`).join("");
-      pipelineView.value = state.pipelines.includes(currentPipelineView) ? currentPipelineView : "";
+      renderJobTableFilterControls();
       renderSearchState();
       renderConfigStatus();
       renderJobs();
+      renderCompanyTable();
       renderQueryTable();
       initializeJobSplit();
       if (selectedId) await selectJob(selectedId, false);
+      if (selectedCompanyId) await selectCompany(selectedCompanyId, false);
     }
 
     function renderSearchState() {
@@ -2270,10 +2719,46 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("config_JOB_SEARCH_USE_CAPTURE_CACHE").value = state.capture_cache_enabled ? "1" : "0";
     }
 
+    function renderJobTableFilterControls() {
+      const pipelineView = document.getElementById("pipeline_view_filter");
+      const sourceView = document.getElementById("source_view_filter");
+      const visibility = document.getElementById("visibility_filter");
+      const text = document.getElementById("job_text_filter");
+      const statusList = document.getElementById("status_filter_list");
+      if (!pipelineView || !sourceView || !visibility || !text || !statusList) return;
+
+      pipelineView.value = state.pipelines.includes(jobTableFilters.pipeline) ? jobTableFilters.pipeline : "";
+      const sources = [...new Set((state.jobs || []).map(job => job.source_board || "manual"))].sort();
+      sourceView.innerHTML = '<option value="">All sources</option>' + sources.map(source => `<option>${escapeHtml(source)}</option>`).join("");
+      sourceView.value = sources.includes(jobTableFilters.source) ? jobTableFilters.source : "";
+      visibility.value = ["active", "all", "filtered", "downlevel"].includes(jobTableFilters.visibility) ? jobTableFilters.visibility : "active";
+      text.value = jobTableFilters.text || "";
+      const statuses = [...new Set([...statusOptions, ...(state.jobs || []).map(job => job.status || "").filter(Boolean)])];
+      statusList.innerHTML = statuses.map(status => `
+        <label><input type="checkbox" value="${escapeAttr(status)}" ${jobTableFilters.statuses.includes(status) ? "checked" : ""} onchange="saveJobTableFilters(); renderJobs()"> ${escapeHtml(status)}</label>
+      `).join("");
+    }
+
+    function jobMatchesTableFilters(job) {
+      if (jobTableFilters.pipeline && (job.pipeline || "") !== jobTableFilters.pipeline) return false;
+      if (jobTableFilters.source && (job.source_board || "manual") !== jobTableFilters.source) return false;
+      if (!jobTableFilters.statuses.includes(job.status || "")) return false;
+      if (jobTableFilters.visibility === "active" && (job.filtered || job.downlevel)) return false;
+      if (jobTableFilters.visibility === "filtered" && !job.filtered) return false;
+      if (jobTableFilters.visibility === "downlevel" && !job.downlevel) return false;
+      const text = (jobTableFilters.text || "").trim().toLowerCase();
+      if (text) {
+        const haystack = [job.company, job.title, job.location, job.pipeline, job.status, job.source_board].join(" ").toLowerCase();
+        if (!haystack.includes(text)) return false;
+      }
+      return true;
+    }
+
     function renderJobs() {
       const jobs = document.getElementById("jobs");
-      const pipelineFilter = document.getElementById("pipeline_view_filter")?.value || "";
-      const visibleJobs = pipelineFilter ? state.jobs.filter(job => (job.pipeline || "") === pipelineFilter) : state.jobs;
+      const visibleJobs = state.jobs.filter(jobMatchesTableFilters);
+      const hiddenCount = state.jobs.length - visibleJobs.length;
+      document.getElementById("job_filter_summary").textContent = `${visibleJobs.length} visible, ${hiddenCount} hidden by table filters. Select a row to edit CRM details below.`;
       if (!visibleJobs.length) {
         jobs.innerHTML = '<div class="small">No jobs match the current filter.</div>';
         return;
@@ -2298,10 +2783,10 @@ INDEX_HTML = r"""<!doctype html>
                 <td><b>${escapeHtml(job.company)}</b><div class="small">${escapeHtml(job.location || "")}</div></td>
                 <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
                 <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
-                <td>${escapeHtml(job.status || "")}${job.filtered ? '<div class="small">filtered</div>' : ""}</td>
+                <td>${escapeHtml(job.status || "")}${job.filtered ? '<div class="small">filtered/downlevel hidden by default</div>' : ""}</td>
                 <td><b class="${scoreClass(job.gpt_score)}">${job.gpt_score ?? "n/a"}</b></td>
                 <td><b class="${scoreClass(job.user_score)}">${job.user_score ?? "n/a"}</b></td>
-                <td>${escapeHtml(job.level_assessment || "n/a")}${job.downlevel ? '<div class="small">downlevel</div>' : ""}</td>
+                <td>${escapeHtml(levelStatus(job))}${job.downlevel ? '<div class="small">downlevel</div>' : ""}</td>
                 <td>${escapeHtml(job.source_board || "manual")}</td>
               </tr>
             `).join("")}
@@ -2345,6 +2830,87 @@ INDEX_HTML = r"""<!doctype html>
       `;
     }
 
+    function renderCompanyTable() {
+      const el = document.getElementById("company_table");
+      const companies = state.company_interests || [];
+      if (!el) return;
+      if (!companies.length) {
+        el.innerHTML = '<div class="small">No company interests tracked yet.</div>';
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>Status</th>
+              <th>Interest</th>
+              <th>Tracked Jobs</th>
+              <th>Next Step</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${companies.map(company => `
+              <tr class="${company.id === selectedCompanyId ? "active" : ""}" onclick="selectCompany(${company.id})">
+                <td><b>${escapeHtml(company.company)}</b><div class="small">${escapeHtml(company.contacts || "")}</div></td>
+                <td>${escapeHtml(company.status || "")}</td>
+                <td><b class="${scoreClass(company.interest_score)}">${company.interest_score ?? "n/a"}</b></td>
+                <td>${company.tracked_job_count || 0}</td>
+                <td>${escapeHtml(company.next_step || "")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function selectCompany(id, rerender = true) {
+      selectedCompanyId = id;
+      const { company } = await api(`/api/companies/${id}`);
+      renderCompanyDetail(company);
+      if (rerender) renderCompanyTable();
+    }
+
+    function renderCompanyDetail(company) {
+      const detail = document.getElementById("company_detail");
+      detail.innerHTML = `
+        <div class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>${escapeHtml(company.company)}</h2>
+              <div class="meta">${company.jobs.length} tracked role${company.jobs.length === 1 ? "" : "s"} for this company.</div>
+            </div>
+            <button onclick="saveCompanyInterest(${company.id})">Save company</button>
+          </div>
+          <div class="grid2">
+            <div><label>Company</label><input id="edit_company_name" value="${escapeAttr(company.company)}"></div>
+            <div><label>Status</label><select id="edit_company_status">${companyStatuses.map(s => `<option ${company.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+          </div>
+          <label>Interest score</label><input id="edit_company_interest_score" type="number" min="0" max="100" value="${company.interest_score ?? ""}">
+          <label>Rationale</label><textarea id="edit_company_rationale">${escapeHtml(company.rationale || "")}</textarea>
+          <label>Contacts</label><textarea id="edit_company_contacts">${escapeHtml(company.contacts || "")}</textarea>
+          <label>Next step</label><input id="edit_company_next_step" value="${escapeAttr(company.next_step || "")}">
+          <label>Notes</label><textarea id="edit_company_notes">${escapeHtml(company.notes || "")}</textarea>
+        </div>
+        <div class="panel">
+          <h2>Tracked Roles At ${escapeHtml(company.company)}</h2>
+          ${company.jobs.length ? `
+            <table>
+              <thead><tr><th>Role</th><th>Status</th><th>Pipeline</th><th>Scores</th></tr></thead>
+              <tbody>${company.jobs.map(job => `
+                <tr onclick="showPage('jobs'); selectJob(${job.id})">
+                  <td>${escapeHtml(job.title)}${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
+                  <td>${escapeHtml(job.status || "")}${job.downlevel ? '<div class="small">downlevel</div>' : ""}${job.filtered ? '<div class="small">filtered</div>' : ""}</td>
+                  <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
+                  <td>GPT ${job.gpt_score ?? "n/a"} · Mine ${job.user_score ?? "n/a"}</td>
+                </tr>
+              `).join("")}</tbody>
+            </table>
+          ` : '<div class="small">No tracked jobs for this company yet.</div>'}
+        </div>
+      `;
+    }
+
     async function selectJob(id, rerender = true) {
       selectedId = id;
       const { job } = await api(`/api/jobs/${id}`);
@@ -2363,7 +2929,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <div>
               <label>Status</label>
-              <select id="status">${["researching","interested","applied","interviewing","offer","rejected","declined","paused"].map(s => `<option ${job.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
+              <select id="status">${statusOptions.map(s => `<option ${job.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
             </div>
             <button onclick="saveStatus(${job.id})">Save status</button>
           </div>
@@ -2371,7 +2937,7 @@ INDEX_HTML = r"""<!doctype html>
             <span class="chip">Pipeline: ${escapeHtml(job.pipeline || "Unassigned")}</span>
             <span class="chip">GPT: <b class="${scoreClass(job.gpt_score)}">${job.gpt_score ?? "n/a"}</b></span>
             <span class="chip">Mine: <b class="${scoreClass(job.user_score)}">${job.user_score ?? "n/a"}</b></span>
-            <span class="chip">Level: ${escapeHtml(job.level_assessment || "n/a")}</span>
+            <span class="chip">Level: ${escapeHtml(levelStatus(job))}</span>
             ${job.downlevel ? '<span class="chip">Downlevel</span>' : ""}
             ${job.filtered ? '<span class="chip">Filtered</span>' : ""}
           </div>
@@ -2435,7 +3001,7 @@ INDEX_HTML = r"""<!doctype html>
               <div class="chips">
                 <span class="chip">Decision: ${escapeHtml(d.decision)}</span>
                 <span class="chip">GPT: <b class="${scoreClass(d.gpt_score)}">${d.gpt_score ?? "n/a"}</b></span>
-                <span class="chip">Level: ${escapeHtml(d.level_assessment || "n/a")}</span>
+                <span class="chip">Level: ${escapeHtml(levelStatus(d))}</span>
                 ${d.downlevel ? '<span class="chip">Downlevel</span>' : ""}
               </div>
               <p class="small">${escapeHtml(d.rejection_reason || d.gpt_rationale || "")}</p>
@@ -2458,6 +3024,36 @@ INDEX_HTML = r"""<!doctype html>
       const { job } = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
       selectedId = job.id;
       ["company","title","url","location","posting_text","notes"].forEach(id => document.getElementById(id).value = "");
+      await load();
+    }
+
+    async function createCompanyInterest() {
+      const payload = {
+        company: document.getElementById("company_interest_name").value,
+        status: document.getElementById("company_interest_status").value,
+        interest_score: nullableNumber(document.getElementById("company_interest_score").value),
+        rationale: document.getElementById("company_interest_rationale").value,
+        contacts: document.getElementById("company_interest_contacts").value,
+        next_step: document.getElementById("company_interest_next_step").value,
+        notes: document.getElementById("company_interest_notes").value,
+      };
+      const { company } = await api("/api/companies", { method: "POST", body: JSON.stringify(payload) });
+      selectedCompanyId = company.id;
+      ["company_interest_name","company_interest_score","company_interest_rationale","company_interest_contacts","company_interest_next_step","company_interest_notes"].forEach(id => document.getElementById(id).value = "");
+      await load();
+    }
+
+    async function saveCompanyInterest(id) {
+      const payload = {
+        company: document.getElementById("edit_company_name").value,
+        status: document.getElementById("edit_company_status").value,
+        interest_score: nullableNumber(document.getElementById("edit_company_interest_score").value),
+        rationale: document.getElementById("edit_company_rationale").value,
+        contacts: document.getElementById("edit_company_contacts").value,
+        next_step: document.getElementById("edit_company_next_step").value,
+        notes: document.getElementById("edit_company_notes").value,
+      };
+      await api(`/api/companies/${id}`, { method: "POST", body: JSON.stringify(payload) });
       await load();
     }
 
@@ -2484,6 +3080,12 @@ INDEX_HTML = r"""<!doctype html>
       const parsed = Number(value);
       if (!Number.isFinite(parsed)) return 0;
       return Math.max(0, Math.min(10, Math.round(parsed)));
+    }
+
+    function nullableNumber(value) {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) return null;
+      return parsed;
     }
 
     async function addInteraction(id) {
@@ -2579,16 +3181,13 @@ INDEX_HTML = r"""<!doctype html>
       await load();
     }
 
-    function toggleFiltered() {
-      includeFiltered = !includeFiltered;
-      load();
-    }
-
     function showPage(page) {
       currentPage = page;
       document.getElementById("jobs_page").classList.toggle("hidden", page !== "jobs");
+      document.getElementById("companies_page").classList.toggle("hidden", page !== "companies");
       document.getElementById("queries_page").classList.toggle("hidden", page !== "queries");
       document.getElementById("jobs_nav").classList.toggle("secondary", page !== "jobs");
+      document.getElementById("companies_nav").classList.toggle("secondary", page !== "companies");
       document.getElementById("queries_nav").classList.toggle("secondary", page !== "queries");
       if (page === "jobs") requestAnimationFrame(() => {
         syncJobsPageHeight();

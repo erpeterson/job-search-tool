@@ -154,28 +154,35 @@ Discovered results with sales-role titles are rejected before tracking.
 
 ## Level Filtering
 
-Levels.fyi is the canonical source for Oracle level equivalence:
+The app treats Oracle Software Engineer `IC-6` as `Architect` and uses that as
+the target level for job filtering. Runtime Levels.fyi API responses are not used
+because the available endpoint returns paywall text instead of usable comparison
+data.
 
-`https://www.levels.fyi/companies/oracle/salaries/software-engineer/levels/ic-6`
-
-The app treats Oracle Software Engineer `IC-6` as `Architect` and asks GPT to judge whether each listing appears Oracle IC6-equivalent or higher.
+Company/title calibrations are cached locally. When no cached calibration exists,
+the app applies a conservative title taxonomy: obvious below-IC6 titles are
+marked downlevel, obvious IC6-plus titles are marked in-range, and ambiguous
+titles stay `Unknown - level not assessed`.
 
 Discovery rule:
 
-- If a discovered job appears downlevel from Oracle IC6-equivalent, it is rejected and not tracked unless GPT score is `80` or higher.
+- If a discovered job appears downlevel from Oracle IC6-equivalent, it is tracked but hidden from the default jobs view.
 - Rejected discoveries remain visible in the discovery log with the rejection reason.
 - Jobs below the normal GPT threshold are tracked but filtered from the default job list only when GPT scoring is enabled.
 - When GPT scoring is disabled, low or missing GPT scores do not filter jobs.
+- Cached downlevel equivalencies mark matching jobs as downlevel before GPT. The cache starts empty; rows are added only from local title calibration or future explicit calibration mechanisms.
+- When level cannot be estimated, the level status is shown as `Unknown - level not assessed`.
 
 ## Product Rules
 
 - The rubric is based on `supporting-documents/20260731-job-search-guidance.md`.
 - GPT score threshold defaults to `40`.
 - User score threshold defaults to `60`.
-- A job is filtered when user score is below threshold, or when GPT scoring is enabled and GPT score is below threshold.
+- A job is filtered when it is downlevel, when user score is below threshold, or when GPT scoring is enabled and GPT score is below threshold.
 - GPT scoring includes recent user-scored examples as calibration context, so the model can adapt to Eric's preferences over time.
 - Thresholds are editable in the UI and persisted in SQLite.
-- The tracked jobs table includes a `Pipeline view` filter so user-acceptance testing can focus on one pipeline at a time.
+- The tracked jobs table includes fine-grained table filters for pipeline, source, filtered/downlevel visibility, text search, and included statuses. By default it hides filtered/downlevel rows plus terminal `rejected` and `declined` statuses.
+- Company interest is tracked independently from individual roles. Company records can store interest status, interest score, rationale, contacts, notes, and next step while still showing matching tracked jobs for context.
 - The Configuration panel includes an advanced `Purge tracked jobs` command for user-acceptance testing. It requires typing `PURGE`, deletes tracked jobs and their CRM notes/interactions, and preserves searches, settings, logs, captures, and discovery history.
 
 ## Current Scope
@@ -185,7 +192,8 @@ Discovery rule:
 - Generate GPT scorecards when `OPENAI_API_KEY` is configured.
 - Record Eric's own scorecard.
 - Track application status.
+- Track company-level interest separately from individual roles.
 - Track people, conversations, notes, and next steps.
 - Filter low-fit jobs.
 - Run saved LinkedIn and Indeed searches on demand or daily.
-- Reject downlevel discoveries unless they have exceptional GPT fit.
+- Hide downlevel discoveries by default while retaining them in tracked jobs.
