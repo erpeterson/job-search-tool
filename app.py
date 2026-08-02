@@ -4,7 +4,10 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import textwrap
 import time
@@ -17,7 +20,6 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
-from openai import OpenAI
 from werkzeug.exceptions import HTTPException
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +35,9 @@ CAREER_MANUAL_PATH = ROOT / "career-manual" / "Career-Manual.md"
 
 load_dotenv(ENV_PATH)
 
-DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5")
+DEFAULT_MODEL = os.environ.get("CODEX_MODEL", "")
+DEFAULT_CODEX_CLI_PATH = os.environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex"
+CODEX_CLI_TIMEOUT_SECONDS = int(os.environ.get("CODEX_CLI_TIMEOUT_SECONDS", "180"))
 HOST = os.environ.get("JOB_SEARCH_HOST", "127.0.0.1")
 PORT = int(os.environ.get("JOB_SEARCH_PORT", "5050"))
 DEBUG = os.environ.get("JOB_SEARCH_DEBUG", "0") == "1"
@@ -42,8 +46,8 @@ SEARCH_INTERVAL_SECONDS = int(os.environ.get("JOB_SEARCH_INTERVAL_SECONDS", str(
 LOG_MAX_BYTES = int(os.environ.get("JOB_SEARCH_LOG_MAX_BYTES", str(1024 * 1024)))
 LOG_BACKUP_COUNT = int(os.environ.get("JOB_SEARCH_LOG_BACKUP_COUNT", "5"))
 CONFIG_KEYS = [
-    "OPENAI_API_KEY",
-    "OPENAI_MODEL",
+    "CODEX_CLI_PATH",
+    "CODEX_MODEL",
     "JOB_SEARCH_ENABLE_GPT_SCORING",
     "JOB_SEARCH_USE_CAPTURE_CACHE",
 ]
@@ -55,6 +59,14 @@ api_logger.propagate = False
 event_logger = logging.getLogger("job_search.events")
 event_logger.setLevel(logging.INFO)
 event_logger.propagate = False
+
+
+class CodexCliError(RuntimeError):
+    def __init__(self, operation, returncode=None):
+        self.operation = operation
+        self.returncode = returncode
+        suffix = f" exited with code {returncode}" if returncode is not None else " failed"
+        super().__init__(f"Codex CLI {operation}{suffix}. See logs and captures for details.")
 
 
 def configure_logging():
@@ -302,7 +314,7 @@ def init_db():
         defaults = {
             "gpt_threshold": "40",
             "user_threshold": "60",
-            "model": DEFAULT_MODEL,
+            "codex_model": DEFAULT_MODEL,
             "last_search_at": "0",
         }
         for key, value in defaults.items():
@@ -569,6 +581,28 @@ def gpt_scoring_enabled():
     return os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1"
 
 
+def codex_cli_path():
+    return os.environ.get("CODEX_CLI_PATH") or DEFAULT_CODEX_CLI_PATH
+
+
+def codex_cli_available():
+    path = codex_cli_path()
+    if not path:
+        return False
+    if Path(path).is_absolute():
+        return Path(path).exists() and os.access(path, os.X_OK)
+    return shutil.which(path) is not None
+
+
+def codex_model(conn=None):
+    env_model = os.environ.get("CODEX_MODEL", "").strip()
+    if env_model:
+        return env_model
+    if conn is not None:
+        return (settings(conn).get("codex_model") or "").strip()
+    return DEFAULT_MODEL
+
+
 def capture_cache_enabled():
     return os.environ.get("JOB_SEARCH_USE_CAPTURE_CACHE", "1") != "0"
 
@@ -682,6 +716,23 @@ def write_capture(service, operation, request_payload, response_payload, metadat
     path.write_text(json.dumps(capture, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     log_event("capture_write", service=service, operation=operation, path=str(path))
     return path
+
+
+def parse_model_json(output_text):
+    if not output_text:
+        raise json.JSONDecodeError("empty response", "", 0)
+    cleaned = output_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(cleaned[start : end + 1])
+        raise
 
 
 def apply_filter(conn, job_id):
@@ -1012,7 +1063,7 @@ def fetch_jobs_for_query(query, force_refresh=False):
     raise RuntimeError(f"Unsupported board: {query['board']}")
 
 
-def score_discovery_with_openai(conn, discovery, force_refresh=False):
+def score_discovery_with_codex(conn, discovery, force_refresh=False):
     job = {
         "company": discovery.get("company"),
         "title": discovery.get("title"),
@@ -1022,7 +1073,7 @@ def score_discovery_with_openai(conn, discovery, force_refresh=False):
         "posting_text": discovery.get("snippet"),
         "notes": f"Source board: {discovery.get('board')}. Search criteria: {discovery.get('criteria', '')}",
     }
-    return score_with_openai(conn, job, force_refresh=force_refresh)
+    return score_with_codex_cli(conn, job, force_refresh=force_refresh)
 
 
 def already_seen(conn, url):
@@ -1382,7 +1433,18 @@ def run_job_search(trigger="manual", force_refresh=False):
                     ),
                 )
         with connect() as conn:
-            refine_search_query(conn, query["id"], force_refresh=force_refresh)
+            try:
+                refine_search_query(conn, query["id"], force_refresh=force_refresh)
+            except CodexCliError as exc:
+                messages.append(f"{query['board']}:{query['keywords']}: {exc}")
+                log_event(
+                    "query_refinement_failed",
+                    query_id=query["id"],
+                    board=query.get("board"),
+                    keywords=query.get("keywords"),
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
 
     with connect() as conn:
         conn.execute(
@@ -1413,9 +1475,10 @@ def run_job_search(trigger="manual", force_refresh=False):
 
 def refine_search_query(conn, query_id, force_refresh=False):
     if not gpt_scoring_enabled():
-        log_event("query_refinement_skipped", query_id=query_id, reason="GPT scoring disabled")
+        log_event("query_refinement_skipped", query_id=query_id, reason="Codex scoring disabled")
         return
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not codex_cli_available():
+        log_event("query_refinement_skipped", query_id=query_id, reason="Codex CLI unavailable", codex_cli_path=codex_cli_path())
         return
     query = row_to_dict(conn.execute("SELECT * FROM search_queries WHERE id = ?", (query_id,)).fetchone())
     if not query:
@@ -1435,8 +1498,6 @@ def refine_search_query(conn, query_id, force_refresh=False):
     ]
     if not recent:
         return
-    cfg = settings(conn)
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     prompt = {
         "task": "Refine a job-board search query for Eric Peterson.",
         "instructions": [
@@ -1465,12 +1526,13 @@ def refine_search_query(conn, query_id, force_refresh=False):
             "refinement_notes": "what changed and why",
         },
     }
-    output_text = call_openai_json(client, cfg.get("model") or DEFAULT_MODEL, prompt, "refine_search_query", force_refresh=force_refresh)
+    output_text = call_codex_json(codex_model(conn), prompt, "refine_search_query", force_refresh=force_refresh)
     if not output_text:
         return
     try:
-        refined = json.loads(output_text)
+        refined = parse_model_json(output_text)
     except json.JSONDecodeError:
+        log_event("query_refinement_invalid_json", query_id=query_id, response_excerpt=output_text[:1000])
         return
     keywords = clean_text(refined.get("keywords") or query.get("keywords"))
     location = clean_text(refined.get("location") or query.get("location") or "Remote")
@@ -1490,9 +1552,9 @@ def refine_search_query(conn, query_id, force_refresh=False):
 
 def classify_discovery(conn, result, force_refresh=False):
     if not gpt_scoring_enabled():
-        reason = "GPT scoring is disabled; discovery tracked without GPT score."
+        reason = "Codex scoring is disabled; discovery tracked without Codex score."
         log_event(
-            "discovery_gpt_disabled",
+            "discovery_codex_disabled",
             board=result.get("board"),
             company=result.get("company"),
             title=result.get("title"),
@@ -1501,20 +1563,21 @@ def classify_discovery(conn, result, force_refresh=False):
         )
         job_id = track_discovery_without_gpt(conn, result, reason)
         return "tracked", reason, job_id, None, {}, result.get("cached_level_assessment", ""), bool(result.get("cached_downlevel"))
-    if not os.environ.get("OPENAI_API_KEY"):
-        reason = "OPENAI_API_KEY is unavailable; discovery tracked without GPT score."
+    if not codex_cli_available():
+        reason = "Codex CLI is unavailable; discovery tracked without Codex score."
         log_event(
-            "discovery_openai_key_unavailable",
+            "discovery_codex_cli_unavailable",
             board=result.get("board"),
             company=result.get("company"),
             title=result.get("title"),
             url=result.get("url"),
             reason=reason,
+            codex_cli_path=codex_cli_path(),
         )
         job_id = track_discovery_without_gpt(conn, result, reason)
         return "tracked", reason, job_id, None, {}, result.get("cached_level_assessment", ""), bool(result.get("cached_downlevel"))
 
-    score = score_discovery_with_openai(conn, result, force_refresh=force_refresh)
+    score = score_discovery_with_codex(conn, result, force_refresh=force_refresh)
     scorecard = score.get("scorecard", {})
     total = int(score.get("total_score", 0))
     downlevel = bool(score.get("downlevel", False))
@@ -1608,16 +1671,13 @@ def track_discovery_without_gpt(conn, result, reason):
     return job_id
 
 
-def score_with_openai(conn, job, force_refresh=False):
+def score_with_codex_cli(conn, job, force_refresh=False):
     if not gpt_scoring_enabled():
-        raise RuntimeError("GPT scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it.")
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set. Add the job manually or export OPENAI_API_KEY before scoring.")
+        raise RuntimeError("Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it.")
+    if not codex_cli_available():
+        raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring.")
 
-    cfg = settings(conn)
-    model = cfg.get("model") or DEFAULT_MODEL
-    client = OpenAI(api_key=api_key)
+    model = codex_model(conn)
     prompt = {
         "task": "Score this job for Eric Peterson's job search.",
         "level_reference": {
@@ -1660,56 +1720,92 @@ def score_with_openai(conn, job, force_refresh=False):
             "notes": job["notes"],
         },
     }
-    output_text = call_openai_json(client, model, prompt, "score_job", force_refresh=force_refresh)
+    output_text = call_codex_json(model, prompt, "score_job", force_refresh=force_refresh)
     if not output_text:
         output_text = ""
     if not output_text:
-        raise RuntimeError("OpenAI response did not include text output.")
+        raise RuntimeError("Codex CLI response did not include text output.")
     try:
-        parsed = json.loads(output_text)
+        parsed = parse_model_json(output_text)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"OpenAI response was not valid JSON: {output_text[:1000]}") from exc
+        raise RuntimeError(f"Codex CLI response was not valid JSON: {output_text[:1000]}") from exc
     return parsed
 
 
-def call_openai_json(client, model, prompt, operation, force_refresh=False):
+def call_codex_json(model, prompt, operation, force_refresh=False):
+    cli_path = codex_cli_path()
     request_payload = {
+        "adapter_version": 2,
+        "cli_path": cli_path,
         "model": model,
-        "input": prompt,
-        "text": {"format": {"type": "json_object"}},
+        "prompt": prompt,
     }
-    cached = read_capture("openai", operation, request_payload, force_refresh=force_refresh)
+    cached = read_capture("codex_cli", operation, request_payload, force_refresh=force_refresh)
     if cached:
         return cached["response"].get("output_text", "")
 
     started = time.monotonic()
-    response = None
+    completed = None
     error = None
+    output_text = ""
+    instruction = (
+        "You are a JSON-only scoring/refinement engine for a local job-search app.\n"
+        "Return only one valid JSON object. Do not include markdown fences, prose, or explanations outside JSON.\n\n"
+        f"{json.dumps(prompt, indent=2, sort_keys=True, default=str)}\n"
+    )
     try:
-        response = client.responses.create(
-            model=model,
-            input=json.dumps(prompt),
-            text={"format": {"type": "json_object"}},
-        )
-        return response.output_text or ""
+        with tempfile.TemporaryDirectory(prefix="job-search-codex-") as tmpdir:
+            output_path = Path(tmpdir) / "last-message.txt"
+            command = [
+                cli_path,
+                "exec",
+                "-C",
+                str(ROOT),
+                "--sandbox",
+                "read-only",
+                "-o",
+                str(output_path),
+                "-",
+            ]
+            if model:
+                command[2:2] = ["-m", model]
+            completed = subprocess.run(
+                command,
+                input=instruction,
+                text=True,
+                capture_output=True,
+                timeout=CODEX_CLI_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if output_path.exists():
+                output_text = output_path.read_text(encoding="utf-8").strip()
+            if not output_text:
+                output_text = (completed.stdout or "").strip()
+            if completed.returncode != 0:
+                raise CodexCliError(operation, completed.returncode)
+        return output_text
     except Exception as exc:
         error = exc
         raise
     finally:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         response_payload = {
-            "output_text": getattr(response, "output_text", "") if response is not None else "",
-            "raw": response.model_dump(mode="json") if response is not None and hasattr(response, "model_dump") else None,
+            "output_text": output_text,
+            "returncode": completed.returncode if completed is not None else None,
+            "stdout_excerpt": clean_text(completed.stdout)[:2000] if completed is not None and completed.stdout else None,
+            "stderr_excerpt": clean_text(completed.stderr)[:2000] if completed is not None and completed.stderr else None,
             "error_type": type(error).__name__ if error else None,
             "error_message": str(error) if error else None,
         }
-        write_capture("openai", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})
+        write_capture("codex_cli", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})
         log_event(
-            "openai_call",
+            "codex_cli_call",
             operation=operation,
             model=model,
+            cli_path=cli_path,
             ok=error is None,
             elapsed_ms=elapsed_ms,
+            returncode=completed.returncode if completed is not None else None,
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
@@ -1936,8 +2032,10 @@ def api_update_config():
     payload = request.get_json(silent=True) or {}
     updates = {}
     for key in CONFIG_KEYS:
+        if key not in payload:
+            continue
         value = str(payload.get(key, "")).strip()
-        if value:
+        if value or key == "CODEX_MODEL":
             updates[key] = value
     if not updates:
         return jsonify(
@@ -1954,10 +2052,10 @@ def api_update_config():
     for key, value in updates.items():
         os.environ[key] = value
     with connect() as conn:
-        if "OPENAI_MODEL" in updates:
+        if "CODEX_MODEL" in updates:
             conn.execute(
-                "INSERT INTO settings(key, value) VALUES ('model', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (updates["OPENAI_MODEL"],),
+                "INSERT INTO settings(key, value) VALUES ('codex_model', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (updates["CODEX_MODEL"],),
             )
         return jsonify(
             {
@@ -1998,8 +2096,8 @@ def api_score_gpt(job_id):
         if not job:
             return jsonify({"error": "Job not found"}), 404
         if not gpt_scoring_enabled():
-            return jsonify({"error": "GPT scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}), 409
-        score = score_with_openai(conn, job)
+            return jsonify({"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}), 409
+        score = score_with_codex_cli(conn, job)
         total = int(score.get("total_score", 0))
         scorecard = score.get("scorecard", {})
         downlevel = bool(score.get("downlevel", False))
@@ -2096,7 +2194,7 @@ def api_update_status(job_id):
 def api_update_settings():
     payload = request.get_json(silent=True) or {}
     with connect() as conn:
-        for key in ("gpt_threshold", "user_threshold", "model"):
+        for key in ("gpt_threshold", "user_threshold", "codex_model"):
             if key in payload:
                 conn.execute(
                     "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -2184,7 +2282,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .header-inner {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: auto 1fr auto auto;
       gap: 14px;
       align-items: center;
     }
@@ -2197,6 +2295,27 @@ INDEX_HTML = r"""<!doctype html>
     }
     nav { display: flex; gap: 6px; margin: 0; }
     nav button { width: auto; padding: 6px 10px; }
+    .activity-pill {
+      display: none;
+      align-items: center;
+      gap: 7px;
+      justify-content: center;
+      min-width: 150px;
+      border: 1px solid rgba(15,118,110,.35);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(15,118,110,.10);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .activity-pill.visible { display: inline-flex; }
+    .activity-pill.error {
+      border-color: rgba(159,36,54,.35);
+      background: rgba(159,36,54,.09);
+      color: var(--danger);
+    }
     main {
       display: grid;
       grid-template-columns: 300px 1fr;
@@ -2416,6 +2535,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     @media (max-width: 980px) {
       .header-inner { grid-template-columns: 1fr; gap: 8px; }
+      .activity-pill { justify-content: flex-start; width: fit-content; }
       h1 { white-space: normal; }
       main { grid-template-columns: 1fr; }
       #jobs_page { height: auto; min-height: 0; }
@@ -2435,6 +2555,7 @@ INDEX_HTML = r"""<!doctype html>
         <button id="companies_nav" class="secondary" onclick="showPage('companies')">Companies</button>
         <button id="queries_nav" class="secondary" onclick="showPage('queries')">Queries</button>
       </nav>
+      <div id="global_activity" class="activity-pill" role="status" aria-live="polite"></div>
     </div>
   </header>
   <main>
@@ -2442,14 +2563,14 @@ INDEX_HTML = r"""<!doctype html>
       <section>
         <h2>Filters</h2>
         <div class="grid2">
-          <div><label>GPT threshold</label><input id="gpt_threshold" type="number" min="0" max="100"></div>
+          <div><label>Codex threshold</label><input id="gpt_threshold" type="number" min="0" max="100"></div>
           <div><label>User threshold</label><input id="user_threshold" type="number" min="0" max="100"></div>
         </div>
-        <label>Model</label><input id="model">
+        <label>Codex model override</label><input id="codex_model" placeholder="blank = Codex CLI default">
         <div class="row" style="margin-top: 10px;">
           <button onclick="saveSettings()">Save</button>
         </div>
-        <p class="small">Jobs are filtered when user score is below threshold. GPT threshold applies only when GPT scoring is enabled.</p>
+        <p class="small">Jobs are filtered when user score is below threshold. Codex threshold applies only when Codex scoring is enabled.</p>
       </section>
       <section class="sidebar-block">
         <h2>Search</h2>
@@ -2469,10 +2590,10 @@ INDEX_HTML = r"""<!doctype html>
         <h2>Configuration</h2>
         <p class="small">Saved to <code>job-search-tool/.env</code>. Existing keys are masked.</p>
         <details>
-          <summary>API keys and model</summary>
-          <label>OpenAI API key</label><input id="config_OPENAI_API_KEY" type="password" placeholder="Leave blank to keep existing key">
-          <label>OpenAI model</label><input id="config_OPENAI_MODEL" placeholder="gpt-5">
-          <label>Enable GPT scoring</label><select id="config_JOB_SEARCH_ENABLE_GPT_SCORING"><option value="0">disabled</option><option value="1">enabled</option></select>
+          <summary>Codex CLI and model</summary>
+          <label>Codex CLI path</label><input id="config_CODEX_CLI_PATH" placeholder="codex">
+          <label>Codex model</label><input id="config_CODEX_MODEL" placeholder="blank = Codex CLI default">
+          <label>Enable Codex scoring</label><select id="config_JOB_SEARCH_ENABLE_GPT_SCORING"><option value="0">disabled</option><option value="1">enabled</option></select>
           <label>Use captured responses</label><select id="config_JOB_SEARCH_USE_CAPTURE_CACHE"><option value="1">enabled</option><option value="0">disabled</option></select>
           <button class="secondary" onclick="saveConfig()">Save configuration</button>
           <div id="config_status" class="small"></div>
@@ -2493,7 +2614,7 @@ INDEX_HTML = r"""<!doctype html>
           <label>URL</label><input id="url">
           <label>Location</label><input id="location">
           <label>Pipeline</label><select id="pipeline"></select>
-          <label>Posting Text</label><textarea id="posting_text" placeholder="Paste the job description here for GPT scoring."></textarea>
+          <label>Posting Text</label><textarea id="posting_text" placeholder="Paste the job description here for Codex scoring."></textarea>
           <label>Initial Notes</label><textarea id="notes" placeholder="Why this is interesting, concerns, people to contact."></textarea>
           <button onclick="createJob()">Add job</button>
         </details>
@@ -2629,6 +2750,8 @@ INDEX_HTML = r"""<!doctype html>
     let currentPage = "jobs";
     let searchRunning = false;
     let splitInitialized = false;
+    let pendingCallCount = 0;
+    let pendingCallLabels = [];
 
     const pretty = s => s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
     const scoreClass = n => n == null ? "" : n >= 70 ? "score-good" : n >= 40 ? "score-warn" : "score-bad";
@@ -2687,21 +2810,54 @@ INDEX_HTML = r"""<!doctype html>
       localStorage.setItem("jobFilterRollupOpen", rollup.open ? "1" : "0");
     }
 
+    function activityLabel(path) {
+      if (path.includes("/score-gpt")) return "Codex scoring";
+      if (path === "/api/search/run") return "Job search running";
+      if (path === "/api/config") return "Saving configuration";
+      if (path === "/api/state?include_filtered=1") return "Refreshing data";
+      return "Working";
+    }
+
+    function renderGlobalActivity() {
+      const activity = document.getElementById("global_activity");
+      if (!activity) return;
+      if (pendingCallCount <= 0) {
+        activity.className = "activity-pill";
+        activity.innerHTML = "";
+        return;
+      }
+      const label = pendingCallLabels[pendingCallLabels.length - 1] || "Working";
+      activity.className = "activity-pill visible";
+      activity.innerHTML = `<span class="spinner"></span>${escapeHtml(label)}${pendingCallCount > 1 ? ` (${pendingCallCount})` : ""}`;
+    }
+
     async function api(path, options = {}) {
-      const response = await fetch(path, {
-        headers: { "Content-Type": "application/json" },
-        ...options,
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Request failed");
-      return data;
+      const { activityLabel: explicitActivityLabel, ...fetchOptions } = options;
+      const label = explicitActivityLabel || activityLabel(path);
+      pendingCallCount += 1;
+      pendingCallLabels.push(label);
+      renderGlobalActivity();
+      try {
+        const response = await fetch(path, {
+          headers: { "Content-Type": "application/json" },
+          ...fetchOptions,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Request failed");
+        return data;
+      } finally {
+        pendingCallCount = Math.max(0, pendingCallCount - 1);
+        const labelIndex = pendingCallLabels.lastIndexOf(label);
+        if (labelIndex >= 0) pendingCallLabels.splice(labelIndex, 1);
+        renderGlobalActivity();
+      }
     }
 
     async function load() {
       state = await api("/api/state?include_filtered=1");
       document.getElementById("gpt_threshold").value = state.settings.gpt_threshold;
       document.getElementById("user_threshold").value = state.settings.user_threshold;
-      document.getElementById("model").value = state.settings.model;
+      document.getElementById("codex_model").value = state.settings.codex_model || "";
       const pipeline = document.getElementById("pipeline");
       pipeline.innerHTML = '<option value=""></option>' + state.pipelines.map(p => `<option>${p}</option>`).join("");
       document.getElementById("search_pipeline").innerHTML = state.pipelines.map(p => `<option>${p}</option>`).join("");
@@ -2762,15 +2918,18 @@ INDEX_HTML = r"""<!doctype html>
         return `${key}: ${item.configured ? item.masked : "not set"}`;
       };
       document.getElementById("config_status").innerHTML = `
-        ${["OPENAI_API_KEY","OPENAI_MODEL"].map(keyLine).join("<br>")}
+        ${["CODEX_CLI_PATH","CODEX_MODEL"].map(keyLine).join("<br>")}
         <br>API log: ${escapeHtml(state.api_log_path || "")}
         <br>Decision log: ${escapeHtml(state.event_log_path || "")}
         <br>Captures: ${escapeHtml(state.capture_dir || "")}
-        <br>GPT scoring: ${state.gpt_scoring_enabled ? "enabled" : "disabled"}
+        <br>Codex scoring: ${state.gpt_scoring_enabled ? "enabled" : "disabled"}
         <br>Replay cache: ${state.capture_cache_enabled ? "enabled" : "disabled"}
       `;
-      if (!document.getElementById("config_OPENAI_MODEL").value) {
-        document.getElementById("config_OPENAI_MODEL").value = state.settings.model || "";
+      if (!document.getElementById("config_CODEX_CLI_PATH").value) {
+        document.getElementById("config_CODEX_CLI_PATH").value = (state.config.CODEX_CLI_PATH || {}).configured ? "" : "codex";
+      }
+      if (!document.getElementById("config_CODEX_MODEL").value) {
+        document.getElementById("config_CODEX_MODEL").value = state.settings.codex_model || "";
       }
       document.getElementById("config_JOB_SEARCH_ENABLE_GPT_SCORING").value = state.gpt_scoring_enabled ? "1" : "0";
       document.getElementById("config_JOB_SEARCH_USE_CAPTURE_CACHE").value = state.capture_cache_enabled ? "1" : "0";
@@ -2828,7 +2987,7 @@ INDEX_HTML = r"""<!doctype html>
               <th>Role</th>
               <th>Pipeline</th>
               <th>Status</th>
-              <th>GPT</th>
+              <th>Codex</th>
               <th>Mine</th>
               <th>Level</th>
               <th>Source</th>
@@ -2959,7 +3118,7 @@ INDEX_HTML = r"""<!doctype html>
                   <td>${escapeHtml(job.title)}${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
                   <td>${escapeHtml(job.status || "")}${job.downlevel ? '<div class="small">downlevel</div>' : ""}${job.filtered ? '<div class="small">filtered</div>' : ""}</td>
                   <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
-                  <td>GPT ${scoreText(job.gpt_score)} · Mine ${scoreText(job.user_score)}</td>
+                  <td>Codex ${scoreText(job.gpt_score)} · Mine ${scoreText(job.user_score)}</td>
                 </tr>
               `).join("")}</tbody>
             </table>
@@ -2995,14 +3154,14 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="chips">
             <span class="chip">Pipeline: ${escapeHtml(job.pipeline || "Unassigned")}</span>
-            <span class="chip">GPT: <b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></span>
+            <span class="chip">Codex: <b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></span>
             <span class="chip">Mine: <b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></span>
             <span class="chip">Level: ${escapeHtml(levelStatus(job))}</span>
             ${job.downlevel ? '<span class="chip">Downlevel</span>' : ""}
             ${job.filtered ? '<span class="chip">Filtered</span>' : ""}
           </div>
-          <p>${escapeHtml(job.gpt_rationale || "No GPT rationale yet.")}</p>
-          <button class="warn" onclick="scoreGpt(${job.id})" ${state.gpt_scoring_enabled ? "" : "disabled"}>${state.gpt_scoring_enabled ? "Populate GPT scorecard" : "GPT scoring disabled"}</button>
+          <p>${escapeHtml(job.gpt_rationale || "No Codex rationale yet.")}</p>
+          <button class="warn" onclick="scoreGpt(${job.id})" ${state.gpt_scoring_enabled ? "" : "disabled"}>${state.gpt_scoring_enabled ? "Populate Codex scorecard" : "Codex scoring disabled"}</button>
         </div>
 
         <div class="panel">
@@ -3015,7 +3174,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
 
         <div class="panel">
-          <h2>GPT Scorecard</h2>
+          <h2>Codex Scorecard</h2>
           <div class="score-grid">${rubric.map(field => `
             <div><span class="small">${pretty(field)}</span><br><b>${fieldValue(job.gpt_scorecard, field, "n/a")}</b></div>
           `).join("")}</div>
@@ -3060,7 +3219,7 @@ INDEX_HTML = r"""<!doctype html>
               <div class="meta">${escapeHtml(d.board)} · ${escapeHtml(d.location || "")} · ${d.url ? `<a href="${escapeAttr(d.url)}" target="_blank">posting</a>` : ""}</div>
               <div class="chips">
                 <span class="chip">Decision: ${escapeHtml(d.decision)}</span>
-                <span class="chip">GPT: <b class="${scoreClass(d.gpt_score)}">${scoreText(d.gpt_score)}</b></span>
+                <span class="chip">Codex: <b class="${scoreClass(d.gpt_score)}">${scoreText(d.gpt_score)}</b></span>
                 <span class="chip">Level: ${escapeHtml(levelStatus(d))}</span>
                 ${d.downlevel ? '<span class="chip">Downlevel</span>' : ""}
               </div>
@@ -3200,7 +3359,7 @@ INDEX_HTML = r"""<!doctype html>
         body: JSON.stringify({
           gpt_threshold: document.getElementById("gpt_threshold").value,
           user_threshold: document.getElementById("user_threshold").value,
-          model: document.getElementById("model").value,
+          codex_model: document.getElementById("codex_model").value,
         })
       });
       await load();
@@ -3208,12 +3367,11 @@ INDEX_HTML = r"""<!doctype html>
 
     async function saveConfig() {
       const payload = {};
-      ["OPENAI_API_KEY","OPENAI_MODEL","JOB_SEARCH_ENABLE_GPT_SCORING","JOB_SEARCH_USE_CAPTURE_CACHE"].forEach(key => {
+      ["CODEX_CLI_PATH","CODEX_MODEL","JOB_SEARCH_ENABLE_GPT_SCORING","JOB_SEARCH_USE_CAPTURE_CACHE"].forEach(key => {
         const value = document.getElementById(`config_${key}`).value.trim();
-        if (value) payload[key] = value;
+        if (value || key === "CODEX_MODEL") payload[key] = value;
       });
       await api("/api/config", { method: "POST", body: JSON.stringify(payload) });
-      ["OPENAI_API_KEY"].forEach(key => document.getElementById(`config_${key}`).value = "");
       await load();
     }
 

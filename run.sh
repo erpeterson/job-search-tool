@@ -11,23 +11,25 @@ INSTALL_MARKER="${VENV_DIR}/.requirements-installed"
 PYTHON_BIN="${VENV_DIR}/bin/python"
 PIP_BIN="${VENV_DIR}/bin/pip"
 
-API_KEY_ARG=""
+CODEX_CLI_ARG=""
 NO_PROMPT=0
 SETUP_ONLY=0
 
 usage() {
   cat <<'EOF'
 Usage:
-  job-search-tool/run.sh [--api-key KEY] [--no-prompt] [--setup-only]
+  job-search-tool/run.sh [--codex-cli PATH] [--no-prompt] [--setup-only]
 
 Options:
-  --api-key KEY       Write KEY to job-search-tool/.env before starting.
-  --api-key=KEY       Same as --api-key KEY.
-  --no-prompt         Do not prompt for OPENAI_API_KEY when missing.
+  --codex-cli PATH    Write PATH to job-search-tool/.env before starting.
+  --codex-cli=PATH    Same as --codex-cli PATH.
+  --api-key KEY       Ignored; scoring uses Codex CLI auth, not API keys.
+  --api-key=KEY       Ignored; scoring uses Codex CLI auth, not API keys.
+  --no-prompt         Do not prompt for CODEX_CLI_PATH when missing.
   --setup-only        Prepare venv/.env and exit without starting the app.
   -h, --help          Show this help.
 
-OPENAI_API_KEY is optional for CRM usage, but required for GPT scoring.
+Codex scoring uses your existing Codex CLI authentication.
 EOF
 }
 
@@ -38,11 +40,23 @@ while [[ $# -gt 0 ]]; do
         echo "Missing value for --api-key" >&2
         exit 2
       fi
-      API_KEY_ARG="$2"
+      echo "--api-key is ignored; scoring uses Codex CLI auth." >&2
       shift 2
       ;;
     --api-key=*)
-      API_KEY_ARG="${1#--api-key=}"
+      echo "--api-key is ignored; scoring uses Codex CLI auth." >&2
+      shift
+      ;;
+    --codex-cli)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --codex-cli" >&2
+        exit 2
+      fi
+      CODEX_CLI_ARG="$2"
+      shift 2
+      ;;
+    --codex-cli=*)
+      CODEX_CLI_ARG="${1#--codex-cli=}"
       shift
       ;;
     --no-prompt)
@@ -111,49 +125,52 @@ setup_venv() {
   fi
 }
 
-prompt_for_api_key_if_needed() {
-  local configured_key="${OPENAI_API_KEY:-}"
-  local env_key
-  env_key="$(get_env_value OPENAI_API_KEY)"
+prompt_for_codex_cli_if_needed() {
+  local configured_path="${CODEX_CLI_PATH:-}"
+  local env_path
+  env_path="$(get_env_value CODEX_CLI_PATH)"
 
-  if [[ -n "${API_KEY_ARG}" ]]; then
-    set_env_value OPENAI_API_KEY "${API_KEY_ARG}"
-    export OPENAI_API_KEY="${API_KEY_ARG}"
-    echo "Wrote OPENAI_API_KEY to ${ENV_FILE}"
+  if [[ -n "${CODEX_CLI_ARG}" ]]; then
+    set_env_value CODEX_CLI_PATH "${CODEX_CLI_ARG}"
+    export CODEX_CLI_PATH="${CODEX_CLI_ARG}"
+    echo "Wrote CODEX_CLI_PATH to ${ENV_FILE}"
     return
   fi
 
-  if [[ -n "${configured_key}" || -n "${env_key}" ]]; then
+  if [[ -n "${configured_path}" || -n "${env_path}" ]]; then
+    return
+  fi
+
+  if command -v codex >/dev/null 2>&1; then
+    set_env_value CODEX_CLI_PATH "codex"
+    export CODEX_CLI_PATH="codex"
+    echo "Using Codex CLI from PATH."
     return
   fi
 
   if [[ "${NO_PROMPT}" == "1" || ! -t 0 ]]; then
-    echo "OPENAI_API_KEY is not configured; GPT scoring will be unavailable."
+    echo "CODEX_CLI_PATH is not configured and codex was not found on PATH; Codex scoring will be unavailable."
     return
   fi
 
   cat <<'EOF'
-OPENAI_API_KEY is not configured.
+CODEX_CLI_PATH is not configured and codex was not found on PATH.
 
-The job CRM will work without it, but GPT scorecard generation requires an OpenAI API key.
+The job CRM will work without it, but Codex scorecard generation requires the Codex CLI.
 
-To create one:
-  1. Go to https://platform.openai.com/api-keys
-  2. Sign in.
-  3. Create a new secret key.
-  4. Paste it here, or rerun with:
-     job-search-tool/run.sh --api-key YOUR_KEY
+Install and authenticate the Codex CLI, then either ensure `codex` is on PATH or rerun with:
+  job-search-tool/run.sh --codex-cli /path/to/codex
 
 Press Enter to skip for now.
 EOF
-  printf "OPENAI_API_KEY: "
-  IFS= read -r entered_key
-  if [[ -n "${entered_key}" ]]; then
-    set_env_value OPENAI_API_KEY "${entered_key}"
-    export OPENAI_API_KEY="${entered_key}"
-    echo "Wrote OPENAI_API_KEY to ${ENV_FILE}"
+  printf "CODEX_CLI_PATH: "
+  IFS= read -r entered_path
+  if [[ -n "${entered_path}" ]]; then
+    set_env_value CODEX_CLI_PATH "${entered_path}"
+    export CODEX_CLI_PATH="${entered_path}"
+    echo "Wrote CODEX_CLI_PATH to ${ENV_FILE}"
   else
-    echo "Skipping API key setup. GPT scoring will be unavailable."
+    echo "Skipping Codex CLI setup. Codex scoring will be unavailable."
   fi
 }
 
@@ -161,7 +178,7 @@ main() {
   cd "${REPO_ROOT}"
   ensure_env_file
   setup_venv
-  prompt_for_api_key_if_needed
+  prompt_for_codex_cli_if_needed
 
   if [[ "${SETUP_ONLY}" == "1" ]]; then
     echo "Setup complete."

@@ -13,7 +13,7 @@ The script will:
 - create `job-search-tool/.venv` if needed
 - install dependencies from `job-search-tool/requirements.txt` if needed
 - create `job-search-tool/.env` if needed
-- prompt for `OPENAI_API_KEY` if it is not already configured
+- configure `CODEX_CLI_PATH=codex` when the Codex CLI is on `PATH`
 - start the local Flask app
 
 To prepare the environment without starting the app:
@@ -28,20 +28,22 @@ Then open:
 http://127.0.0.1:5050
 ```
 
-Optional GPT scoring:
+Optional Codex scoring requires a locally installed and authenticated Codex CLI.
+If `codex` is not on `PATH`, pass its executable path:
 
 ```bash
-job-search-tool/run.sh --api-key YOUR_OPENAI_API_KEY
+job-search-tool/run.sh --codex-cli /path/to/codex
 ```
 
-This writes the key to `job-search-tool/.env`. You can create an API key at
-`https://platform.openai.com/api-keys`.
+This writes `CODEX_CLI_PATH` to `job-search-tool/.env`.
+Leave `CODEX_MODEL` blank unless you need to force a specific Codex-supported
+model; blank uses your Codex CLI default.
 
 Data is stored locally in `job-search-tool/job_search.sqlite3`.
 
-API keys can also be updated from the app's Configuration panel. Saved keys are
-written to `job-search-tool/.env`, applied to the running process, and displayed
-only in masked form.
+Codex CLI path and model can also be updated from the app's Configuration panel.
+Saved values are written to `job-search-tool/.env`, applied to the running
+process, and displayed only in masked form.
 
 Rotating structured API logs are written as newline-delimited JSON to:
 
@@ -53,7 +55,7 @@ The logs capture job-board request URL, method, status code, elapsed time, error
 type, and a short response excerpt. They are intended for troubleshooting board
 blocks such as Indeed `403` responses.
 
-Filtering, discovery, duplicate-skip, capture, replay, and GPT-disabled
+Filtering, discovery, duplicate-skip, capture, replay, and Codex-disabled
 decisions are written as structured newline-delimited JSON to:
 
 ```text
@@ -68,15 +70,15 @@ job-search-tool/captures/
 
 Captured job-board responses are keyed by request payload, so rerunning the same
 search can replay the saved response instead of repeatedly hitting LinkedIn or
-Indeed. OpenAI request/response payloads use the same capture mechanism when GPT
-scoring is enabled.
+Indeed. Codex CLI request/response payloads use the same capture mechanism when
+Codex scoring is enabled.
 
 Manual searches include a `Force refresh` checkbox. When checked, the search
-bypasses replay and makes live LinkedIn, Indeed, and OpenAI requests, then writes
-the fresh responses back to captures. Scheduled searches always force refresh so
-daily automation checks the boards instead of replaying old responses.
+bypasses replay and makes live LinkedIn, Indeed, and Codex CLI requests, then
+writes the fresh responses back to captures. Scheduled searches always force
+refresh so daily automation checks the boards instead of replaying old responses.
 
-GPT scoring is disabled by default. To re-enable it, set this in the app's
+Codex scoring is disabled by default. To re-enable it, set this in the app's
 Configuration panel or in `job-search-tool/.env`:
 
 ```text
@@ -168,18 +170,18 @@ Discovery rule:
 
 - If a discovered job appears downlevel from Oracle IC6-equivalent, it is tracked but hidden from the default jobs view.
 - Rejected discoveries remain visible in the discovery log with the rejection reason.
-- Jobs below the normal GPT threshold are tracked but filtered from the default job list only when GPT scoring is enabled.
-- When GPT scoring is disabled, low or missing GPT scores do not filter jobs.
-- Cached downlevel equivalencies mark matching jobs as downlevel before GPT. The cache starts empty; rows are added only from local title calibration or future explicit calibration mechanisms.
+- Jobs below the normal Codex threshold are tracked but filtered from the default job list only when Codex scoring is enabled.
+- When Codex scoring is disabled, low or missing Codex scores do not filter jobs.
+- Cached downlevel equivalencies mark matching jobs as downlevel before Codex scoring. The cache starts empty; rows are added only from local title calibration or future explicit calibration mechanisms.
 - When level cannot be estimated, the level status is shown as `Unknown - level not assessed`.
 
 ## Product Rules
 
 - The rubric is based on `supporting-documents/20260731-job-search-guidance.md`.
-- GPT score threshold defaults to `40`.
+- Codex score threshold defaults to `40`.
 - User score threshold defaults to `60`.
-- A job is filtered when it is downlevel, when user score is below threshold, or when GPT scoring is enabled and GPT score is below threshold.
-- GPT scoring includes recent user-scored examples as calibration context, so the model can adapt to Eric's preferences over time.
+- A job is filtered when it is downlevel, when user score is below threshold, or when Codex scoring is enabled and Codex score is below threshold.
+- Codex scoring includes recent user-scored examples as calibration context, so the model can adapt to Eric's preferences over time.
 - Thresholds are editable in the UI and persisted in SQLite.
 - The tracked jobs table includes fine-grained table filters for pipeline, source, filtered/downlevel visibility, text search, and included statuses. By default it hides filtered/downlevel rows plus terminal `rejected` and `declined` statuses.
 - Company interest is tracked independently from individual roles. Company records can store interest status, interest score, rationale, contacts, notes, and next step while still showing matching tracked jobs for context.
@@ -189,7 +191,7 @@ Discovery rule:
 
 - Add and track job listings.
 - Paste posting text for scoring.
-- Generate GPT scorecards when `OPENAI_API_KEY` is configured.
+- Generate Codex scorecards when Codex scoring is enabled and the Codex CLI is available.
 - Record Eric's own scorecard.
 - Track application status.
 - Track company-level interest separately from individual roles.
