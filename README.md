@@ -189,13 +189,13 @@ Discovery rule:
 
 ## Current Scope
 
-- Add and track job listings.
-- Paste posting text for scoring.
+- Add and track job listings from a posting URL and pipeline.
+- Scrape company, title, location, and posting text from manually entered URLs.
 - Generate Codex scorecards when Codex scoring is enabled and the Codex CLI is available.
 - Record Eric's own scorecard.
 - Track application status.
 - Track company-level interest separately from individual roles.
 - Track people, conversations, notes, and next steps.
 - Filter low-fit jobs.
-- Run saved LinkedIn and Indeed searches on demand or daily.
+- Run saved LinkedIn and Indeed searches on demand or daily, with the next scheduled run shown in the UI.
 - Hide downlevel discoveries by default while retaining them in tracked jobs.

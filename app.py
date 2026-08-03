@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -863,6 +863,17 @@ def list_search_runs(conn):
     ]
 
 
+def search_schedule_state(conn):
+    last_search_at = int(settings(conn).get("last_search_at", "0") or 0)
+    next_run_at = last_search_at + SEARCH_INTERVAL_SECONDS if last_search_at else now()
+    return {
+        "autorun_enabled": AUTORUN,
+        "interval_seconds": SEARCH_INTERVAL_SECONDS,
+        "last_search_at": last_search_at,
+        "next_run_at": next_run_at if AUTORUN else None,
+    }
+
+
 def list_discoveries(conn, limit=50):
     rows = conn.execute(
         "SELECT * FROM discovered_jobs ORDER BY created_at DESC, id DESC LIMIT ?",
@@ -969,6 +980,137 @@ def fetch_indeed_jobs(keywords, location, force_refresh=False):
     return dedupe_results(jobs)
 
 
+def scrape_job_from_url(url, force_refresh=False):
+    cleaned_url = clean_url(url)
+    if not cleaned_url:
+        raise ValueError("URL is required.")
+    service = posting_service_from_url(cleaned_url)
+    response = fetch_url(service, cleaned_url, force_refresh=force_refresh)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    json_ld = extract_job_json_ld(soup)
+    page_title = clean_text(soup.title.get_text(" ")) if soup.title else ""
+    title = (
+        nested_value(json_ld, "title")
+        or selector_text(soup, ["h1", ".top-card-layout__title", ".jobsearch-JobInfoHeader-title", "[data-testid='jobsearch-JobInfoHeader-title']"])
+        or meta_content(soup, ["og:title", "twitter:title"])
+        or page_title
+    )
+    company = (
+        nested_value(json_ld, "hiringOrganization", "name")
+        or selector_text(soup, [".topcard__org-name-link", ".topcard__flavor", "[data-testid='inlineHeader-companyName']", "[data-company-name]", ".jobsearch-InlineCompanyRating-companyHeader a"])
+        or meta_content(soup, ["og:site_name"])
+    )
+    location = (
+        location_from_json_ld(json_ld)
+        or selector_text(soup, [".topcard__flavor--bullet", ".job-search-card__location", "[data-testid='job-location']", ".jobsearch-JobInfoHeader-subtitle div"])
+    )
+    description = (
+        nested_value(json_ld, "description")
+        or selector_text(soup, ["#job-details", ".show-more-less-html__markup", "#jobDescriptionText", "[data-testid='jobDescriptionText']"])
+        or clean_text(soup.get_text(" "))[:5000]
+    )
+    posting_text = clean_text(BeautifulSoup(description or "", "html.parser").get_text(" "))
+    return {
+        "company": clean_text(company) or "Unknown company",
+        "title": clean_text(title) or "Unknown title",
+        "location": clean_text(location),
+        "url": cleaned_url,
+        "posting_text": posting_text[:12000],
+        "source_board": service if service in ("linkedin", "indeed") else "manual",
+        "source_job_id": source_id(service, cleaned_url),
+    }
+
+
+def fallback_job_from_url(url):
+    parsed = urlparse(url)
+    host = parsed.netloc.replace("www.", "")
+    service = posting_service_from_url(url)
+    return {
+        "company": host or "Unknown company",
+        "title": f"Job posting from {host}" if host else "Unknown title",
+        "location": "",
+        "url": clean_url(url),
+        "posting_text": "",
+        "source_board": service if service in ("linkedin", "indeed") else "manual",
+        "source_job_id": source_id(service, url),
+    }
+
+
+def posting_service_from_url(url):
+    lower = (url or "").lower()
+    if "linkedin." in lower:
+        return "linkedin"
+    if "indeed." in lower:
+        return "indeed"
+    return "manual_posting"
+
+
+def selector_text(soup, selectors):
+    for selector in selectors:
+        element = soup.select_one(selector)
+        if element:
+            value = clean_text(element.get("title") or element.get_text(" "))
+            if value:
+                return value
+    return ""
+
+
+def meta_content(soup, properties):
+    for prop in properties:
+        element = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+        if element and element.get("content"):
+            return clean_text(element["content"])
+    return ""
+
+
+def nested_value(value, *keys):
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(key)
+    if isinstance(current, str):
+        return current
+    return ""
+
+
+def extract_job_json_ld(soup):
+    for script in soup.find_all("script", type="application/ld+json"):
+        text = script.string or script.get_text()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        candidates = payload if isinstance(payload, list) else [payload]
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            graph = candidate.get("@graph")
+            if isinstance(graph, list):
+                candidates.extend(graph)
+            type_value = candidate.get("@type")
+            types = type_value if isinstance(type_value, list) else [type_value]
+            if any("JobPosting" in str(item) for item in types):
+                return candidate
+    return {}
+
+
+def location_from_json_ld(payload):
+    location = payload.get("jobLocation") if isinstance(payload, dict) else None
+    if isinstance(location, list):
+        location = location[0] if location else None
+    if not isinstance(location, dict):
+        return ""
+    address = location.get("address")
+    if isinstance(address, dict):
+        parts = [address.get("addressLocality"), address.get("addressRegion"), address.get("addressCountry")]
+        return clean_text(", ".join(str(part) for part in parts if part))
+    return nested_value(location, "name")
+
+
 def request_headers():
     return {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
@@ -1027,6 +1169,16 @@ def clean_text(value):
 
 def clean_url(value):
     return (value or "").split("?trk=")[0].strip()
+
+
+def append_note_text(existing, addition):
+    existing = clean_text(existing)
+    addition = clean_text(addition)
+    if not existing:
+        return addition
+    if not addition:
+        return existing
+    return f"{existing} {addition}"
 
 
 def clamp_score(value, low=0, high=10):
@@ -1833,6 +1985,7 @@ def api_state():
                 "company_interests": list_company_interests(conn),
                 "search_queries": list_search_queries(conn),
                 "search_runs": list_search_runs(conn),
+                "search_schedule": search_schedule_state(conn),
                 "discoveries": list_discoveries(conn),
                 "pipelines": PIPELINES,
                 "rubric_fields": RUBRIC_FIELDS,
@@ -1847,6 +2000,65 @@ def api_job(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({"job": job})
+
+
+@app.post("/api/jobs/<int:job_id>/scrape")
+def api_rescrape_job(job_id):
+    payload = request.get_json(silent=True) or {}
+    force_refresh = bool(payload.get("force_refresh", True))
+    with connect() as conn:
+        job = get_job(conn, job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        if not job.get("url"):
+            return jsonify({"error": "Job does not have a URL to scrape."}), 400
+        scraped = scrape_job_from_url(job["url"], force_refresh=force_refresh)
+        conn.execute(
+            """
+            UPDATE jobs
+            SET company = ?, title = ?, location = ?, posting_text = ?,
+                source_board = ?, source_job_id = ?, discovered_at = COALESCE(discovered_at, ?),
+                notes = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                scraped.get("company") or job["company"],
+                scraped.get("title") or job["title"],
+                scraped.get("location") or job["location"],
+                scraped.get("posting_text") or job["posting_text"],
+                scraped.get("source_board") or job["source_board"],
+                scraped.get("source_job_id") or job["source_job_id"],
+                now(),
+                append_note_text(job.get("notes"), "Re-scraped posting URL."),
+                now(),
+                job_id,
+            ),
+        )
+        apply_filter(conn, job_id)
+        log_event(
+            "manual_job_rescraped",
+            job_id=job_id,
+            url=job["url"],
+            company=scraped.get("company"),
+            title=scraped.get("title"),
+            force_refresh=force_refresh,
+        )
+        return jsonify({"job": get_job(conn, job_id), "scraped": scraped})
+
+
+@app.delete("/api/jobs/<int:job_id>")
+def api_delete_job(job_id):
+    payload = request.get_json(silent=True) or {}
+    if payload.get("confirm") != "DELETE":
+        return jsonify({"error": "Type DELETE to confirm job deletion."}), 400
+    with connect() as conn:
+        job = get_job(conn, job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        conn.execute("UPDATE discovered_jobs SET tracked_job_id = NULL WHERE tracked_job_id = ?", (job_id,))
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        log_event("manual_job_deleted", job_id=job_id, company=job["company"], title=job["title"], url=job["url"])
+        return jsonify({"deleted_job_id": job_id, "jobs": list_jobs(conn, include_filtered=True)})
 
 
 @app.get("/api/companies/<int:company_id>")
@@ -1936,28 +2148,56 @@ def api_update_company_interest(company_id):
 def api_create_job():
     payload = request.get_json(silent=True) or {}
     ts = now()
+    url = payload.get("url", "").strip()
+    pipeline = payload.get("pipeline", "").strip()
+    if not url:
+        return jsonify({"error": "URL is required."}), 400
+    if not pipeline:
+        return jsonify({"error": "Pipeline is required."}), 400
+    scrape_error = None
+    try:
+        scraped = scrape_job_from_url(url, force_refresh=bool(payload.get("force_refresh")))
+    except Exception as exc:
+        scrape_error = str(exc)
+        scraped = fallback_job_from_url(url)
+        log_event(
+            "manual_job_scrape_failed",
+            url=url,
+            pipeline=pipeline,
+            error_type=type(exc).__name__,
+            message=scrape_error[:1000],
+        )
     with connect() as conn:
+        existing = conn.execute("SELECT id FROM jobs WHERE url = ? LIMIT 1", (scraped.get("url") or url,)).fetchone()
+        if existing:
+            return jsonify({"error": "This job URL is already tracked.", "job": get_job(conn, existing["id"])}), 409
         cur = conn.execute(
             """
-            INSERT INTO jobs(created_at, updated_at, company, title, url, location, pipeline, status, posting_text, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO jobs(
+                created_at, updated_at, company, title, url, location, pipeline, status, posting_text, notes,
+                source_board, source_job_id, discovered_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
                 ts,
-                payload.get("company", "").strip() or "Unknown company",
-                payload.get("title", "").strip() or "Unknown title",
-                payload.get("url", "").strip(),
-                payload.get("location", "").strip(),
-                payload.get("pipeline", "").strip(),
+                payload.get("company", "").strip() or scraped.get("company") or "Unknown company",
+                payload.get("title", "").strip() or scraped.get("title") or "Unknown title",
+                scraped.get("url") or url,
+                payload.get("location", "").strip() or scraped.get("location", ""),
+                pipeline,
                 payload.get("status", "researching"),
-                payload.get("posting_text", "").strip(),
-                payload.get("notes", "").strip(),
+                payload.get("posting_text", "").strip() or scraped.get("posting_text", ""),
+                payload.get("notes", "").strip() or f"Added manually from URL.{f' Scrape failed: {scrape_error[:500]}' if scrape_error else ''}",
+                scraped.get("source_board"),
+                scraped.get("source_job_id"),
+                ts if scraped else None,
             ),
         )
         job_id = cur.lastrowid
         apply_filter(conn, job_id)
-        return jsonify({"job": get_job(conn, job_id)}), 201
+        return jsonify({"job": get_job(conn, job_id), "scrape_error": scrape_error}), 201
 
 
 @app.post("/api/search/run")
@@ -2608,15 +2848,12 @@ INDEX_HTML = r"""<!doctype html>
         <h2>Manual Entry</h2>
         <p class="small">Use this for referrals, hidden roles, or postings found outside automated search.</p>
         <details>
-          <summary>Add job manually</summary>
-          <label>Company</label><input id="company">
-          <label>Title</label><input id="title">
+          <summary>Add job from URL</summary>
           <label>URL</label><input id="url">
-          <label>Location</label><input id="location">
           <label>Pipeline</label><select id="pipeline"></select>
-          <label>Posting Text</label><textarea id="posting_text" placeholder="Paste the job description here for Codex scoring."></textarea>
-          <label>Initial Notes</label><textarea id="notes" placeholder="Why this is interesting, concerns, people to contact."></textarea>
-          <button onclick="createJob()">Add job</button>
+          <label class="checkbox-row"><input id="manual_force_refresh" type="checkbox"> Force fresh scrape</label>
+          <button onclick="createJob()">Scrape and add job</button>
+          <p class="small">The tool will fetch the posting and populate company, title, location, and posting text from the URL.</p>
         </details>
       </section>
     </aside>
@@ -2762,6 +2999,7 @@ INDEX_HTML = r"""<!doctype html>
       const element = document.getElementById(id);
       return element ? element.value : fallback;
     };
+    const formatTimestamp = ts => ts ? new Date(ts * 1000).toLocaleString() : "not scheduled";
     const normalizeCompanyName = value => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
     function findCompanyInterestByName(companyName) {
@@ -2879,6 +3117,10 @@ INDEX_HTML = r"""<!doctype html>
     function renderSearchState() {
       const enabled = (state.search_queries || []).filter(q => q.enabled);
       const latest = (state.search_runs || [])[0];
+      const schedule = state.search_schedule || {};
+      const nextSearchText = schedule.autorun_enabled
+        ? `Next scheduled search: ${formatTimestamp(schedule.next_run_at)}`
+        : "Scheduled search disabled";
       const status = document.getElementById("search_status");
       const runButton = document.getElementById("run_search_button");
       if (searchRunning) {
@@ -2894,13 +3136,14 @@ INDEX_HTML = r"""<!doctype html>
         status.textContent = "Idle";
         runButton.disabled = false;
       }
-      document.getElementById("enabled_queries").innerHTML = enabled.map(q => `
+      const enabledHtml = enabled.map(q => `
         <div class="enabled-query">
           <b>${escapeHtml(q.pipeline || "Custom")}</b>
           <br>${escapeHtml(q.board)} · ${escapeHtml(q.location || "")}
           <br>${escapeHtml(q.keywords)}
         </div>
-      `).join("") || "No enabled queries.";
+      `).join("") || '<div class="enabled-query">No enabled queries.</div>';
+      document.getElementById("enabled_queries").innerHTML = `${enabledHtml}<div class="enabled-query"><b>${escapeHtml(nextSearchText)}</b></div>`;
       document.getElementById("search_runs").innerHTML = (state.search_runs || []).slice(0, 5).map(r => `
         <div class="note">
           <b>${escapeHtml(r.trigger)}</b> · ${escapeHtml(r.status)}
@@ -3151,6 +3394,8 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <button onclick="saveStatus(${job.id})">Save status</button>
             <button class="secondary" onclick="trackCompanyFromSelectedJob()">${companyInterest ? "View company interest" : "Track company interest"}</button>
+            <button class="secondary" onclick="rescrapeJob(${job.id})" ${job.url ? "" : "disabled"}>Re-scrape posting</button>
+            <button class="danger" onclick="deleteJob(${job.id})">Delete job</button>
           </div>
           <div class="chips">
             <span class="chip">Pipeline: ${escapeHtml(job.pipeline || "Unassigned")}</span>
@@ -3232,17 +3477,14 @@ INDEX_HTML = r"""<!doctype html>
 
     async function createJob() {
       const payload = {
-        company: company.value,
-        title: title.value,
-        url: url.value,
-        location: location.value,
-        pipeline: pipeline.value,
-        posting_text: posting_text.value,
-        notes: notes.value,
+        url: document.getElementById("url").value,
+        pipeline: document.getElementById("pipeline").value,
+        force_refresh: document.getElementById("manual_force_refresh").checked,
       };
-      const { job } = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload) });
+      const { job } = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload), activityLabel: "Scraping job" });
       selectedId = job.id;
-      ["company","title","url","location","posting_text","notes"].forEach(id => document.getElementById(id).value = "");
+      document.getElementById("url").value = "";
+      document.getElementById("manual_force_refresh").checked = false;
       await load();
     }
 
@@ -3312,6 +3554,35 @@ INDEX_HTML = r"""<!doctype html>
       } catch (err) {
         alert(err.message);
       }
+    }
+
+    async function rescrapeJob(id) {
+      try {
+        const { job } = await api(`/api/jobs/${id}/scrape`, {
+          method: "POST",
+          body: JSON.stringify({ force_refresh: true }),
+          activityLabel: "Re-scraping job",
+        });
+        selectedId = job.id;
+        selectedJob = job;
+        await load();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function deleteJob(id) {
+      const confirmText = prompt("Type DELETE to remove this tracked job and its CRM notes/interactions.");
+      if (confirmText !== "DELETE") return;
+      await api(`/api/jobs/${id}`, {
+        method: "DELETE",
+        body: JSON.stringify({ confirm: confirmText }),
+        activityLabel: "Deleting job",
+      });
+      selectedId = null;
+      selectedJob = null;
+      document.getElementById("detail").innerHTML = '<div class="empty">Select a job from the table.</div>';
+      await load();
     }
 
     async function saveUserScore(id) {
