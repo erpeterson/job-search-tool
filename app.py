@@ -19,7 +19,7 @@ from urllib.parse import quote_plus, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +32,10 @@ APP_LOG_PATH = LOG_DIR / "job-search.log"
 CAPTURE_DIR = APP_DIR / "captures"
 GUIDANCE_PATH = ROOT / "supporting-documents" / "20260731-job-search-guidance.md"
 CAREER_MANUAL_PATH = ROOT / "career-manual" / "Career-Manual.md"
+MASTER_RESUME_PATH = ROOT / "resume" / "Master-Resume.md"
+COVER_LETTER_TEMPLATE_PATH = ROOT / "cover-letter" / "Cover-Letter-Template.md"
+PERSONAL_INFO_PATH = ROOT / "supporting-documents" / "personal-info.md"
+APPLICATIONS_DIR = ROOT / "applications"
 
 load_dotenv(ENV_PATH)
 
@@ -193,7 +197,8 @@ def init_db():
                 source_job_id TEXT,
                 discovered_at INTEGER,
                 level_assessment TEXT,
-                downlevel INTEGER NOT NULL DEFAULT 0
+                downlevel INTEGER NOT NULL DEFAULT 0,
+                application_packet_path TEXT
             );
 
             CREATE TABLE IF NOT EXISTS interactions (
@@ -303,6 +308,7 @@ def init_db():
         ensure_column(conn, "jobs", "discovered_at", "INTEGER")
         ensure_column(conn, "jobs", "level_assessment", "TEXT")
         ensure_column(conn, "jobs", "downlevel", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "jobs", "application_packet_path", "TEXT")
         ensure_column(conn, "search_queries", "pipeline", "TEXT")
         ensure_column(conn, "search_queries", "criteria", "TEXT")
         ensure_column(conn, "search_queries", "refinement_notes", "TEXT")
@@ -891,6 +897,362 @@ def career_context():
     manual = CAREER_MANUAL_PATH.read_text(encoding="utf-8") if CAREER_MANUAL_PATH.exists() else ""
     guidance = GUIDANCE_PATH.read_text(encoding="utf-8") if GUIDANCE_PATH.exists() else ""
     return textwrap.shorten(manual, width=9000, placeholder="\n[manual truncated]\n") + "\n\n" + guidance
+
+
+def read_text_if_exists(path):
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def slugify(value, max_length=72):
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    return (slug[:max_length].strip("-") or "application")
+
+
+def repo_relative(path):
+    return path.resolve().relative_to(ROOT.resolve()).as_posix()
+
+
+def application_packet_abs_path(relative_path):
+    if not relative_path:
+        return None
+    candidate = (ROOT / relative_path).resolve()
+    applications_root = APPLICATIONS_DIR.resolve()
+    if candidate != applications_root and applications_root not in candidate.parents:
+        raise ValueError("Application packet path must be under applications/.")
+    if not candidate.exists() or not candidate.is_dir():
+        raise ValueError("Application packet folder does not exist.")
+    return candidate
+
+
+def list_markdown_files(packet_dir):
+    files = []
+    for path in sorted(packet_dir.glob("*.md")):
+        if path.is_file():
+            files.append(path.name)
+    return files
+
+
+def render_inline_markdown(text):
+    inline = escape_html(text)
+    inline = re.sub(r"`([^`]+)`", r"<code>\1</code>", inline)
+    inline = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", inline)
+    inline = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', inline)
+    return inline
+
+
+def markdown_to_html(markdown):
+    html = []
+    in_list = False
+    in_code = False
+    code_lines = []
+    for raw_line in markdown.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_code:
+                html.append(f"<pre><code>{escape_html(chr(10).join(code_lines))}</code></pre>")
+                code_lines = []
+                in_code = False
+            else:
+                if in_list:
+                    html.append("</ul>")
+                    in_list = False
+                in_code = True
+            continue
+        if in_code:
+            code_lines.append(line)
+            continue
+        if not stripped:
+            if in_list:
+                html.append("</ul>")
+                in_list = False
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading:
+            if in_list:
+                html.append("</ul>")
+                in_list = False
+            level = len(heading.group(1))
+            html.append(f"<h{level}>{render_inline_markdown(heading.group(2))}</h{level}>")
+            continue
+        if stripped == "---":
+            if in_list:
+                html.append("</ul>")
+                in_list = False
+            html.append("<hr>")
+            continue
+        bullet = re.match(r"^-\s+(.+)$", stripped)
+        if bullet:
+            if not in_list:
+                html.append("<ul>")
+                in_list = True
+            html.append(f"<li>{render_inline_markdown(bullet.group(1))}</li>")
+            continue
+        if in_list:
+            html.append("</ul>")
+            in_list = False
+        html.append(f"<p>{render_inline_markdown(stripped)}</p>")
+    if in_code:
+        html.append(f"<pre><code>{escape_html(chr(10).join(code_lines))}</code></pre>")
+    if in_list:
+        html.append("</ul>")
+    return "\n".join(html)
+
+
+def escape_html(value):
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def list_application_packets(conn):
+    APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    associated_rows = [
+        row_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT id, company, title, application_packet_path
+            FROM jobs
+            WHERE application_packet_path IS NOT NULL
+              AND application_packet_path != ''
+            """
+        )
+    ]
+    associated_by_path = {row["application_packet_path"]: row for row in associated_rows}
+    packets = []
+    for path in sorted(APPLICATIONS_DIR.iterdir()):
+        if not path.is_dir():
+            continue
+        markdown_files = list_markdown_files(path)
+        if not markdown_files:
+            continue
+        relative = repo_relative(path)
+        associated_job = associated_by_path.get(relative)
+        packets.append(
+            {
+                "path": relative,
+                "name": path.name,
+                "markdown_files": markdown_files,
+                "associated_job": associated_job,
+                "unassociated": associated_job is None,
+            }
+        )
+    return packets
+
+
+def unique_packet_dir(base_dir):
+    if not base_dir.exists():
+        return base_dir
+    for index in range(2, 100):
+        candidate = base_dir.with_name(f"{base_dir.name}-{index}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Could not allocate a unique application packet folder.")
+
+
+def job_posting_excerpt(job, width=1800):
+    return textwrap.shorten(clean_text(job.get("posting_text") or ""), width=width, placeholder="...")
+
+
+def truncate_preserving_markdown(value, max_chars=7000):
+    if len(value) <= max_chars:
+        return value
+    truncated = value[:max_chars]
+    if "\n" in truncated:
+        truncated = truncated.rsplit("\n", 1)[0]
+    return truncated.rstrip() + "\n\n[Master resume truncated for generated starter packet.]\n"
+
+
+def likely_objections_for_job(job):
+    title = f"{job.get('company', '')} {job.get('title', '')} {job.get('posting_text', '')}".lower()
+    objections = []
+    if any(term in title for term in ("ai", "machine learning", "ml", "llm", "inference", "model")):
+        objections.append(
+            (
+                "Direct AI, ML, model-training, or inference implementation experience may be expected.",
+                "Unresolved gap unless new source material supports it. Position the source-backed fit around AI-enabled development interest, platform architecture, evaluation/review mechanisms, production readiness, developer tooling, and architecture for exploratory technical programs.",
+            )
+        )
+    if any(term in title for term in ("security", "vulnerability", "auth", "authorization", "key management", "secure")):
+        objections.append(
+            (
+                "The role may expect direct security engineering or vulnerability research ownership.",
+                "Unresolved gap for direct security research or specific security primitive ownership unless new source material supports it. Adjacent source-backed evidence includes ECRB safe-change review, ECAR/PreCAR review quality, Java modernization with security tooling integration, secure dev tenancy usage in Kilt, and production risk reduction.",
+            )
+        )
+    if any(term in title for term in ("gpu", "rack", "firmware", "kernel", "driver", "hardware", "nvlink", "infiniband")):
+        objections.append(
+            (
+                "Hardware, firmware, kernel, driver, GPU, or rack-scale implementation depth may be expected.",
+                "Unresolved gap for direct implementation. The source-backed response is system-level cloud infrastructure architecture, dependency modeling, capacity management, region-build understanding, operability, and cross-team technical direction.",
+            )
+        )
+    objections.extend(
+        [
+            (
+                "The profile may read as broad architecture/governance rather than narrow hands-on service ownership.",
+                "Acknowledge the distinction. The source-backed case is staff-plus architecture, cross-organization technical direction, review mechanisms, modernization programs, developer experience, and durable engineering capability rather than narrow ticket-level implementation.",
+            ),
+            (
+                "Level calibration may be uncertain from a public job title alone.",
+                "Use the tracked job's level status as the current calibration signal. If unknown, preserve it as an open question for recruiter screening rather than asserting equivalency.",
+            ),
+        ]
+    )
+    return objections
+
+
+def render_job_brief(job):
+    created = datetime.now().strftime("%Y-%m-%d")
+    objections = likely_objections_for_job(job)
+    objection_text = "\n\n".join(
+        f"- Objection: {objection}\n  Response: {response}" for objection, response in objections
+    )
+    return f"""# Job Brief
+
+Company: {clean_text(job.get("company")) or "Unknown company"}
+
+Role: {clean_text(job.get("title")) or "Unknown title"}
+
+Location: {clean_text(job.get("location")) or "Unknown"}
+
+Pipeline: {clean_text(job.get("pipeline")) or "Unassigned"}
+
+Posting source:
+
+- {clean_text(job.get("url")) or "No URL captured"}
+
+Created: {created}
+
+---
+
+# Role Summary
+
+This packet was generated from a tracked job listing in the local job-search tool. Review the posting text before submitting; scraped listings may be incomplete.
+
+{job_posting_excerpt(job, width=1200) or "No posting text has been scraped yet. Re-scrape the job before final tailoring if possible."}
+
+---
+
+# High-Signal Requirements
+
+- Determine from the posting text during review.
+- Preserve only source-backed claims in downstream artifacts.
+- Emphasize cross-cutting architecture, engineering standards, developer experience, operational readiness, and technical decision quality when relevant.
+
+---
+
+# Tailoring Strategy
+
+Primary fit:
+
+- Position Eric as a senior technical architect who improves engineering decision quality across complex organizations.
+- Emphasize OCI architecture governance, ECRB/ECAR/PreCAR, Kilt and `devctl`, integration testing, CICD strategy, Puffin service/dependency modeling, App Manager control-plane architecture, Java modernization, and capacity management when relevant to the posting.
+- Use Accumula CTO background for founder/operator judgment, customer consequence, technical strategy, hiring, delivery, and operations under constraints.
+
+Claims to avoid:
+
+- Do not invent direct domain expertise from the posting.
+- Do not overstate implementation ownership when the source material supports architecture, technical direction, or organizational influence.
+- Do not claim direct AI, ML, security research, hardware, or language-specific expertise unless supported by the Career Manual or supporting documents.
+
+---
+
+# Likely Objections And Responses
+
+{objection_text}
+
+---
+
+# Source Trace
+
+Derived from:
+
+- `career-manual/Career-Manual.md`
+- `resume/Master-Resume.md`
+- `cover-letter/Cover-Letter-Template.md`
+- `supporting-documents/personal-info.md`
+- tracked job listing `{job.get("id")}`
+"""
+
+
+def render_resume(job):
+    master_resume = read_text_if_exists(MASTER_RESUME_PATH)
+    selected_master = truncate_preserving_markdown(master_resume)
+    return f"""<!--
+Generated starter resume for:
+Company: {clean_text(job.get("company")) or "Unknown company"}
+Role: {clean_text(job.get("title")) or "Unknown title"}
+Pipeline: {clean_text(job.get("pipeline")) or "Unassigned"}
+
+Review and tighten this against Job-Brief.md before submitting.
+-->
+
+{selected_master}
+"""
+
+
+def render_cover_letter(job):
+    created = datetime.now().strftime("%B %-d, %Y") if os.name != "nt" else datetime.now().strftime("%B %#d, %Y")
+    company = clean_text(job.get("company")) or "the organization"
+    role = clean_text(job.get("title")) or "the role"
+    return f"""Eric Peterson
+
+erpeterson@gmail.com | 253-988-0540 | www.linkedin.com/in/eric-peterson-9b028b2
+
+{created}
+
+{company}
+
+---
+
+Dear {company} team,
+
+I am interested in the {role} role. The part of the opportunity that stands out to me is the chance to work on difficult cross-cutting engineering problems where architecture, technical standards, developer experience, operational readiness, and decision quality matter.
+
+My strongest contribution is helping complex engineering organizations make better technical decisions. I do that by building the mental model first, clarifying intent and constraints, defining architecture and interfaces, and creating review and communication mechanisms that let teams execute independently without drifting apart.
+
+At Oracle Cloud Infrastructure, that work showed up across architecture governance, safe change review, developer tooling, integration testing, CICD strategy, service dependency modeling, Java modernization, control-plane architecture, and capacity management. I participated in ECRB review for high-profile/high-impact regions, served on ECAR oversight, created PreCAR patterns to move design quality earlier, and drove architecture/product direction for Kilt across developer experience, testing, operations, and secure dev tenancy usage.
+
+I would not claim expertise that is not supported by my source material. Where this role needs domain depth outside my direct history, the value I would bring is the operating model around that work: create clarity, define standards, reduce execution risk, align senior stakeholders, and mentor teams into durable technical habits.
+
+Sincerely,
+
+Eric Peterson
+"""
+
+
+def create_application_packet(conn, job_id):
+    job = get_job(conn, job_id)
+    if not job:
+        raise ValueError("Job not found.")
+    date_prefix = datetime.now().strftime("%Y-%m")
+    base_name = f"{date_prefix}-{slugify(job.get('company'), 32)}-{slugify(job.get('title'), 56)}"
+    packet_dir = unique_packet_dir(APPLICATIONS_DIR / base_name)
+    packet_dir.mkdir(parents=True, exist_ok=False)
+    files = {
+        "Job-Brief.md": render_job_brief(job),
+        "Resume.md": render_resume(job),
+        "Cover-Letter.md": render_cover_letter(job),
+    }
+    for filename, content in files.items():
+        (packet_dir / filename).write_text(content.rstrip() + "\n", encoding="utf-8")
+    relative = repo_relative(packet_dir)
+    conn.execute(
+        "UPDATE jobs SET application_packet_path = ?, updated_at = ? WHERE id = ?",
+        (relative, now(), job_id),
+    )
+    log_event("application_packet_generated", job_id=job_id, path=relative, files=sorted(files))
+    return {
+        "path": relative,
+        "name": packet_dir.name,
+        "markdown_files": list_markdown_files(packet_dir),
+    }
 
 
 def calibration_examples(conn):
@@ -1987,6 +2349,7 @@ def api_state():
                 "search_runs": list_search_runs(conn),
                 "search_schedule": search_schedule_state(conn),
                 "discoveries": list_discoveries(conn),
+                "application_packets": list_application_packets(conn),
                 "pipelines": PIPELINES,
                 "rubric_fields": RUBRIC_FIELDS,
             }
@@ -2000,6 +2363,174 @@ def api_job(job_id):
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({"job": job})
+
+
+@app.get("/api/application-packets")
+def api_application_packets():
+    with connect() as conn:
+        return jsonify({"application_packets": list_application_packets(conn)})
+
+
+@app.post("/api/jobs/<int:job_id>/application-packet/generate")
+def api_generate_application_packet(job_id):
+    with connect() as conn:
+        job = get_job(conn, job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        if job.get("application_packet_path"):
+            return jsonify({"error": "This job already has an associated application packet."}), 409
+        packet = create_application_packet(conn, job_id)
+        return jsonify(
+            {
+                "packet": packet,
+                "job": get_job(conn, job_id),
+                "application_packets": list_application_packets(conn),
+            }
+        ), 201
+
+
+@app.post("/api/jobs/<int:job_id>/application-packet/attach")
+def api_attach_application_packet(job_id):
+    payload = request.get_json(silent=True) or {}
+    packet_path = clean_text(payload.get("path", ""))
+    with connect() as conn:
+        job = get_job(conn, job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        try:
+            packet_dir = application_packet_abs_path(packet_path)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        conn.execute(
+            "UPDATE jobs SET application_packet_path = ?, updated_at = ? WHERE id = ?",
+            (repo_relative(packet_dir), now(), job_id),
+        )
+        log_event("application_packet_attached", job_id=job_id, path=repo_relative(packet_dir))
+        return jsonify(
+            {
+                "job": get_job(conn, job_id),
+                "application_packets": list_application_packets(conn),
+            }
+        )
+
+
+@app.get("/api/jobs/<int:job_id>/application-packet/content")
+def api_application_packet_content(job_id):
+    filename = request.args.get("file", "")
+    if not filename.endswith(".md") or "/" in filename or "\\" in filename:
+        return jsonify({"error": "Select a Markdown file in the associated packet."}), 400
+    with connect() as conn:
+        job = get_job(conn, job_id)
+        if not job:
+            return jsonify({"error": "Job not found"}), 404
+        if not job.get("application_packet_path"):
+            return jsonify({"error": "Job does not have an associated application packet."}), 404
+        try:
+            packet_dir = application_packet_abs_path(job["application_packet_path"])
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 404
+        file_path = (packet_dir / filename).resolve()
+        if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
+            return jsonify({"error": "Markdown file not found in associated packet."}), 404
+        return jsonify(
+            {
+                "path": repo_relative(packet_dir),
+                "file": filename,
+                "content": file_path.read_text(encoding="utf-8"),
+                "markdown_files": list_markdown_files(packet_dir),
+            }
+        )
+
+
+@app.get("/api/jobs/<int:job_id>/application-packet/render")
+def api_application_packet_render(job_id):
+    filename = request.args.get("file", "")
+    if not filename.endswith(".md") or "/" in filename or "\\" in filename:
+        return Response("Select a Markdown file in the associated packet.", status=400, mimetype="text/plain")
+    with connect() as conn:
+        job = get_job(conn, job_id)
+        if not job:
+            return Response("Job not found.", status=404, mimetype="text/plain")
+        if not job.get("application_packet_path"):
+            return Response("Job does not have an associated application packet.", status=404, mimetype="text/plain")
+        try:
+            packet_dir = application_packet_abs_path(job["application_packet_path"])
+        except ValueError as exc:
+            return Response(str(exc), status=404, mimetype="text/plain")
+        file_path = (packet_dir / filename).resolve()
+        if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
+            return Response("Markdown file not found in associated packet.", status=404, mimetype="text/plain")
+        markdown = file_path.read_text(encoding="utf-8")
+        body = markdown_to_html(markdown)
+        title = f"{filename} - {job['company']} - {job['title']}"
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape_html(title)}</title>
+  <style>
+    :root {{
+      --bg: #f3f1ea;
+      --ink: #18211b;
+      --muted: #667066;
+      --line: #cfc8b8;
+      --accent: #0f766e;
+    }}
+    body {{
+      margin: 0;
+      background: radial-gradient(circle at top left, rgba(15,118,110,.11), transparent 34%), var(--bg);
+      color: var(--ink);
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }}
+    main {{
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 36px 24px 64px;
+    }}
+    .meta {{
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+      margin-bottom: 28px;
+      font-size: 13px;
+    }}
+    h1, h2, h3, h4, h5, h6 {{ line-height: 1.18; margin: 1.35em 0 .45em; }}
+    h1 {{ font-size: 34px; margin-top: 0; }}
+    h2 {{ font-size: 24px; }}
+    h3 {{ font-size: 18px; color: var(--accent); }}
+    p {{ margin: .6em 0; }}
+    ul {{ padding-left: 1.4em; }}
+    li {{ margin: .35em 0; }}
+    hr {{ border: 0; border-top: 1px solid var(--line); margin: 24px 0; }}
+    code {{
+      background: rgba(15,118,110,.09);
+      border: 1px solid rgba(15,118,110,.18);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: .92em;
+    }}
+    pre {{
+      overflow: auto;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfaf5;
+    }}
+    a {{ color: var(--accent); }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="meta">{escape_html(repo_relative(packet_dir))} / {escape_html(filename)}</div>
+    {body}
+  </main>
+</body>
+</html>
+"""
+        return Response(html, mimetype="text/html")
 
 
 @app.post("/api/jobs/<int:job_id>/scrape")
@@ -2715,6 +3246,15 @@ INDEX_HTML = r"""<!doctype html>
     .toolbar { display: flex; gap: 10px; align-items: end; margin-bottom: 8px; }
     .toolbar.wrap { flex-wrap: wrap; }
     .toolbar label { margin-top: 0; }
+    .toolbar .grow { flex: 1 1 auto; }
+    .action-cluster {
+      display: grid;
+      grid-template-columns: minmax(160px, 220px) auto;
+      gap: 8px;
+      align-items: end;
+      flex: 0 1 320px;
+    }
+    .action-cluster button { white-space: nowrap; }
     .compact-heading {
       display: flex;
       gap: 10px;
@@ -2772,6 +3312,12 @@ INDEX_HTML = r"""<!doctype html>
     .enabled-query {
       border-top: 1px solid var(--line);
       padding: 8px 0;
+    }
+    .packet-row {
+      display: grid;
+      grid-template-columns: minmax(160px, 1fr) auto;
+      gap: 8px;
+      align-items: end;
     }
     @media (max-width: 980px) {
       .header-inner { grid-template-columns: 1fr; gap: 8px; }
@@ -2978,7 +3524,7 @@ INDEX_HTML = r"""<!doctype html>
     const statusOptions = ["researching","interested","applied","interviewing","offer","rejected","declined","paused"];
     const defaultVisibleStatuses = statusOptions.filter(s => !["rejected", "declined"].includes(s));
     const companyStatuses = ["watching","target","active_conversation","paused","not_interested"];
-    let state = { jobs: [], settings: {}, pipelines: [], rubric_fields: rubric };
+    let state = { jobs: [], settings: {}, pipelines: [], rubric_fields: rubric, application_packets: [] };
     let selectedId = null;
     let selectedJob = null;
     let selectedCompanyId = null;
@@ -3050,6 +3596,9 @@ INDEX_HTML = r"""<!doctype html>
 
     function activityLabel(path) {
       if (path.includes("/score-gpt")) return "Codex scoring";
+      if (path.includes("/application-packet/generate")) return "Generating application packet";
+      if (path.includes("/application-packet/attach")) return "Attaching application packet";
+      if (path.includes("/application-packet/content")) return "Loading application content";
       if (path === "/api/search/run") return "Job search running";
       if (path === "/api/config") return "Saving configuration";
       if (path === "/api/state?include_filtered=1") return "Refreshing data";
@@ -3242,7 +3791,7 @@ INDEX_HTML = r"""<!doctype html>
                 <td><b>${escapeHtml(job.company)}</b><div class="small">${escapeHtml(job.location || "")}</div></td>
                 <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
                 <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
-                <td>${escapeHtml(job.status || "")}${job.filtered ? '<div class="small">filtered/downlevel hidden by default</div>' : ""}</td>
+                <td>${escapeHtml(job.status || "")}${job.application_packet_path ? '<div class="small">packet attached</div>' : ""}${job.filtered ? '<div class="small">filtered/downlevel hidden by default</div>' : ""}</td>
                 <td><b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></td>
                 <td><b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></td>
                 <td>${escapeHtml(levelStatus(job))}${job.downlevel ? '<div class="small">downlevel</div>' : ""}</td>
@@ -3381,10 +3930,13 @@ INDEX_HTML = r"""<!doctype html>
     function renderDetail(job) {
       const detail = document.getElementById("detail");
       const companyInterest = findCompanyInterestByName(job.company);
+      const packet = applicationPacketForJob(job);
+      const unassociatedPackets = (state.application_packets || []).filter(packet => packet.unassociated);
+      const markdownFiles = packet ? packet.markdown_files || [] : [];
       detail.innerHTML = `
         <div class="panel">
           <div class="toolbar">
-            <div>
+            <div class="grow">
               <h2>${escapeHtml(job.company)} - ${escapeHtml(job.title)}</h2>
               <div class="meta">${escapeHtml(job.location || "")} ${job.url ? `· <a href="${escapeAttr(job.url)}" target="_blank">posting</a>` : ""}</div>
             </div>
@@ -3392,21 +3944,61 @@ INDEX_HTML = r"""<!doctype html>
               <label>Status</label>
               <select id="status">${statusOptions.map(s => `<option ${job.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
             </div>
-            <button onclick="saveStatus(${job.id})">Save status</button>
-            <button class="secondary" onclick="trackCompanyFromSelectedJob()">${companyInterest ? "View company interest" : "Track company interest"}</button>
-            <button class="secondary" onclick="rescrapeJob(${job.id})" ${job.url ? "" : "disabled"}>Re-scrape posting</button>
-            <button class="danger" onclick="deleteJob(${job.id})">Delete job</button>
+            <div class="action-cluster">
+              <div>
+                <label>Action</label>
+                <select id="job_action">
+                  <option value="save_status">Save status</option>
+                  <option value="track_company">${companyInterest ? "View company interest" : "Track company interest"}</option>
+                  <option value="generate_packet" ${job.application_packet_path ? "disabled" : ""}>Generate application packet</option>
+                  <option value="rescrape" ${job.url ? "" : "disabled"}>Re-scrape posting</option>
+                  <option value="delete">Delete job</option>
+                </select>
+              </div>
+              <button onclick="runJobAction(${job.id})">Go</button>
+            </div>
           </div>
           <div class="chips">
             <span class="chip">Pipeline: ${escapeHtml(job.pipeline || "Unassigned")}</span>
             <span class="chip">Codex: <b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></span>
             <span class="chip">Mine: <b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></span>
             <span class="chip">Level: ${escapeHtml(levelStatus(job))}</span>
+            ${job.application_packet_path ? `<span class="chip">Packet: ${escapeHtml(job.application_packet_path)}</span>` : '<span class="chip">No packet</span>'}
             ${job.downlevel ? '<span class="chip">Downlevel</span>' : ""}
             ${job.filtered ? '<span class="chip">Filtered</span>' : ""}
           </div>
           <p>${escapeHtml(job.gpt_rationale || "No Codex rationale yet.")}</p>
           <button class="warn" onclick="scoreGpt(${job.id})" ${state.gpt_scoring_enabled ? "" : "disabled"}>${state.gpt_scoring_enabled ? "Populate Codex scorecard" : "Codex scoring disabled"}</button>
+        </div>
+
+        <div class="panel">
+          <h2>Application Packet</h2>
+          ${packet ? `
+            <div class="meta">${escapeHtml(packet.path)}</div>
+            <div class="packet-row">
+              <div>
+                <label>Markdown file</label>
+                <select id="application_markdown_file">${markdownFiles.map(file => `<option>${escapeHtml(file)}</option>`).join("")}</select>
+              </div>
+              <button class="secondary" onclick="openApplicationMarkdown(${job.id})">Open rendered view</button>
+            </div>
+            <p class="small">Opens the selected Markdown file in a new rendered browser window.</p>
+          ` : `
+            <p class="small">No application packet is associated with this job.</p>
+            <div class="row">
+              <button class="secondary" onclick="generateApplicationPacket(${job.id})">Generate packet from listing</button>
+            </div>
+            <div class="packet-row">
+              <div>
+                <label>Attach existing unassociated packet</label>
+                <select id="application_packet_attach">
+                  <option value="">Select packet...</option>
+                  ${unassociatedPackets.map(packet => `<option value="${escapeAttr(packet.path)}">${escapeHtml(packet.name)}</option>`).join("")}
+                </select>
+              </div>
+              <button class="secondary" onclick="attachApplicationPacket(${job.id})" ${unassociatedPackets.length ? "" : "disabled"}>Attach</button>
+            </div>
+          `}
         </div>
 
         <div class="panel">
@@ -3473,6 +4065,63 @@ INDEX_HTML = r"""<!doctype html>
           `).join("") || '<div class="small">No discoveries yet.</div>'}</div>
         </div>
       `;
+    }
+
+    function applicationPacketForJob(job) {
+      if (!job.application_packet_path) return null;
+      return (state.application_packets || []).find(packet => packet.path === job.application_packet_path) || {
+        path: job.application_packet_path,
+        name: job.application_packet_path.split("/").pop(),
+        markdown_files: ["Job-Brief.md", "Resume.md", "Cover-Letter.md"],
+      };
+    }
+
+    async function runJobAction(id) {
+      const action = document.getElementById("job_action").value;
+      if (action === "save_status") return saveStatus(id);
+      if (action === "track_company") return trackCompanyFromSelectedJob();
+      if (action === "generate_packet") return generateApplicationPacket(id);
+      if (action === "rescrape") return rescrapeJob(id);
+      if (action === "delete") return deleteJob(id);
+    }
+
+    async function generateApplicationPacket(id) {
+      try {
+        const { job } = await api(`/api/jobs/${id}/application-packet/generate`, {
+          method: "POST",
+          body: "{}",
+          activityLabel: "Generating application packet",
+        });
+        selectedId = job.id;
+        selectedJob = job;
+        await load();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function attachApplicationPacket(id) {
+      const selector = document.getElementById("application_packet_attach");
+      const path = selector ? selector.value : "";
+      if (!path) return;
+      try {
+        const { job } = await api(`/api/jobs/${id}/application-packet/attach`, {
+          method: "POST",
+          body: JSON.stringify({ path }),
+          activityLabel: "Attaching application packet",
+        });
+        selectedId = job.id;
+        selectedJob = job;
+        await load();
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    function openApplicationMarkdown(id) {
+      const selector = document.getElementById("application_markdown_file");
+      if (!selector || !selector.value) return;
+      window.open(`/api/jobs/${id}/application-packet/render?file=${encodeURIComponent(selector.value)}`, "_blank", "noopener");
     }
 
     async function createJob() {
