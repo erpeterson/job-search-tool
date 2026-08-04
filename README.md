@@ -28,7 +28,8 @@ Then open:
 http://127.0.0.1:5050
 ```
 
-Optional Codex scoring requires a locally installed and authenticated Codex CLI.
+Codex-backed features require a locally installed and authenticated Codex CLI.
+This includes application packet generation and optional Codex scoring.
 If `codex` is not on `PATH`, pass its executable path:
 
 ```bash
@@ -70,8 +71,8 @@ job-search-tool/captures/
 
 Captured job-board responses are keyed by request payload, so rerunning the same
 search can replay the saved response instead of repeatedly hitting LinkedIn or
-Indeed. Codex CLI request/response payloads use the same capture mechanism when
-Codex scoring is enabled.
+Indeed. Codex CLI request/response payloads use the same capture mechanism for
+scoring and search refinement when Codex scoring is enabled.
 
 Manual searches include a `Force refresh` checkbox. When checked, the search
 bypasses replay and makes live LinkedIn, Indeed, and Codex CLI requests, then
@@ -191,6 +192,7 @@ Discovery rule:
 
 - Add and track job listings from a posting URL and pipeline.
 - Scrape company, title, location, and posting text from manually entered URLs.
+- Generate application packets by invoking Codex CLI with `generate an application packet for <url>`, so UI-generated packets follow the same repository guidance as direct Codex-generated packets.
 - Generate Codex scorecards when Codex scoring is enabled and the Codex CLI is available.
 - Record Eric's own scorecard.
 - Track application status.

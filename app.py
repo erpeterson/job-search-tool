@@ -32,9 +32,6 @@ APP_LOG_PATH = LOG_DIR / "job-search.log"
 CAPTURE_DIR = APP_DIR / "captures"
 GUIDANCE_PATH = ROOT / "supporting-documents" / "20260731-job-search-guidance.md"
 CAREER_MANUAL_PATH = ROOT / "career-manual" / "Career-Manual.md"
-MASTER_RESUME_PATH = ROOT / "resume" / "Master-Resume.md"
-COVER_LETTER_TEMPLATE_PATH = ROOT / "cover-letter" / "Cover-Letter-Template.md"
-PERSONAL_INFO_PATH = ROOT / "supporting-documents" / "personal-info.md"
 APPLICATIONS_DIR = ROOT / "applications"
 
 load_dotenv(ENV_PATH)
@@ -899,15 +896,6 @@ def career_context():
     return textwrap.shorten(manual, width=9000, placeholder="\n[manual truncated]\n") + "\n\n" + guidance
 
 
-def read_text_if_exists(path):
-    return path.read_text(encoding="utf-8") if path.exists() else ""
-
-
-def slugify(value, max_length=72):
-    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
-    return (slug[:max_length].strip("-") or "application")
-
-
 def repo_relative(path):
     return path.resolve().relative_to(ROOT.resolve()).as_posix()
 
@@ -1045,213 +1033,131 @@ def list_application_packets(conn):
     return packets
 
 
-def unique_packet_dir(base_dir):
-    if not base_dir.exists():
-        return base_dir
-    for index in range(2, 100):
-        candidate = base_dir.with_name(f"{base_dir.name}-{index}")
-        if not candidate.exists():
-            return candidate
-    raise RuntimeError("Could not allocate a unique application packet folder.")
+def application_packet_dirs():
+    APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    return {path.resolve() for path in APPLICATIONS_DIR.iterdir() if path.is_dir()}
 
 
-def job_posting_excerpt(job, width=1800):
-    return textwrap.shorten(clean_text(job.get("posting_text") or ""), width=width, placeholder="...")
+def packet_contains_url(packet_dir, url):
+    if not url:
+        return False
+    normalized_url = clean_url(url)
+    for path in packet_dir.glob("*.md"):
+        try:
+            if normalized_url in path.read_text(encoding="utf-8"):
+                return True
+        except UnicodeDecodeError:
+            continue
+    return False
 
 
-def truncate_preserving_markdown(value, max_chars=7000):
-    if len(value) <= max_chars:
-        return value
-    truncated = value[:max_chars]
-    if "\n" in truncated:
-        truncated = truncated.rsplit("\n", 1)[0]
-    return truncated.rstrip() + "\n\n[Master resume truncated for generated starter packet.]\n"
+def infer_generated_packet(job, before_dirs):
+    after_dirs = application_packet_dirs()
+    new_dirs = after_dirs - before_dirs
+    url_matches = [path for path in after_dirs if packet_contains_url(path, job.get("url"))]
+    candidates = url_matches or list(new_dirs)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
-def likely_objections_for_job(job):
-    title = f"{job.get('company', '')} {job.get('title', '')} {job.get('posting_text', '')}".lower()
-    objections = []
-    if any(term in title for term in ("ai", "machine learning", "ml", "llm", "inference", "model")):
-        objections.append(
-            (
-                "Direct AI, ML, model-training, or inference implementation experience may be expected.",
-                "Unresolved gap unless new source material supports it. Position the source-backed fit around AI-enabled development interest, platform architecture, evaluation/review mechanisms, production readiness, developer tooling, and architecture for exploratory technical programs.",
+def generate_application_packet_with_codex(job):
+    if not job.get("url"):
+        raise ValueError("Job does not have a URL for Codex packet generation.")
+    if not codex_cli_available():
+        raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI.")
+
+    cli_path = codex_cli_path()
+    prompt = f"generate an application packet for {job['url']}"
+    before_dirs = application_packet_dirs()
+    started = time.monotonic()
+    completed = None
+    error = None
+    output_text = ""
+    try:
+        with tempfile.TemporaryDirectory(prefix="job-search-codex-packet-") as tmpdir:
+            output_path = Path(tmpdir) / "last-message.txt"
+            command = [
+                cli_path,
+                "exec",
+                "-C",
+                str(ROOT),
+                "--sandbox",
+                "workspace-write",
+                "-o",
+                str(output_path),
+                "-",
+            ]
+            model = codex_model()
+            if model:
+                command[2:2] = ["-m", model]
+            completed = subprocess.run(
+                command,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=CODEX_CLI_TIMEOUT_SECONDS,
+                check=False,
             )
+            if output_path.exists():
+                output_text = output_path.read_text(encoding="utf-8").strip()
+            if not output_text:
+                output_text = (completed.stdout or "").strip()
+            if completed.returncode != 0:
+                raise CodexCliError("generate_application_packet", completed.returncode)
+    except Exception as exc:
+        error = exc
+        raise
+    finally:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        log_event(
+            "codex_cli_application_packet",
+            job_id=job.get("id"),
+            url=job.get("url"),
+            cli_path=cli_path,
+            ok=error is None,
+            elapsed_ms=elapsed_ms,
+            returncode=completed.returncode if completed is not None else None,
+            stdout_excerpt=clean_text(completed.stdout)[:2000] if completed is not None and completed.stdout else None,
+            stderr_excerpt=clean_text(completed.stderr)[:2000] if completed is not None and completed.stderr else None,
+            output_excerpt=clean_text(output_text)[:2000] if output_text else None,
+            error_type=type(error).__name__ if error else None,
+            message=str(error)[:1000] if error else None,
         )
-    if any(term in title for term in ("security", "vulnerability", "auth", "authorization", "key management", "secure")):
-        objections.append(
-            (
-                "The role may expect direct security engineering or vulnerability research ownership.",
-                "Unresolved gap for direct security research or specific security primitive ownership unless new source material supports it. Adjacent source-backed evidence includes ECRB safe-change review, ECAR/PreCAR review quality, Java modernization with security tooling integration, secure dev tenancy usage in Kilt, and production risk reduction.",
-            )
-        )
-    if any(term in title for term in ("gpu", "rack", "firmware", "kernel", "driver", "hardware", "nvlink", "infiniband")):
-        objections.append(
-            (
-                "Hardware, firmware, kernel, driver, GPU, or rack-scale implementation depth may be expected.",
-                "Unresolved gap for direct implementation. The source-backed response is system-level cloud infrastructure architecture, dependency modeling, capacity management, region-build understanding, operability, and cross-team technical direction.",
-            )
-        )
-    objections.extend(
-        [
-            (
-                "The profile may read as broad architecture/governance rather than narrow hands-on service ownership.",
-                "Acknowledge the distinction. The source-backed case is staff-plus architecture, cross-organization technical direction, review mechanisms, modernization programs, developer experience, and durable engineering capability rather than narrow ticket-level implementation.",
-            ),
-            (
-                "Level calibration may be uncertain from a public job title alone.",
-                "Use the tracked job's level status as the current calibration signal. If unknown, preserve it as an open question for recruiter screening rather than asserting equivalency.",
-            ),
-        ]
-    )
-    return objections
 
-
-def render_job_brief(job):
-    created = datetime.now().strftime("%Y-%m-%d")
-    objections = likely_objections_for_job(job)
-    objection_text = "\n\n".join(
-        f"- Objection: {objection}\n  Response: {response}" for objection, response in objections
-    )
-    return f"""# Job Brief
-
-Company: {clean_text(job.get("company")) or "Unknown company"}
-
-Role: {clean_text(job.get("title")) or "Unknown title"}
-
-Location: {clean_text(job.get("location")) or "Unknown"}
-
-Pipeline: {clean_text(job.get("pipeline")) or "Unassigned"}
-
-Posting source:
-
-- {clean_text(job.get("url")) or "No URL captured"}
-
-Created: {created}
-
----
-
-# Role Summary
-
-This packet was generated from a tracked job listing in the local job-search tool. Review the posting text before submitting; scraped listings may be incomplete.
-
-{job_posting_excerpt(job, width=1200) or "No posting text has been scraped yet. Re-scrape the job before final tailoring if possible."}
-
----
-
-# High-Signal Requirements
-
-- Determine from the posting text during review.
-- Preserve only source-backed claims in downstream artifacts.
-- Emphasize cross-cutting architecture, engineering standards, developer experience, operational readiness, and technical decision quality when relevant.
-
----
-
-# Tailoring Strategy
-
-Primary fit:
-
-- Position Eric as a senior technical architect who improves engineering decision quality across complex organizations.
-- Emphasize OCI architecture governance, ECRB/ECAR/PreCAR, Kilt and `devctl`, integration testing, CICD strategy, Puffin service/dependency modeling, App Manager control-plane architecture, Java modernization, and capacity management when relevant to the posting.
-- Use Accumula CTO background for founder/operator judgment, customer consequence, technical strategy, hiring, delivery, and operations under constraints.
-
-Claims to avoid:
-
-- Do not invent direct domain expertise from the posting.
-- Do not overstate implementation ownership when the source material supports architecture, technical direction, or organizational influence.
-- Do not claim direct AI, ML, security research, hardware, or language-specific expertise unless supported by the Career Manual or supporting documents.
-
----
-
-# Likely Objections And Responses
-
-{objection_text}
-
----
-
-# Source Trace
-
-Derived from:
-
-- `career-manual/Career-Manual.md`
-- `resume/Master-Resume.md`
-- `cover-letter/Cover-Letter-Template.md`
-- `supporting-documents/personal-info.md`
-- tracked job listing `{job.get("id")}`
-"""
-
-
-def render_resume(job):
-    master_resume = read_text_if_exists(MASTER_RESUME_PATH)
-    selected_master = truncate_preserving_markdown(master_resume)
-    return f"""<!--
-Generated starter resume for:
-Company: {clean_text(job.get("company")) or "Unknown company"}
-Role: {clean_text(job.get("title")) or "Unknown title"}
-Pipeline: {clean_text(job.get("pipeline")) or "Unassigned"}
-
-Review and tighten this against Job-Brief.md before submitting.
--->
-
-{selected_master}
-"""
-
-
-def render_cover_letter(job):
-    created = datetime.now().strftime("%B %-d, %Y") if os.name != "nt" else datetime.now().strftime("%B %#d, %Y")
-    company = clean_text(job.get("company")) or "the organization"
-    role = clean_text(job.get("title")) or "the role"
-    return f"""Eric Peterson
-
-erpeterson@gmail.com | 253-988-0540 | www.linkedin.com/in/eric-peterson-9b028b2
-
-{created}
-
-{company}
-
----
-
-Dear {company} team,
-
-I am interested in the {role} role. The part of the opportunity that stands out to me is the chance to work on difficult cross-cutting engineering problems where architecture, technical standards, developer experience, operational readiness, and decision quality matter.
-
-My strongest contribution is helping complex engineering organizations make better technical decisions. I do that by building the mental model first, clarifying intent and constraints, defining architecture and interfaces, and creating review and communication mechanisms that let teams execute independently without drifting apart.
-
-At Oracle Cloud Infrastructure, that work showed up across architecture governance, safe change review, developer tooling, integration testing, CICD strategy, service dependency modeling, Java modernization, control-plane architecture, and capacity management. I participated in ECRB review for high-profile/high-impact regions, served on ECAR oversight, created PreCAR patterns to move design quality earlier, and drove architecture/product direction for Kilt across developer experience, testing, operations, and secure dev tenancy usage.
-
-I would not claim expertise that is not supported by my source material. Where this role needs domain depth outside my direct history, the value I would bring is the operating model around that work: create clarity, define standards, reduce execution risk, align senior stakeholders, and mentor teams into durable technical habits.
-
-Sincerely,
-
-Eric Peterson
-"""
+    packet_dir = infer_generated_packet(job, before_dirs)
+    return {
+        "output_text": output_text,
+        "packet_dir": packet_dir,
+    }
 
 
 def create_application_packet(conn, job_id):
     job = get_job(conn, job_id)
     if not job:
         raise ValueError("Job not found.")
-    date_prefix = datetime.now().strftime("%Y-%m")
-    base_name = f"{date_prefix}-{slugify(job.get('company'), 32)}-{slugify(job.get('title'), 56)}"
-    packet_dir = unique_packet_dir(APPLICATIONS_DIR / base_name)
-    packet_dir.mkdir(parents=True, exist_ok=False)
-    files = {
-        "Job-Brief.md": render_job_brief(job),
-        "Resume.md": render_resume(job),
-        "Cover-Letter.md": render_cover_letter(job),
-    }
-    for filename, content in files.items():
-        (packet_dir / filename).write_text(content.rstrip() + "\n", encoding="utf-8")
+    result = generate_application_packet_with_codex(job)
+    packet_dir = result.get("packet_dir")
+    if not packet_dir:
+        log_event("application_packet_generated_unassociated", job_id=job_id, url=job.get("url"))
+        return {
+            "path": "",
+            "name": "",
+            "markdown_files": [],
+            "codex_output": result.get("output_text", ""),
+            "warning": "Codex completed, but the app could not infer which application packet folder was generated.",
+        }
     relative = repo_relative(packet_dir)
     conn.execute(
         "UPDATE jobs SET application_packet_path = ?, updated_at = ? WHERE id = ?",
         (relative, now(), job_id),
     )
-    log_event("application_packet_generated", job_id=job_id, path=relative, files=sorted(files))
+    log_event("application_packet_generated", job_id=job_id, path=relative, generator="codex_cli")
     return {
         "path": relative,
         "name": packet_dir.name,
         "markdown_files": list_markdown_files(packet_dir),
+        "codex_output": result.get("output_text", ""),
     }
 
 
@@ -3950,7 +3856,7 @@ INDEX_HTML = r"""<!doctype html>
                 <select id="job_action">
                   <option value="save_status">Save status</option>
                   <option value="track_company">${companyInterest ? "View company interest" : "Track company interest"}</option>
-                  <option value="generate_packet" ${job.application_packet_path ? "disabled" : ""}>Generate application packet</option>
+                  <option value="generate_packet" ${job.application_packet_path ? "disabled" : ""}>Generate packet with Codex</option>
                   <option value="rescrape" ${job.url ? "" : "disabled"}>Re-scrape posting</option>
                   <option value="delete">Delete job</option>
                 </select>
@@ -3986,7 +3892,7 @@ INDEX_HTML = r"""<!doctype html>
           ` : `
             <p class="small">No application packet is associated with this job.</p>
             <div class="row">
-              <button class="secondary" onclick="generateApplicationPacket(${job.id})">Generate packet from listing</button>
+              <button class="secondary" onclick="generateApplicationPacket(${job.id})">Generate packet with Codex</button>
             </div>
             <div class="packet-row">
               <div>
@@ -4087,11 +3993,13 @@ INDEX_HTML = r"""<!doctype html>
 
     async function generateApplicationPacket(id) {
       try {
-        const { job } = await api(`/api/jobs/${id}/application-packet/generate`, {
+        const result = await api(`/api/jobs/${id}/application-packet/generate`, {
           method: "POST",
           body: "{}",
           activityLabel: "Generating application packet",
         });
+        const job = result.job;
+        if (result.packet && result.packet.warning) alert(result.packet.warning);
         selectedId = job.id;
         selectedJob = job;
         await load();
