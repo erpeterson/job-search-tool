@@ -42,7 +42,7 @@ CODEX_CLI_TIMEOUT_SECONDS = int(os.environ.get("CODEX_CLI_TIMEOUT_SECONDS", "180
 HOST = os.environ.get("JOB_SEARCH_HOST", "127.0.0.1")
 PORT = int(os.environ.get("JOB_SEARCH_PORT", "5050"))
 DEBUG = os.environ.get("JOB_SEARCH_DEBUG", "0") == "1"
-AUTORUN = os.environ.get("JOB_SEARCH_AUTORUN", "1") != "0"
+AUTORUN = False # the scheduler is buggy and eats codex credits.. disable it for now; os.environ.get("JOB_SEARCH_AUTORUN", "1") != "0"
 SEARCH_INTERVAL_SECONDS = int(os.environ.get("JOB_SEARCH_INTERVAL_SECONDS", str(24 * 60 * 60)))
 LOG_MAX_BYTES = int(os.environ.get("JOB_SEARCH_LOG_MAX_BYTES", str(1024 * 1024)))
 LOG_BACKUP_COUNT = int(os.environ.get("JOB_SEARCH_LOG_BACKUP_COUNT", "5"))
