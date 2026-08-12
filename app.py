@@ -11,6 +11,7 @@ import tempfile
 import threading
 import textwrap
 import time
+import uuid
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -38,7 +39,7 @@ load_dotenv(ENV_PATH)
 
 DEFAULT_MODEL = os.environ.get("CODEX_MODEL", "")
 DEFAULT_CODEX_CLI_PATH = os.environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex"
-CODEX_CLI_TIMEOUT_SECONDS = int(os.environ.get("CODEX_CLI_TIMEOUT_SECONDS", "180"))
+CODEX_CLI_TIMEOUT_SECONDS = int(os.environ.get("CODEX_CLI_TIMEOUT_SECONDS", "270"))
 HOST = os.environ.get("JOB_SEARCH_HOST", "127.0.0.1")
 PORT = int(os.environ.get("JOB_SEARCH_PORT", "5050"))
 DEBUG = os.environ.get("JOB_SEARCH_DEBUG", "0") == "1"
@@ -152,6 +153,8 @@ ORACLE_IC6_LEVEL_REFERENCE = (
 )
 MIN_ANNUAL_COMPENSATION = 200_000
 UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
+BACKGROUND_TASKS = {}
+BACKGROUND_TASK_LOCK = threading.Lock()
 
 
 def connect():
@@ -608,6 +611,83 @@ def codex_model(conn=None):
 
 def capture_cache_enabled():
     return os.environ.get("JOB_SEARCH_USE_CAPTURE_CACHE", "1") != "0"
+
+
+def background_task_snapshot(task):
+    snapshot = dict(task)
+    snapshot["items"] = [dict(item) for item in task.get("items", [])]
+    return snapshot
+
+
+def get_background_task(task_id):
+    with BACKGROUND_TASK_LOCK:
+        task = BACKGROUND_TASKS.get(task_id)
+        return background_task_snapshot(task) if task else None
+
+
+def list_background_tasks(limit=10):
+    with BACKGROUND_TASK_LOCK:
+        tasks = sorted(BACKGROUND_TASKS.values(), key=lambda task: task["created_at"], reverse=True)
+        return [background_task_snapshot(task) for task in tasks[:limit]]
+
+
+def update_background_task(task_id, **updates):
+    with BACKGROUND_TASK_LOCK:
+        task = BACKGROUND_TASKS.get(task_id)
+        if not task:
+            return None
+        task.update(updates)
+        task["updated_at"] = now()
+        return background_task_snapshot(task)
+
+
+def update_background_task_item(task_id, job_id, **updates):
+    with BACKGROUND_TASK_LOCK:
+        task = BACKGROUND_TASKS.get(task_id)
+        if not task:
+            return None
+        for item in task["items"]:
+            if item["job_id"] == job_id:
+                item.update(updates)
+                item["updated_at"] = now()
+                break
+        task["updated_at"] = now()
+        return background_task_snapshot(task)
+
+
+def start_background_task(operation, job_ids, worker):
+    task_id = uuid.uuid4().hex
+    created_at = now()
+    task = {
+        "id": task_id,
+        "operation": operation,
+        "status": "queued",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "started_at": None,
+        "completed_at": None,
+        "total": len(job_ids),
+        "completed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "current_job_id": None,
+        "message": "",
+        "items": [
+            {
+                "job_id": job_id,
+                "status": "queued",
+                "message": "",
+                "updated_at": created_at,
+            }
+            for job_id in job_ids
+        ],
+    }
+    with BACKGROUND_TASK_LOCK:
+        BACKGROUND_TASKS[task_id] = task
+    thread = threading.Thread(target=worker, args=(task_id, job_ids), daemon=True)
+    thread.start()
+    log_event("background_task_started", task_id=task_id, operation=operation, job_ids=job_ids)
+    return background_task_snapshot(task)
 
 
 def masked_config():
@@ -1068,7 +1148,20 @@ def generate_application_packet_with_codex(job):
         raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI.")
 
     cli_path = codex_cli_path()
-    prompt = f"generate an application packet for {job['url']}"
+    prompt = textwrap.dedent(
+        f"""
+        Generate an application packet for {job['url']}.
+
+        Use this repository's canonical guidance instead of rediscovering the workflow:
+        - Read AGENTS.md first.
+        - Use career-manual/Career-Manual.md downstream artifact rules as the authoritative packet-generation process.
+        - Use resume/Master-Resume.md as the resume source, narrowing from the job brief rather than drafting broadly.
+        - If the job exists in job-search-tool/job_search.sqlite3, use the locally cached posting text for the URL before trying network access.
+        - Create exactly one tailored resume, one cover letter, and one job brief.
+        - Generate both Markdown and DOCX deliverables.
+        - Keep the job brief concise, include likely objections, and append only the objection remediation outcome after drafting.
+        """
+    ).strip()
     before_dirs = application_packet_dirs()
     started = time.monotonic()
     completed = None
@@ -1159,6 +1252,75 @@ def create_application_packet(conn, job_id):
         "markdown_files": list_markdown_files(packet_dir),
         "codex_output": result.get("output_text", ""),
     }
+
+
+def bulk_score_worker(task_id, job_ids):
+    update_background_task(task_id, status="running", started_at=now(), message="Codex scorecard population running")
+    completed = failed = skipped = 0
+    with connect() as conn:
+        for job_id in job_ids:
+            update_background_task(task_id, current_job_id=job_id)
+            update_background_task_item(task_id, job_id, status="running", message="Scoring with Codex")
+            try:
+                job = get_job(conn, job_id)
+                if not job:
+                    skipped += 1
+                    update_background_task_item(task_id, job_id, status="skipped", message="Job not found")
+                else:
+                    score = populate_codex_score(conn, job_id)
+                    completed += 1
+                    update_background_task_item(
+                        task_id,
+                        job_id,
+                        status="complete",
+                        message=f"Codex score {int(score.get('total_score', 0))}",
+                    )
+            except Exception as exc:
+                failed += 1
+                update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
+                log_event("bulk_codex_score_error", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
+            finally:
+                update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
+    status = "complete" if failed == 0 else "error"
+    message = f"Complete: {completed} scored, {skipped} skipped, {failed} failed."
+    update_background_task(task_id, status=status, completed_at=now(), current_job_id=None, message=message)
+    log_event("background_task_finished", task_id=task_id, operation="scorecards", status=status, message=message)
+
+
+def bulk_packet_worker(task_id, job_ids):
+    update_background_task(task_id, status="running", started_at=now(), message="Application packet generation running")
+    completed = failed = skipped = 0
+    with connect() as conn:
+        for job_id in job_ids:
+            update_background_task(task_id, current_job_id=job_id)
+            update_background_task_item(task_id, job_id, status="running", message="Generating application packet with Codex")
+            try:
+                job = get_job(conn, job_id)
+                if not job:
+                    skipped += 1
+                    update_background_task_item(task_id, job_id, status="skipped", message="Job not found")
+                elif job.get("application_packet_path"):
+                    skipped += 1
+                    update_background_task_item(task_id, job_id, status="skipped", message="Application packet already associated")
+                else:
+                    packet = create_application_packet(conn, job_id)
+                    completed += 1
+                    update_background_task_item(
+                        task_id,
+                        job_id,
+                        status="complete",
+                        message=packet.get("path") or packet.get("warning") or "Codex completed",
+                    )
+            except Exception as exc:
+                failed += 1
+                update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
+                log_event("bulk_application_packet_error", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
+            finally:
+                update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
+    status = "complete" if failed == 0 else "error"
+    message = f"Complete: {completed} generated, {skipped} skipped, {failed} failed."
+    update_background_task(task_id, status=status, completed_at=now(), current_job_id=None, message=message)
+    log_event("background_task_finished", task_id=task_id, operation="application_packets", status=status, message=message)
 
 
 def calibration_examples(conn):
@@ -2152,6 +2314,38 @@ def score_with_codex_cli(conn, job, force_refresh=False):
     return parsed
 
 
+def populate_codex_score(conn, job_id, force_refresh=False):
+    job = get_job(conn, job_id)
+    if not job:
+        raise ValueError("Job not found")
+    score = score_with_codex_cli(conn, job, force_refresh=force_refresh)
+    total = int(score.get("total_score", 0))
+    scorecard = score.get("scorecard", {})
+    downlevel = bool(score.get("downlevel", False))
+    conn.execute(
+        """
+        UPDATE jobs
+        SET gpt_score = ?, gpt_rationale = ?, gpt_scorecard_json = ?,
+            pipeline = COALESCE(NULLIF(?, ''), pipeline),
+            level_assessment = ?, downlevel = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            total,
+            score.get("rationale", ""),
+            json.dumps(scorecard),
+            score.get("pipeline", ""),
+            score.get("level_assessment", ""),
+            1 if downlevel else 0,
+            now(),
+            job_id,
+        ),
+    )
+    apply_filter(conn, job_id)
+    log_event("codex_score_populated", job_id=job_id, total_score=total, downlevel=downlevel)
+    return score
+
+
 def call_codex_json(model, prompt, operation, force_refresh=False):
     cli_path = codex_cli_path()
     request_payload = {
@@ -2256,6 +2450,7 @@ def api_state():
                 "search_schedule": search_schedule_state(conn),
                 "discoveries": list_discoveries(conn),
                 "application_packets": list_application_packets(conn),
+                "codex_tasks": list_background_tasks(),
                 "pipelines": PIPELINES,
                 "rubric_fields": RUBRIC_FIELDS,
             }
@@ -2275,6 +2470,66 @@ def api_job(job_id):
 def api_application_packets():
     with connect() as conn:
         return jsonify({"application_packets": list_application_packets(conn)})
+
+
+def clean_job_ids(payload):
+    raw_ids = payload.get("job_ids", [])
+    if not isinstance(raw_ids, list):
+        raise ValueError("job_ids must be a list.")
+    job_ids = []
+    seen = set()
+    for raw_id in raw_ids:
+        try:
+            job_id = int(raw_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("job_ids must contain only integers.") from exc
+        if job_id > 0 and job_id not in seen:
+            seen.add(job_id)
+            job_ids.append(job_id)
+    if not job_ids:
+        raise ValueError("Select at least one job.")
+    return job_ids
+
+
+@app.get("/api/codex-tasks")
+def api_codex_tasks():
+    return jsonify({"tasks": list_background_tasks()})
+
+
+@app.get("/api/codex-tasks/<task_id>")
+def api_codex_task(task_id):
+    task = get_background_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify({"task": task})
+
+
+@app.post("/api/jobs/bulk/score-gpt")
+def api_bulk_score_gpt():
+    payload = request.get_json(silent=True) or {}
+    if not gpt_scoring_enabled():
+        return jsonify({"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}), 409
+    if not codex_cli_available():
+        return jsonify({"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."}), 409
+    try:
+        job_ids = clean_job_ids(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    task = start_background_task("scorecards", job_ids, bulk_score_worker)
+    return jsonify({"task": task}), 202
+
+
+@app.post("/api/jobs/bulk/application-packets/generate")
+def api_bulk_generate_application_packets():
+    payload = request.get_json(silent=True) or {}
+    if not codex_cli_available():
+        return jsonify({"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."}), 409
+    try:
+        job_ids = clean_job_ids(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    task = start_background_task("application_packets", job_ids, bulk_packet_worker)
+    return jsonify({"task": task}), 202
 
 
 @app.post("/api/jobs/<int:job_id>/application-packet/generate")
@@ -2774,30 +3029,7 @@ def api_score_gpt(job_id):
             return jsonify({"error": "Job not found"}), 404
         if not gpt_scoring_enabled():
             return jsonify({"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}), 409
-        score = score_with_codex_cli(conn, job)
-        total = int(score.get("total_score", 0))
-        scorecard = score.get("scorecard", {})
-        downlevel = bool(score.get("downlevel", False))
-        conn.execute(
-            """
-            UPDATE jobs
-            SET gpt_score = ?, gpt_rationale = ?, gpt_scorecard_json = ?,
-                pipeline = COALESCE(NULLIF(?, ''), pipeline),
-                level_assessment = ?, downlevel = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                total,
-                score.get("rationale", ""),
-                json.dumps(scorecard),
-                score.get("pipeline", ""),
-                score.get("level_assessment", ""),
-                1 if downlevel else 0,
-                now(),
-                job_id,
-            ),
-        )
-        apply_filter(conn, job_id)
+        score = populate_codex_score(conn, job_id)
         return jsonify({"job": get_job(conn, job_id), "raw_score": score})
 
 
@@ -3225,6 +3457,27 @@ INDEX_HTML = r"""<!doctype html>
       gap: 8px;
       align-items: end;
     }
+    .bulk-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      width: 100%;
+      padding-top: 6px;
+      border-top: 1px solid var(--line);
+    }
+    .bulk-actions button { white-space: nowrap; }
+    .select-cell { width: 34px; text-align: center; }
+    .select-cell input { width: auto; }
+    .task-status {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255,255,255,.65);
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
     @media (max-width: 980px) {
       .header-inner { grid-template-columns: 1fr; gap: 8px; }
       .activity-pill { justify-content: flex-start; width: fit-content; }
@@ -3348,6 +3601,14 @@ INDEX_HTML = r"""<!doctype html>
               </div>
               <button class="secondary" onclick="resetJobTableFilters()">Reset table filters</button>
             </details>
+            <div class="bulk-actions">
+              <button class="secondary" onclick="selectVisibleJobs()">Select visible</button>
+              <button class="secondary" onclick="clearBulkSelection()">Clear selection</button>
+              <button id="bulk_score_button" class="warn" onclick="startBulkScorecards()">Bulk Codex scorecards</button>
+              <button id="bulk_packet_button" class="warn" onclick="startBulkApplicationPackets()">Bulk generate packets</button>
+              <span id="bulk_selection_summary" class="small">0 selected</span>
+              <div id="bulk_task_status" class="task-status">No bulk Codex task running.</div>
+            </div>
           </div>
           <div id="jobs" class="table-wrap"></div>
         </div>
@@ -3441,6 +3702,9 @@ INDEX_HTML = r"""<!doctype html>
     let splitInitialized = false;
     let pendingCallCount = 0;
     let pendingCallLabels = [];
+    let bulkSelectedJobIds = new Set();
+    let activeBulkTaskId = localStorage.getItem("activeBulkTaskId") || "";
+    let bulkTaskPollTimer = null;
 
     const pretty = s => s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
     const scoreClass = n => n == null ? "" : n >= 70 ? "score-good" : n >= 40 ? "score-warn" : "score-bad";
@@ -3501,6 +3765,9 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function activityLabel(path) {
+      if (path.includes("/bulk/score-gpt")) return "Starting bulk Codex scoring";
+      if (path.includes("/bulk/application-packets")) return "Starting bulk packet generation";
+      if (path.includes("/codex-tasks")) return "Checking Codex task";
       if (path.includes("/score-gpt")) return "Codex scoring";
       if (path.includes("/application-packet/generate")) return "Generating application packet";
       if (path.includes("/application-packet/attach")) return "Attaching application packet";
@@ -3562,6 +3829,7 @@ INDEX_HTML = r"""<!doctype html>
       renderSearchState();
       renderConfigStatus();
       renderJobs();
+      renderBulkControls();
       renderCompanyTable();
       renderQueryTable();
       initializeJobSplit();
@@ -3668,6 +3936,82 @@ INDEX_HTML = r"""<!doctype html>
       return true;
     }
 
+    function visibleJobIds() {
+      return state.jobs.filter(jobMatchesTableFilters).map(job => job.id);
+    }
+
+    function selectedJobIds() {
+      return [...bulkSelectedJobIds].filter(id => state.jobs.some(job => job.id === id));
+    }
+
+    function toggleBulkJobSelection(id, checked) {
+      if (checked) bulkSelectedJobIds.add(id);
+      else bulkSelectedJobIds.delete(id);
+      renderBulkControls();
+    }
+
+    function selectVisibleJobs() {
+      visibleJobIds().forEach(id => bulkSelectedJobIds.add(id));
+      renderJobs();
+      renderBulkControls();
+    }
+
+    function clearBulkSelection() {
+      bulkSelectedJobIds.clear();
+      renderJobs();
+      renderBulkControls();
+    }
+
+    function renderBulkControls(task = null) {
+      const selected = selectedJobIds();
+      bulkSelectedJobIds = new Set(selected);
+      const summary = document.getElementById("bulk_selection_summary");
+      if (summary) summary.textContent = `${selected.length} selected`;
+      const scoreButton = document.getElementById("bulk_score_button");
+      if (scoreButton) scoreButton.disabled = !state.gpt_scoring_enabled || selected.length === 0;
+      const packetButton = document.getElementById("bulk_packet_button");
+      if (packetButton) packetButton.disabled = selected.length === 0;
+      const status = document.getElementById("bulk_task_status");
+      if (!status) return;
+      const currentTask = task || (state.codex_tasks || []).find(t => t.id === activeBulkTaskId);
+      if (!currentTask) {
+        status.textContent = "No bulk Codex task running.";
+        return;
+      }
+      const parts = [
+        `${currentTask.operation}: ${currentTask.status}`,
+        `${currentTask.completed || 0}/${currentTask.total || 0} complete`,
+        `${currentTask.skipped || 0} skipped`,
+        `${currentTask.failed || 0} failed`,
+      ];
+      if (currentTask.message) parts.push(currentTask.message);
+      status.innerHTML = `${["running", "queued"].includes(currentTask.status) ? '<span class="spinner"></span> ' : ""}${escapeHtml(parts.join(" · "))}`;
+    }
+
+    function startBulkTaskPolling(taskId) {
+      activeBulkTaskId = taskId;
+      localStorage.setItem("activeBulkTaskId", taskId);
+      if (bulkTaskPollTimer) clearInterval(bulkTaskPollTimer);
+      bulkTaskPollTimer = setInterval(() => pollBulkTask(taskId), 3000);
+      pollBulkTask(taskId);
+    }
+
+    async function pollBulkTask(taskId) {
+      try {
+        const { task } = await api(`/api/codex-tasks/${taskId}`, { activityLabel: "Checking Codex task" });
+        renderBulkControls(task);
+        if (!["queued", "running"].includes(task.status)) {
+          clearInterval(bulkTaskPollTimer);
+          bulkTaskPollTimer = null;
+          await load();
+        }
+      } catch (err) {
+        if (bulkTaskPollTimer) clearInterval(bulkTaskPollTimer);
+        bulkTaskPollTimer = null;
+        renderBulkControls({ operation: "bulk", status: "error", completed: 0, total: 0, skipped: 0, failed: 1, message: err.message });
+      }
+    }
+
     function renderJobs() {
       const jobs = document.getElementById("jobs");
       const visibleJobs = state.jobs.filter(jobMatchesTableFilters);
@@ -3681,6 +4025,7 @@ INDEX_HTML = r"""<!doctype html>
         <table>
           <thead>
             <tr>
+              <th class="select-cell">Pick</th>
               <th>Company</th>
               <th>Role</th>
               <th>Pipeline</th>
@@ -3694,6 +4039,7 @@ INDEX_HTML = r"""<!doctype html>
           <tbody>
             ${visibleJobs.map(job => `
               <tr class="${job.filtered ? "filtered" : ""} ${job.id === selectedId ? "active" : ""}" onclick="selectJob(${job.id})">
+                <td class="select-cell"><input type="checkbox" ${bulkSelectedJobIds.has(job.id) ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleBulkJobSelection(${job.id}, this.checked)"></td>
                 <td><b>${escapeHtml(job.company)}</b><div class="small">${escapeHtml(job.location || "")}</div></td>
                 <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
                 <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
@@ -4113,6 +4459,36 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    async function startBulkScorecards() {
+      const ids = selectedJobIds();
+      if (!ids.length) return alert("Select at least one job first.");
+      try {
+        const { task } = await api("/api/jobs/bulk/score-gpt", {
+          method: "POST",
+          body: JSON.stringify({ job_ids: ids }),
+          activityLabel: "Starting bulk Codex scoring",
+        });
+        startBulkTaskPolling(task.id);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
+    async function startBulkApplicationPackets() {
+      const ids = selectedJobIds();
+      if (!ids.length) return alert("Select at least one job first.");
+      try {
+        const { task } = await api("/api/jobs/bulk/application-packets/generate", {
+          method: "POST",
+          body: JSON.stringify({ job_ids: ids }),
+          activityLabel: "Starting bulk packet generation",
+        });
+        startBulkTaskPolling(task.id);
+      } catch (err) {
+        alert(err.message);
+      }
+    }
+
     async function rescrapeJob(id) {
       try {
         const { job } = await api(`/api/jobs/${id}/scrape`, {
@@ -4355,7 +4731,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     function escapeAttr(s) { return escapeHtml(s).replace(/`/g, "&#96;"); }
     configureJobSplitDrag();
-    load();
+    load().then(() => {
+      if (activeBulkTaskId) startBulkTaskPolling(activeBulkTaskId);
+    });
   </script>
 </body>
 </html>

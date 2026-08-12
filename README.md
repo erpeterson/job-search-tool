@@ -46,6 +46,9 @@ Codex CLI path and model can also be updated from the app's Configuration panel.
 Saved values are written to `job-search-tool/.env`, applied to the running
 process, and displayed only in masked form.
 
+Codex invocations default to a 270-second timeout. Override this when needed by
+setting `CODEX_CLI_TIMEOUT_SECONDS` in `job-search-tool/.env`.
+
 Rotating structured API logs are written as newline-delimited JSON to:
 
 ```text
@@ -192,8 +195,9 @@ Discovery rule:
 
 - Add and track job listings from a posting URL and pipeline.
 - Scrape company, title, location, and posting text from manually entered URLs.
-- Generate application packets by invoking Codex CLI with `generate an application packet for <url>`, so UI-generated packets follow the same repository guidance as direct Codex-generated packets.
+- Generate application packets by invoking Codex CLI with a repository-guided packet prompt, so UI-generated packets follow the same Career Manual and `AGENTS.md` guidance as direct Codex-generated packets.
 - Generate Codex scorecards when Codex scoring is enabled and the Codex CLI is available.
+- Select multiple tracked jobs and start async bulk Codex scorecard population or bulk application packet generation, then poll progress from the UI while the server processes jobs in the background.
 - Record Eric's own scorecard.
 - Track application status.
 - Track company-level interest separately from individual roles.
