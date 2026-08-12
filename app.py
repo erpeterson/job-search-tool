@@ -3461,22 +3461,41 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       gap: 8px;
       align-items: center;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       width: 100%;
       padding-top: 6px;
       border-top: 1px solid var(--line);
+      overflow-x: auto;
     }
-    .bulk-actions button { white-space: nowrap; }
+    .bulk-actions button {
+      white-space: nowrap;
+      padding: 6px 8px;
+      font-size: 12px;
+      width: auto;
+      min-height: 0;
+    }
     .select-cell { width: 34px; text-align: center; }
     .select-cell input { width: auto; }
+    .level-cell { max-width: 190px; }
+    .level-preview {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      line-height: 1.25;
+    }
     .task-status {
-      width: 100%;
+      flex: 1 1 auto;
+      min-width: 220px;
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 999px;
       background: rgba(255,255,255,.65);
-      padding: 8px 10px;
+      padding: 5px 9px;
       font-size: 12px;
       color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     @media (max-width: 980px) {
       .header-inner { grid-template-columns: 1fr; gap: 8px; }
@@ -3709,6 +3728,10 @@ INDEX_HTML = r"""<!doctype html>
     const pretty = s => s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
     const scoreClass = n => n == null ? "" : n >= 70 ? "score-good" : n >= 40 ? "score-warn" : "score-bad";
     const levelStatus = item => item.level_assessment || "Unknown - level not assessed";
+    const levelPreview = item => {
+      const value = levelStatus(item);
+      return value.length > 100 ? `${value.slice(0, 97).trim()}...` : value;
+    };
     const scoreText = value => value == null ? "n/a" : value;
     const fieldValue = (object, field, fallback) => object && object[field] != null ? object[field] : fallback;
     const elementValue = (id, fallback = "") => {
@@ -4046,7 +4069,7 @@ INDEX_HTML = r"""<!doctype html>
                 <td>${escapeHtml(job.status || "")}${job.application_packet_path ? '<div class="small">packet attached</div>' : ""}${job.filtered ? '<div class="small">filtered/downlevel hidden by default</div>' : ""}</td>
                 <td><b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></td>
                 <td><b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></td>
-                <td>${escapeHtml(levelStatus(job))}${job.downlevel ? '<div class="small">downlevel</div>' : ""}</td>
+                <td class="level-cell" title="${escapeAttr(levelStatus(job))}"><span class="level-preview">${escapeHtml(levelPreview(job))}</span>${job.downlevel ? '<div class="small">downlevel</div>' : ""}</td>
                 <td>${escapeHtml(job.source_board || "manual")}</td>
               </tr>
             `).join("")}
