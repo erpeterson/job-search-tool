@@ -49,11 +49,24 @@ process, and displayed only in masked form.
 Codex invocations default to a 270-second timeout. Override this when needed by
 setting `CODEX_CLI_TIMEOUT_SECONDS` in `job-search-tool/.env`.
 
+Application packet generation uses a read-only, JSON-only Codex drafting call.
+The app provides the captured job posting, the relevant Career Manual rules, and
+the master resume as a compact context, then validates and writes `Job-Brief.md`,
+`Resume.md`, and `Cover-Letter.md` itself. Pandoc generates the matching DOCX
+files locally. This removes repository exploration and filesystem/document work
+from the Codex invocation.
+
 Rotating structured API logs are written as newline-delimited JSON to:
 
 ```text
 job-search-tool/logs/api.log
 ```
+
+Every actual Codex CLI subprocess emits `codex_cli_call_started` and
+`codex_cli_call_completed` entries in the decision log. The completion entry
+records the outcome, exit code, and total elapsed time in milliseconds and
+seconds. Replay-cache hits are logged separately because they do not invoke
+Codex.
 
 The logs capture job-board request URL, method, status code, elapsed time, error
 type, and a short response excerpt. They are intended for troubleshooting board

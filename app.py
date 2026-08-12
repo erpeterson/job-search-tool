@@ -33,6 +33,7 @@ APP_LOG_PATH = LOG_DIR / "job-search.log"
 CAPTURE_DIR = APP_DIR / "captures"
 GUIDANCE_PATH = ROOT / "supporting-documents" / "20260731-job-search-guidance.md"
 CAREER_MANUAL_PATH = ROOT / "career-manual" / "Career-Manual.md"
+MASTER_RESUME_PATH = ROOT / "resume" / "Master-Resume.md"
 APPLICATIONS_DIR = ROOT / "applications"
 
 load_dotenv(ENV_PATH)
@@ -1113,32 +1114,76 @@ def list_application_packets(conn):
     return packets
 
 
-def application_packet_dirs():
-    APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    return {path.resolve() for path in APPLICATIONS_DIR.iterdir() if path.is_dir()}
+def application_packet_slug(job):
+    company = re.sub(r"[^a-z0-9]+", "-", (job.get("company") or "unknown-company").lower()).strip("-")
+    title = re.sub(r"[^a-z0-9]+", "-", (job.get("title") or "unknown-role").lower()).strip("-")
+    identifier = re.sub(r"[^a-z0-9]+", "-", (job.get("source_job_id") or str(job.get("id") or "job")).lower()).strip("-")
+    return f"{datetime.now().strftime('%Y-%m')}-{company[:60]}-{title[:90]}-{identifier[:40]}"
 
 
-def packet_contains_url(packet_dir, url):
-    if not url:
-        return False
-    normalized_url = clean_url(url)
-    for path in packet_dir.glob("*.md"):
-        try:
-            if normalized_url in path.read_text(encoding="utf-8"):
-                return True
-        except UnicodeDecodeError:
-            continue
-    return False
+def application_packet_rules():
+    if not CAREER_MANUAL_PATH.exists():
+        return ""
+    manual = CAREER_MANUAL_PATH.read_text(encoding="utf-8")
+    start = manual.find("# Downstream Artifact Rules")
+    end = manual.find("# Open Questions", start)
+    return manual[start:end if end >= 0 else None].strip() if start >= 0 else ""
 
 
-def infer_generated_packet(job, before_dirs):
-    after_dirs = application_packet_dirs()
-    new_dirs = after_dirs - before_dirs
-    url_matches = [path for path in after_dirs if packet_contains_url(path, job.get("url"))]
-    candidates = url_matches or list(new_dirs)
-    if not candidates:
-        return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+def application_packet_context(job):
+    master_resume = MASTER_RESUME_PATH.read_text(encoding="utf-8") if MASTER_RESUME_PATH.exists() else ""
+    return {
+        "packet_creation_date": datetime.now().date().isoformat(),
+        "job": {
+            "id": job.get("id"),
+            "company": job.get("company"),
+            "title": job.get("title"),
+            "location": job.get("location"),
+            "url": job.get("url"),
+            "pipeline": job.get("pipeline"),
+            "source_board": job.get("source_board"),
+            "posting_text": job.get("posting_text") or "No posting text was captured. Do not invent requirements beyond the role title and metadata.",
+        },
+        "application_packet_rules": application_packet_rules(),
+        "master_resume": master_resume,
+    }
+
+
+def validate_application_packet_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("Codex packet response must be a JSON object.")
+    required = ("job_brief_markdown", "resume_markdown", "cover_letter_markdown")
+    missing = [field for field in required if not isinstance(payload.get(field), str) or not payload[field].strip()]
+    if missing:
+        raise ValueError(f"Codex packet response is missing required Markdown fields: {', '.join(missing)}.")
+    return {field: payload[field].strip() + "\n" for field in required}
+
+
+def write_application_packet_documents(packet_dir, payload):
+    packet_dir.mkdir(parents=True, exist_ok=False)
+    markdown_files = {
+        "Job-Brief.md": payload["job_brief_markdown"],
+        "Resume.md": payload["resume_markdown"],
+        "Cover-Letter.md": payload["cover_letter_markdown"],
+    }
+    for filename, content in markdown_files.items():
+        (packet_dir / filename).write_text(content, encoding="utf-8")
+
+    pandoc_path = shutil.which("pandoc")
+    if not pandoc_path:
+        raise RuntimeError("Pandoc is required to generate packet DOCX deliverables but was not found on PATH.")
+    for filename in markdown_files:
+        source_path = packet_dir / filename
+        output_path = source_path.with_suffix(".docx")
+        completed = subprocess.run(
+            [pandoc_path, "--from", "markdown", "--to", "docx", "--output", str(output_path), str(source_path)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"Pandoc failed for {filename}: {(completed.stderr or completed.stdout).strip()[:1000]}")
+    return list(markdown_files)
 
 
 def generate_application_packet_with_codex(job):
@@ -1147,57 +1192,45 @@ def generate_application_packet_with_codex(job):
     if not codex_cli_available():
         raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI.")
 
+    context = application_packet_context(job)
+    prompt = {
+        "task": "Generate exactly one application packet as JSON. Do not access the network or filesystem; use only the supplied context.",
+        "workflow": [
+            "First formulate the job brief, including high-signal requirements, tailoring strategy, achievement map, and likely objections.",
+            "Then draft one tailored resume and one cover letter using only source-backed evidence from the supplied master resume and rules.",
+            "Finally append an objection remediation outcome to the job brief. Perform this remediation cycle once only.",
+        ],
+        "output_contract": {
+            "job_brief_markdown": "Complete Job-Brief.md content. Include source trace naming the supplied Career Manual, Master Resume, and local tracked job.",
+            "resume_markdown": "Complete Resume.md content. One employer-facing, ATS-readable tailored resume.",
+            "cover_letter_markdown": "Complete Cover-Letter.md content. Direct, practical, evidence-oriented, and low hype.",
+        },
+        "constraints": [
+            "Return only one valid JSON object with exactly the three output_contract keys.",
+            "Do not use Markdown fences around the JSON.",
+            "Do not create files, propose filenames, or discuss this instruction.",
+            "Do not invent accomplishments, metrics, technologies, dates, or domain experience.",
+            "Do not generate separate ATS resume artifacts.",
+        ],
+        "context": context,
+    }
     cli_path = codex_cli_path()
-    prompt = textwrap.dedent(
-        f"""
-        Generate an application packet for {job['url']}.
-
-        Use this repository's canonical guidance instead of rediscovering the workflow:
-        - Read AGENTS.md first.
-        - Use career-manual/Career-Manual.md downstream artifact rules as the authoritative packet-generation process.
-        - Use resume/Master-Resume.md as the resume source, narrowing from the job brief rather than drafting broadly.
-        - If the job exists in job-search-tool/job_search.sqlite3, use the locally cached posting text for the URL before trying network access.
-        - Create exactly one tailored resume, one cover letter, and one job brief.
-        - Generate both Markdown and DOCX deliverables.
-        - Keep the job brief concise, include likely objections, and append only the objection remediation outcome after drafting.
-        """
-    ).strip()
-    before_dirs = application_packet_dirs()
     started = time.monotonic()
-    completed = None
     error = None
     output_text = ""
     try:
-        with tempfile.TemporaryDirectory(prefix="job-search-codex-packet-") as tmpdir:
-            output_path = Path(tmpdir) / "last-message.txt"
-            command = [
-                cli_path,
-                "exec",
-                "-C",
-                str(ROOT),
-                "--sandbox",
-                "workspace-write",
-                "-o",
-                str(output_path),
-                "-",
-            ]
-            model = codex_model()
-            if model:
-                command[2:2] = ["-m", model]
-            completed = subprocess.run(
-                command,
-                input=prompt,
-                text=True,
-                capture_output=True,
-                timeout=CODEX_CLI_TIMEOUT_SECONDS,
-                check=False,
-            )
-            if output_path.exists():
-                output_text = output_path.read_text(encoding="utf-8").strip()
-            if not output_text:
-                output_text = (completed.stdout or "").strip()
-            if completed.returncode != 0:
-                raise CodexCliError("generate_application_packet", completed.returncode)
+        output_text = call_codex_json(codex_model(), prompt, "generate_application_packet")
+        payload = validate_application_packet_payload(parse_model_json(output_text))
+        packet_dir = APPLICATIONS_DIR / application_packet_slug(job)
+        if packet_dir.exists():
+            raise FileExistsError(f"Application packet directory already exists: {repo_relative(packet_dir)}")
+        APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        # Publish only after all Markdown and DOCX files were generated successfully.
+        with tempfile.TemporaryDirectory(prefix=".packet-staging-", dir=APPLICATIONS_DIR) as staging_root:
+            staged_packet_dir = Path(staging_root) / packet_dir.name
+            markdown_files = write_application_packet_documents(staged_packet_dir, payload)
+            staged_packet_dir.replace(packet_dir)
+        return {"output_text": output_text, "packet_dir": packet_dir, "markdown_files": markdown_files}
     except Exception as exc:
         error = exc
         raise
@@ -1210,9 +1243,6 @@ def generate_application_packet_with_codex(job):
             cli_path=cli_path,
             ok=error is None,
             elapsed_ms=elapsed_ms,
-            returncode=completed.returncode if completed is not None else None,
-            stdout_excerpt=clean_text(completed.stdout)[:2000] if completed is not None and completed.stdout else None,
-            stderr_excerpt=clean_text(completed.stderr)[:2000] if completed is not None and completed.stderr else None,
             output_excerpt=clean_text(output_text)[:2000] if output_text else None,
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
@@ -1231,15 +1261,6 @@ def create_application_packet(conn, job_id):
         raise ValueError("Job not found.")
     result = generate_application_packet_with_codex(job)
     packet_dir = result.get("packet_dir")
-    if not packet_dir:
-        log_event("application_packet_generated_unassociated", job_id=job_id, url=job.get("url"))
-        return {
-            "path": "",
-            "name": "",
-            "markdown_files": [],
-            "codex_output": result.get("output_text", ""),
-            "warning": "Codex completed, but the app could not infer which application packet folder was generated.",
-        }
     relative = repo_relative(packet_dir)
     conn.execute(
         "UPDATE jobs SET application_packet_path = ?, updated_at = ? WHERE id = ?",
@@ -1249,7 +1270,7 @@ def create_application_packet(conn, job_id):
     return {
         "path": relative,
         "name": packet_dir.name,
-        "markdown_files": list_markdown_files(packet_dir),
+        "markdown_files": result.get("markdown_files", list_markdown_files(packet_dir)),
         "codex_output": result.get("output_text", ""),
     }
 
@@ -2359,11 +2380,18 @@ def call_codex_json(model, prompt, operation, force_refresh=False):
         return cached["response"].get("output_text", "")
 
     started = time.monotonic()
+    log_event(
+        "codex_cli_call_started",
+        operation=operation,
+        model=model,
+        cli_path=cli_path,
+        timeout_seconds=CODEX_CLI_TIMEOUT_SECONDS,
+    )
     completed = None
     error = None
     output_text = ""
     instruction = (
-        "You are a JSON-only scoring/refinement engine for a local job-search app.\n"
+        "You are a JSON-only engine for a local job-search app.\n"
         "Return only one valid JSON object. Do not include markdown fences, prose, or explanations outside JSON.\n\n"
         f"{json.dumps(prompt, indent=2, sort_keys=True, default=str)}\n"
     )
@@ -2411,18 +2439,19 @@ def call_codex_json(model, prompt, operation, force_refresh=False):
             "error_type": type(error).__name__ if error else None,
             "error_message": str(error) if error else None,
         }
-        write_capture("codex_cli", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})
         log_event(
-            "codex_cli_call",
+            "codex_cli_call_completed",
             operation=operation,
             model=model,
             cli_path=cli_path,
             ok=error is None,
             elapsed_ms=elapsed_ms,
+            elapsed_seconds=round(elapsed_ms / 1000, 3),
             returncode=completed.returncode if completed is not None else None,
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
+        write_capture("codex_cli", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})
 
 
 @app.get("/")
