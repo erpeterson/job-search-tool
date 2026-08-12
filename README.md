@@ -108,6 +108,7 @@ Response replay is enabled by default. To force live requests, set:
 JOB_SEARCH_USE_CAPTURE_CACHE=0
 ```
 
+
 ## Automated Search
 
 The app can run saved LinkedIn and Indeed searches:
