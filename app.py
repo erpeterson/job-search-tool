@@ -370,6 +370,18 @@ def with_sales_role_exclusion_criteria(criteria):
     return clean_text(f"{criteria} {SALES_ROLE_EXCLUSION_CRITERIA}")
 
 
+def normalize_pipeline(value, fallback=""):
+    """Return a valid pipeline string from model or request data."""
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate if candidate in PIPELINES else fallback
+    if isinstance(value, (list, tuple, set)):
+        for candidate in value:
+            if isinstance(candidate, str) and candidate.strip() in PIPELINES:
+                return candidate.strip()
+    return fallback
+
+
 def seed_search_queries(conn):
     ts = now()
     for query in DEFAULT_SEARCH_QUERIES:
@@ -2185,9 +2197,7 @@ def classify_discovery(conn, result, force_refresh=False):
     total = int(score.get("total_score", 0))
     downlevel = bool(score.get("downlevel", False))
     level_assessment = score.get("level_assessment", "") or result.get("cached_level_assessment", "") or UNKNOWN_LEVEL_ASSESSMENT
-    pipeline = score.get("pipeline", "")
-    if not pipeline:
-        pipeline = result.get("pipeline", "")
+    pipeline = normalize_pipeline(score.get("pipeline"), result.get("pipeline", ""))
 
     if result.get("cached_downlevel"):
         downlevel = True
@@ -2302,7 +2312,7 @@ def score_with_codex_cli(conn, job, force_refresh=False):
         ],
         "expected_json_schema": {
             "total_score": "integer 0-100",
-            "pipeline": PIPELINES,
+            "pipeline": f"one of: {', '.join(PIPELINES)}",
             "scorecard": {field: "integer 0-10" for field in RUBRIC_FIELDS},
             "level_assessment": "short phrase",
             "downlevel": "boolean",
@@ -2343,6 +2353,7 @@ def populate_codex_score(conn, job_id, force_refresh=False):
     total = int(score.get("total_score", 0))
     scorecard = score.get("scorecard", {})
     downlevel = bool(score.get("downlevel", False))
+    pipeline = normalize_pipeline(score.get("pipeline"), job.get("pipeline", ""))
     conn.execute(
         """
         UPDATE jobs
@@ -2355,7 +2366,7 @@ def populate_codex_score(conn, job_id, force_refresh=False):
             total,
             score.get("rationale", ""),
             json.dumps(scorecard),
-            score.get("pipeline", ""),
+            pipeline,
             score.get("level_assessment", ""),
             1 if downlevel else 0,
             now(),

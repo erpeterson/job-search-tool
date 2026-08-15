@@ -88,6 +88,30 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertEqual(result["oracle_title"], "Architect-equivalent or higher")
         self.assertEqual(result["downlevel"], 0)
 
+    def test_scorecard_pipeline_list_is_normalized_before_sqlite_update(self):
+        original_score = job_search_app.score_with_codex_cli
+        try:
+            with job_search_app.connect() as conn:
+                job_id = conn.execute(
+                    "INSERT INTO jobs(created_at, updated_at, company, title, pipeline, status) VALUES (?, ?, ?, ?, ?, ?)",
+                    (1, 1, "ExampleCo", "Principal Engineer", "Wildcards", "researching"),
+                ).lastrowid
+                job_search_app.score_with_codex_cli = lambda *_args, **_kwargs: {
+                    "total_score": 85,
+                    "scorecard": {},
+                    "pipeline": ["Executive IC", "Wildcards"],
+                    "level_assessment": "IC6-equivalent",
+                    "downlevel": False,
+                    "rationale": "Strong fit.",
+                }
+
+                job_search_app.populate_codex_score(conn, job_id)
+                pipeline = conn.execute("SELECT pipeline FROM jobs WHERE id = ?", (job_id,)).fetchone()["pipeline"]
+
+            self.assertEqual(pipeline, "Executive IC")
+        finally:
+            job_search_app.score_with_codex_cli = original_score
+
 
 if __name__ == "__main__":
     unittest.main()
