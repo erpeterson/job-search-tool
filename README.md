@@ -56,7 +56,9 @@ the master resume as a compact context, then validates and writes `Job-Brief.md`
 files locally. This removes repository exploration and filesystem/document work
 from the Codex invocation. The Codex drafting call follows the repository's
 `AGENTS.md` guidance, including the required AI-generation attribution in the
-Markdown artifacts; Pandoc carries it into the generated DOCX files.
+Markdown artifacts; Pandoc carries it into the generated DOCX files. Set
+`CODEX_MODEL` to the exact model identifier before generating a packet so Codex
+can write accurate attribution.
 
 Rotating structured API logs are written as newline-delimited JSON to:
 

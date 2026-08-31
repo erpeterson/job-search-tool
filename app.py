@@ -1204,7 +1204,14 @@ def generate_application_packet_with_codex(job):
     if not codex_cli_available():
         raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI.")
 
+    model = codex_model()
+    if not model:
+        raise ValueError("An explicit CODEX_MODEL is required for application packets so Codex can provide exact AI-generation attribution.")
     context = application_packet_context(job)
+    context["codex_generation_metadata"] = {
+        "generation_date": datetime.now(timezone.utc).date().isoformat(),
+        "model": model,
+    }
     prompt = {
         "task": "Generate exactly one application packet as JSON. Do not access the network or filesystem; use only the supplied context.",
         "workflow": [
@@ -1231,7 +1238,7 @@ def generate_application_packet_with_codex(job):
     error = None
     output_text = ""
     try:
-        output_text = call_codex_json(codex_model(), prompt, "generate_application_packet")
+        output_text = call_codex_json(model, prompt, "generate_application_packet")
         payload = validate_application_packet_payload(parse_model_json(output_text))
         packet_dir = APPLICATIONS_DIR / application_packet_slug(job)
         if packet_dir.exists():
@@ -1256,7 +1263,7 @@ def generate_application_packet_with_codex(job):
             ok=error is None,
             elapsed_ms=elapsed_ms,
             output_excerpt=clean_text(output_text)[:2000] if output_text else None,
-            model=codex_model(),
+            model=model,
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
@@ -3587,7 +3594,7 @@ INDEX_HTML = r"""<!doctype html>
           <div><label>Codex threshold</label><input id="gpt_threshold" type="number" min="0" max="100"></div>
           <div><label>User threshold</label><input id="user_threshold" type="number" min="0" max="100"></div>
         </div>
-        <label>Codex model override</label><input id="codex_model" placeholder="blank = Codex CLI default">
+        <label>Codex model override</label><input id="codex_model" placeholder="required for attributable packet generation">
         <div class="row" style="margin-top: 10px;">
           <button onclick="saveSettings()">Save</button>
         </div>
@@ -3613,7 +3620,7 @@ INDEX_HTML = r"""<!doctype html>
         <details>
           <summary>Codex CLI and model</summary>
           <label>Codex CLI path</label><input id="config_CODEX_CLI_PATH" placeholder="codex">
-          <label>Codex model</label><input id="config_CODEX_MODEL" placeholder="blank = Codex CLI default">
+          <label>Codex model</label><input id="config_CODEX_MODEL" placeholder="required for attributable packet generation">
           <label>Enable Codex scoring</label><select id="config_JOB_SEARCH_ENABLE_GPT_SCORING"><option value="0">disabled</option><option value="1">enabled</option></select>
           <label>Use captured responses</label><select id="config_JOB_SEARCH_USE_CAPTURE_CACHE"><option value="1">enabled</option><option value="0">disabled</option></select>
           <button class="secondary" onclick="saveConfig()">Save configuration</button>
