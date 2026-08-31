@@ -54,7 +54,9 @@ The app provides the captured job posting, the relevant Career Manual rules, and
 the master resume as a compact context, then validates and writes `Job-Brief.md`,
 `Resume.md`, and `Cover-Letter.md` itself. Pandoc generates the matching DOCX
 files locally. This removes repository exploration and filesystem/document work
-from the Codex invocation.
+from the Codex invocation. The Codex drafting call follows the repository's
+`AGENTS.md` guidance, including the required AI-generation attribution in the
+Markdown artifacts; Pandoc carries it into the generated DOCX files.
 
 Rotating structured API logs are written as newline-delimited JSON to:
 
@@ -101,6 +103,10 @@ Configuration panel or in `job-search-tool/.env`:
 ```text
 JOB_SEARCH_ENABLE_GPT_SCORING=1
 ```
+
+When Codex scoring is enabled and the CLI is available, each manually added job
+is scored immediately after it is saved. If scoring cannot run, the job is still
+saved and the app displays the reason.
 
 Response replay is enabled by default. To force live requests, set:
 

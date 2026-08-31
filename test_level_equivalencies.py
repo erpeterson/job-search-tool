@@ -16,6 +16,10 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.original_db_path = job_search_app.DB_PATH
         self.original_fetch_url = job_search_app.fetch_url
         self.original_log_event = job_search_app.log_event
+        self.original_scrape_job_from_url = job_search_app.scrape_job_from_url
+        self.original_gpt_scoring_enabled = job_search_app.gpt_scoring_enabled
+        self.original_codex_cli_available = job_search_app.codex_cli_available
+        self.original_populate_codex_score = job_search_app.populate_codex_score
         job_search_app.DB_PATH = Path(self.tmpdir.name) / "job_search.sqlite3"
         job_search_app.init_db()
 
@@ -23,6 +27,10 @@ class LevelEquivalencyTests(unittest.TestCase):
         job_search_app.DB_PATH = self.original_db_path
         job_search_app.fetch_url = self.original_fetch_url
         job_search_app.log_event = self.original_log_event
+        job_search_app.scrape_job_from_url = self.original_scrape_job_from_url
+        job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
+        job_search_app.codex_cli_available = self.original_codex_cli_available
+        job_search_app.populate_codex_score = self.original_populate_codex_score
         self.tmpdir.cleanup()
 
     def test_init_db_does_not_seed_level_equivalencies(self):
@@ -112,6 +120,30 @@ class LevelEquivalencyTests(unittest.TestCase):
         finally:
             job_search_app.score_with_codex_cli = original_score
 
+    def test_manually_added_job_is_automatically_scored(self):
+        job_search_app.scrape_job_from_url = lambda url, force_refresh=False: {
+            "url": url,
+            "company": "ExampleCo",
+            "title": "Principal Engineer",
+            "location": "Remote",
+            "posting_text": "Architecture role.",
+            "source_board": "manual",
+            "source_job_id": None,
+        }
+        job_search_app.gpt_scoring_enabled = lambda: True
+        job_search_app.codex_cli_available = lambda: True
+
+        def fake_populate_score(conn, job_id):
+            conn.execute("UPDATE jobs SET gpt_score = ? WHERE id = ?", (88, job_id))
+            return {"total_score": 88}
+
+        job_search_app.populate_codex_score = fake_populate_score
+        client = job_search_app.app.test_client()
+        response = client.post("/api/jobs", json={"url": "https://example.com/jobs/123", "pipeline": "Executive IC"})
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.get_json()["score_error"])
+        self.assertEqual(response.get_json()["job"]["gpt_score"], 88)
 
 if __name__ == "__main__":
     unittest.main()

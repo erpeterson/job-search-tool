@@ -1256,6 +1256,7 @@ def generate_application_packet_with_codex(job):
             ok=error is None,
             elapsed_ms=elapsed_ms,
             output_excerpt=clean_text(output_text)[:2000] if output_text else None,
+            model=codex_model(),
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
@@ -2929,7 +2930,23 @@ def api_create_job():
         )
         job_id = cur.lastrowid
         apply_filter(conn, job_id)
-        return jsonify({"job": get_job(conn, job_id), "scrape_error": scrape_error}), 201
+        score_error = None
+        if gpt_scoring_enabled() and codex_cli_available():
+            try:
+                populate_codex_score(conn, job_id)
+            except Exception as exc:
+                score_error = str(exc)
+                log_event(
+                    "manual_job_auto_score_failed",
+                    job_id=job_id,
+                    error_type=type(exc).__name__,
+                    message=score_error[:1000],
+                )
+        else:
+            unavailable_reason = "Codex scoring is disabled." if not gpt_scoring_enabled() else f"Codex CLI is unavailable at {codex_cli_path()!r}."
+            score_error = f"Automatic Codex scoring skipped: {unavailable_reason}"
+            log_event("manual_job_auto_score_skipped", job_id=job_id, reason=unavailable_reason)
+        return jsonify({"job": get_job(conn, job_id), "scrape_error": scrape_error, "score_error": score_error}), 201
 
 
 @app.post("/api/search/run")
@@ -4447,11 +4464,12 @@ INDEX_HTML = r"""<!doctype html>
         pipeline: document.getElementById("pipeline").value,
         force_refresh: document.getElementById("manual_force_refresh").checked,
       };
-      const { job } = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload), activityLabel: "Scraping job" });
+      const { job, score_error: scoreError } = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload), activityLabel: "Adding and scoring job" });
       selectedId = job.id;
       document.getElementById("url").value = "";
       document.getElementById("manual_force_refresh").checked = false;
       await load();
+      if (scoreError) alert(scoreError);
     }
 
     async function createCompanyInterest() {
