@@ -147,12 +147,10 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertIsNone(response.get_json()["score_error"])
         self.assertEqual(response.get_json()["job"]["gpt_score"], 88)
 
-    def test_packet_generation_requires_an_explicit_model_for_attribution(self):
-        job_search_app.codex_cli_available = lambda: True
-        job_search_app.codex_model = lambda: ""
+    def test_extracts_exact_model_from_codex_cli_output(self):
+        stderr = "OpenAI Codex v0.147.0 -------- model: gpt-5.6-terra provider: openai --------"
 
-        with self.assertRaisesRegex(ValueError, "explicit CODEX_MODEL"):
-            job_search_app.generate_application_packet_with_codex({"id": 1, "url": "https://example.com/jobs/123"})
+        self.assertEqual(job_search_app.extract_codex_reported_model(stderr), "gpt-5.6-terra")
 
 if __name__ == "__main__":
     unittest.main()

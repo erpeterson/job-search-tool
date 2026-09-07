@@ -1171,6 +1171,10 @@ def validate_application_packet_payload(payload):
     return {field: payload[field].strip() + "\n" for field in required}
 
 
+def application_packet_has_model_attribution(payload, model):
+    return all(model in content for content in payload.values())
+
+
 def write_application_packet_documents(packet_dir, payload):
     packet_dir.mkdir(parents=True, exist_ok=False)
     markdown_files = {
@@ -1204,14 +1208,7 @@ def generate_application_packet_with_codex(job):
     if not codex_cli_available():
         raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI.")
 
-    model = codex_model()
-    if not model:
-        raise ValueError("An explicit CODEX_MODEL is required for application packets so Codex can provide exact AI-generation attribution.")
     context = application_packet_context(job)
-    context["codex_generation_metadata"] = {
-        "generation_date": datetime.now(timezone.utc).date().isoformat(),
-        "model": model,
-    }
     prompt = {
         "task": "Generate exactly one application packet as JSON. Do not access the network or filesystem; use only the supplied context.",
         "workflow": [
@@ -1237,9 +1234,27 @@ def generate_application_packet_with_codex(job):
     started = time.monotonic()
     error = None
     output_text = ""
+    model = codex_model()
     try:
-        output_text = call_codex_json(model, prompt, "generate_application_packet")
+        output_text, model = call_codex_json(
+            model, prompt, "generate_application_packet", force_refresh=True, return_metadata=True
+        )
+        if not model:
+            raise RuntimeError("Codex CLI did not report the model used to generate the application packet.")
         payload = validate_application_packet_payload(parse_model_json(output_text))
+        if not application_packet_has_model_attribution(payload, model):
+            context["codex_generation_metadata"] = {
+                "generation_date": datetime.now(timezone.utc).date().isoformat(),
+                "model": model,
+            }
+            output_text, retry_model = call_codex_json(
+                model, prompt, "generate_application_packet", force_refresh=True, return_metadata=True
+            )
+            if retry_model != model:
+                raise RuntimeError("Codex CLI used a different model while regenerating the application packet attribution.")
+            payload = validate_application_packet_payload(parse_model_json(output_text))
+            if not application_packet_has_model_attribution(payload, model):
+                raise RuntimeError("Codex did not include the exact invoked model in every application-packet attribution.")
         packet_dir = APPLICATIONS_DIR / application_packet_slug(job)
         if packet_dir.exists():
             raise FileExistsError(f"Application packet directory already exists: {repo_relative(packet_dir)}")
@@ -2386,7 +2401,12 @@ def populate_codex_score(conn, job_id, force_refresh=False):
     return score
 
 
-def call_codex_json(model, prompt, operation, force_refresh=False):
+def extract_codex_reported_model(output):
+    match = re.search(r"\bmodel:\s*([^\s]+)", output or "", flags=re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def call_codex_json(model, prompt, operation, force_refresh=False, return_metadata=False):
     cli_path = codex_cli_path()
     request_payload = {
         "adapter_version": 2,
@@ -2396,7 +2416,10 @@ def call_codex_json(model, prompt, operation, force_refresh=False):
     }
     cached = read_capture("codex_cli", operation, request_payload, force_refresh=force_refresh)
     if cached:
-        return cached["response"].get("output_text", "")
+        output_text = cached["response"].get("output_text", "")
+        if return_metadata:
+            return output_text, cached["response"].get("effective_model", "")
+        return output_text
 
     started = time.monotonic()
     log_event(
@@ -2409,6 +2432,7 @@ def call_codex_json(model, prompt, operation, force_refresh=False):
     completed = None
     error = None
     output_text = ""
+    effective_model = ""
     instruction = (
         "You are a JSON-only engine for a local job-search app.\n"
         "Return only one valid JSON object. Do not include markdown fences, prose, or explanations outside JSON.\n\n"
@@ -2442,9 +2466,10 @@ def call_codex_json(model, prompt, operation, force_refresh=False):
                 output_text = output_path.read_text(encoding="utf-8").strip()
             if not output_text:
                 output_text = (completed.stdout or "").strip()
+            effective_model = extract_codex_reported_model((completed.stderr or "") + "\n" + (completed.stdout or ""))
             if completed.returncode != 0:
                 raise CodexCliError(operation, completed.returncode)
-        return output_text
+        return (output_text, effective_model) if return_metadata else output_text
     except Exception as exc:
         error = exc
         raise
@@ -2452,6 +2477,7 @@ def call_codex_json(model, prompt, operation, force_refresh=False):
         elapsed_ms = int((time.monotonic() - started) * 1000)
         response_payload = {
             "output_text": output_text,
+            "effective_model": effective_model,
             "returncode": completed.returncode if completed is not None else None,
             "stdout_excerpt": clean_text(completed.stdout)[:2000] if completed is not None and completed.stdout else None,
             "stderr_excerpt": clean_text(completed.stderr)[:2000] if completed is not None and completed.stderr else None,
@@ -3594,7 +3620,7 @@ INDEX_HTML = r"""<!doctype html>
           <div><label>Codex threshold</label><input id="gpt_threshold" type="number" min="0" max="100"></div>
           <div><label>User threshold</label><input id="user_threshold" type="number" min="0" max="100"></div>
         </div>
-        <label>Codex model override</label><input id="codex_model" placeholder="required for attributable packet generation">
+        <label>Codex model override</label><input id="codex_model" placeholder="blank = Codex CLI default">
         <div class="row" style="margin-top: 10px;">
           <button onclick="saveSettings()">Save</button>
         </div>
@@ -3620,7 +3646,7 @@ INDEX_HTML = r"""<!doctype html>
         <details>
           <summary>Codex CLI and model</summary>
           <label>Codex CLI path</label><input id="config_CODEX_CLI_PATH" placeholder="codex">
-          <label>Codex model</label><input id="config_CODEX_MODEL" placeholder="required for attributable packet generation">
+          <label>Codex model</label><input id="config_CODEX_MODEL" placeholder="blank = Codex CLI default">
           <label>Enable Codex scoring</label><select id="config_JOB_SEARCH_ENABLE_GPT_SCORING"><option value="0">disabled</option><option value="1">enabled</option></select>
           <label>Use captured responses</label><select id="config_JOB_SEARCH_USE_CAPTURE_CACHE"><option value="1">enabled</option><option value="0">disabled</option></select>
           <button class="secondary" onclick="saveConfig()">Save configuration</button>
