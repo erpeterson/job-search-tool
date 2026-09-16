@@ -1,0 +1,7 @@
+.DS_Store
+.venv/
+.env
+job_search.sqlite3
+captures/
+logs/
+__pycache__/
