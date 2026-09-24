@@ -104,7 +104,7 @@ gate, so that result is not evidence of the required 80% coverage.
   virtual environments, logs, and captures out of measurement.  Update
   `README.md` with setup and troubleshooting for the quality command.
 
-- [ ] **Expand tests to cover required business, error, and integration paths.**
+- [x] **Expand tests to cover required business, error, and integration paths.**
   The current 15 tests focus on small validation and level-equivalency cases;
   they do not cover database repositories/migrations, search filtering,
   configuration persistence, packet filesystem safety, error mapping, scheduler
