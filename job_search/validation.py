@@ -89,3 +89,12 @@ def environment_value(value: Any, field: str, *, max_length: int = 4_000) -> str
     if any(character in normalized for character in ("\x00", "\r", "\n")):
         raise RequestValidationError(f"{field} must not contain control characters.")
     return normalized
+
+
+def boolean(value: Any, field: str, *, default: bool | None = None) -> bool:
+    """Accept only JSON booleans, avoiding truthy-string coercion."""
+    if value is None and default is not None:
+        return default
+    if not isinstance(value, bool):
+        raise RequestValidationError(f"{field} must be a JSON boolean.")
+    return value

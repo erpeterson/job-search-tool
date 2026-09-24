@@ -52,7 +52,7 @@ gate, so that result is not evidence of the required 80% coverage.
   Flask, SQLite, Requests, or subprocess dependency.  Preserve public API
   behavior and add focused unit tests for services plus route/integration tests.
 
-- [ ] **Validate all request bodies and field types consistently at API
+- [x] **Validate all request bodies and field types consistently at API
   boundaries.** Several routes bypass `require_json_object()` (for example
   bulk score/generate at `app.py:2622`/`:2637`, packet attach at `:2668`,
   rescrape at `:2812`, and delete at `:2856`).  A JSON array causes an unhandled

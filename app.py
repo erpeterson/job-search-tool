@@ -28,6 +28,7 @@ from job_search.redaction import redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security
 from job_search.validation import (
     RequestValidationError,
+    boolean,
     choice,
     environment_value,
     http_url,
@@ -2620,20 +2621,25 @@ def api_application_packets():
 def clean_job_ids(payload):
     raw_ids = payload.get("job_ids", [])
     if not isinstance(raw_ids, list):
-        raise ValueError("job_ids must be a list.")
+        raise RequestValidationError("job_ids must be a list.")
+    if not raw_ids:
+        raise RequestValidationError("Select at least one job.")
+    if len(raw_ids) > 50:
+        raise RequestValidationError("job_ids must contain at most 50 jobs.")
     job_ids = []
     seen = set()
     for raw_id in raw_ids:
-        try:
-            job_id = int(raw_id)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("job_ids must contain only integers.") from exc
-        if job_id > 0 and job_id not in seen:
-            seen.add(job_id)
-            job_ids.append(job_id)
-    if not job_ids:
-        raise ValueError("Select at least one job.")
+        job_id = integer(raw_id, "job_ids item", minimum=1, maximum=2_147_483_647)
+        if job_id in seen:
+            raise RequestValidationError("job_ids must not contain duplicates.")
+        seen.add(job_id)
+        job_ids.append(job_id)
     return job_ids
+
+
+def request_json_object():
+    """Validate the actual parsed body; do not coerce arrays/null into {}."""
+    return require_json_object(request.get_json(silent=True))
 
 
 @app.get("/api/codex-tasks")
@@ -2651,28 +2657,22 @@ def api_codex_task(task_id):
 
 @app.post("/api/jobs/bulk/score-gpt")
 def api_bulk_score_gpt():
-    payload = request.get_json(silent=True) or {}
+    payload = request_json_object()
     if not gpt_scoring_enabled():
         return jsonify({"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}), 409
     if not codex_cli_available():
         return jsonify({"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."}), 409
-    try:
-        job_ids = clean_job_ids(payload)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    job_ids = clean_job_ids(payload)
     task = start_background_task("scorecards", job_ids, bulk_score_worker)
     return jsonify({"task": task}), 202
 
 
 @app.post("/api/jobs/bulk/application-packets/generate")
 def api_bulk_generate_application_packets():
-    payload = request.get_json(silent=True) or {}
+    payload = request_json_object()
     if not codex_cli_available():
         return jsonify({"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."}), 409
-    try:
-        job_ids = clean_job_ids(payload)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    job_ids = clean_job_ids(payload)
     task = start_background_task("application_packets", job_ids, bulk_packet_worker)
     return jsonify({"task": task}), 202
 
@@ -2697,8 +2697,10 @@ def api_generate_application_packet(job_id):
 
 @app.post("/api/jobs/<int:job_id>/application-packet/attach")
 def api_attach_application_packet(job_id):
-    payload = request.get_json(silent=True) or {}
-    packet_path = clean_text(payload.get("path", ""))
+    payload = request_json_object()
+    packet_path = optional_text(payload.get("path"), "path", max_length=2_000)
+    if not packet_path:
+        raise RequestValidationError("path is required.")
     with connect() as conn:
         job = get_job(conn, job_id)
         if not job:
@@ -2841,8 +2843,8 @@ def api_application_packet_render(job_id):
 
 @app.post("/api/jobs/<int:job_id>/scrape")
 def api_rescrape_job(job_id):
-    payload = request.get_json(silent=True) or {}
-    force_refresh = bool(payload.get("force_refresh", True))
+    payload = request_json_object()
+    force_refresh = boolean(payload.get("force_refresh"), "force_refresh", default=True)
     with connect() as conn:
         job = get_job(conn, job_id)
         if not job:
@@ -2885,7 +2887,7 @@ def api_rescrape_job(job_id):
 
 @app.delete("/api/jobs/<int:job_id>")
 def api_delete_job(job_id):
-    payload = request.get_json(silent=True) or {}
+    payload = request_json_object()
     if payload.get("confirm") != "DELETE":
         return jsonify({"error": "Type DELETE to confirm job deletion."}), 400
     with connect() as conn:
@@ -2998,7 +3000,7 @@ def api_create_job():
     status = choice(payload.get("status", "researching"), "status", JOB_STATUSES, required=True)
     scrape_error = None
     try:
-        scraped = scrape_job_from_url(url, force_refresh=bool(payload.get("force_refresh")))
+        scraped = scrape_job_from_url(url, force_refresh=boolean(payload.get("force_refresh"), "force_refresh", default=False))
     except Exception as exc:
         scrape_error = str(exc)
         scraped = fallback_job_from_url(url)
@@ -3067,7 +3069,7 @@ def api_create_job():
 @app.post("/api/search/run")
 def api_run_search():
     payload = require_json_object(request.get_json(silent=True) or {})
-    force_refresh = bool(payload.get("force_refresh"))
+    force_refresh = boolean(payload.get("force_refresh"), "force_refresh", default=False)
     run = run_job_search(trigger="manual", force_refresh=force_refresh)
     with connect() as conn:
         return jsonify(
@@ -3100,7 +3102,7 @@ def api_create_search_query():
                 pipeline,
                 keywords,
                 optional_text(payload.get("location", ""), "location", max_length=500),
-                1 if payload.get("enabled", True) else 0,
+                1 if boolean(payload.get("enabled"), "enabled", default=True) else 0,
                 ts,
                 optional_text(payload.get("criteria", ""), "criteria", max_length=10_000),
             ),
@@ -3130,7 +3132,7 @@ def api_update_search_query(query_id):
             """,
             (
                 board, pipeline, keywords, location, criteria,
-                1 if payload.get("enabled") is True else 0 if payload.get("enabled") is False else None,
+                (1 if boolean(payload["enabled"], "enabled") else 0) if "enabled" in payload else None,
                 query_id,
             ),
         )

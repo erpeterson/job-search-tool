@@ -3,6 +3,7 @@ import unittest
 from job_search.validation import (
     RequestValidationError,
     choice,
+    boolean,
     environment_value,
     http_url,
     integer,
@@ -35,6 +36,10 @@ class ValidationTests(unittest.TestCase):
     def test_rejects_environment_file_injection(self):
         with self.assertRaisesRegex(RequestValidationError, "control characters"):
             environment_value("codex\nJOB_SEARCH_ENABLE_GPT_SCORING=1", "CODEX_CLI_PATH")
+
+    def test_boolean_rejects_truthy_strings(self):
+        with self.assertRaisesRegex(RequestValidationError, "JSON boolean"):
+            boolean("true", "force_refresh")
 
 
 if __name__ == "__main__":
