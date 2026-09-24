@@ -24,6 +24,7 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from job_search.http_client import SafeHttpClient
+from job_search.config import load_runtime_settings
 from job_search.redaction import redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security
 from job_search.validation import (
@@ -51,17 +52,18 @@ MASTER_RESUME_PATH = ROOT / "resume" / "Master-Resume.md"
 APPLICATIONS_DIR = ROOT / "applications"
 
 load_dotenv(ENV_PATH)
+RUNTIME_SETTINGS = load_runtime_settings(os.environ)
 
 DEFAULT_MODEL = os.environ.get("CODEX_MODEL", "")
 DEFAULT_CODEX_CLI_PATH = os.environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex"
-CODEX_CLI_TIMEOUT_SECONDS = int(os.environ.get("CODEX_CLI_TIMEOUT_SECONDS", "270"))
-HOST = os.environ.get("JOB_SEARCH_HOST", "127.0.0.1")
-PORT = int(os.environ.get("JOB_SEARCH_PORT", "5050"))
-DEBUG = os.environ.get("JOB_SEARCH_DEBUG", "0") == "1"
+CODEX_CLI_TIMEOUT_SECONDS = RUNTIME_SETTINGS.codex_timeout_seconds
+HOST = RUNTIME_SETTINGS.host
+PORT = RUNTIME_SETTINGS.port
+DEBUG = RUNTIME_SETTINGS.debug
 AUTORUN = False # the scheduler is buggy and eats codex credits.. disable it for now; os.environ.get("JOB_SEARCH_AUTORUN", "1") != "0"
-SEARCH_INTERVAL_SECONDS = int(os.environ.get("JOB_SEARCH_INTERVAL_SECONDS", str(24 * 60 * 60)))
-LOG_MAX_BYTES = int(os.environ.get("JOB_SEARCH_LOG_MAX_BYTES", str(1024 * 1024)))
-LOG_BACKUP_COUNT = int(os.environ.get("JOB_SEARCH_LOG_BACKUP_COUNT", "5"))
+SEARCH_INTERVAL_SECONDS = RUNTIME_SETTINGS.search_interval_seconds
+LOG_MAX_BYTES = RUNTIME_SETTINGS.log_max_bytes
+LOG_BACKUP_COUNT = RUNTIME_SETTINGS.log_backup_count
 CONFIG_KEYS = [
     "CODEX_CLI_PATH",
     "CODEX_MODEL",

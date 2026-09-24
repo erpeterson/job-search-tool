@@ -75,7 +75,7 @@ gate, so that result is not evidence of the required 80% coverage.
   capture corruption) without leaking internals to clients.  Add tests that
   assert status, safe response, event code, and correlation/run ID.
 
-- [ ] **Validate environment configuration before startup and fail safely.**
+- [x] **Validate environment configuration before startup and fail safely.**
   Integer conversion of `CODEX_CLI_TIMEOUT_SECONDS`, `JOB_SEARCH_PORT`, log
   sizes/counts, and intervals occurs at import time in `app.py:53-60`; malformed
   external environment values crash without a controlled error or telemetry.
