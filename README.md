@@ -77,6 +77,12 @@ This is a single-user local tool. The data owner is the person running it;
 SQLite records, application packets, logs, and optional captures remain on the
 local filesystem and are never uploaded by the application itself.
 
+External deployment is disabled unless `JOB_SEARCH_HOST` is non-loopback and
+authentication, CSRF, TLS termination, and a trusted reverse-proxy boundary are
+all configured. Set `JOB_SEARCH_TRUSTED_PROXY_CIDRS` to the exact proxy IP/CIDR
+range; forwarding headers from every other peer are rejected, even if they claim
+HTTPS. Do not expose the application port directly to the public internet.
+
 Bulk Codex work uses a bounded, single-worker local-development dispatcher.
 Task status and individual job results are durable in SQLite. If the process
 stops, queued/running tasks become `interrupted` at the next startup; select

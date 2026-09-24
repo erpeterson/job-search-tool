@@ -29,7 +29,7 @@ from job_search.domain.filtering import decide_job_filter
 from job_search.errors import ClientInputError, translate_exception
 from job_search.http_client import SafeHttpClient
 from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
-from job_search.security import authorized, csrf_valid, load_request_security
+from job_search.security import authorized, csrf_valid, load_request_security, trusted_proxy_peer
 from job_search.task_repository import TaskRepository
 from job_search.validation import (
     RequestValidationError,
@@ -100,6 +100,8 @@ def enforce_request_security():
     g.correlation_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
     if not REQUEST_SECURITY.enabled:
         return None
+    if not trusted_proxy_peer(request.remote_addr, REQUEST_SECURITY):
+        return jsonify({"error": "Request must arrive through a configured trusted proxy."}), 403
     if request.headers.get("X-Forwarded-Proto", "").lower() != "https":
         return jsonify({"error": "HTTPS is required for externally exposed deployments."}), 400
     if not authorized(request.headers.get("Authorization"), REQUEST_SECURITY.auth_token):

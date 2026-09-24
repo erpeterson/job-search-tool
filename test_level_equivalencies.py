@@ -176,6 +176,7 @@ class LevelEquivalencyTests(unittest.TestCase):
                     "JOB_SEARCH_CSRF_TOKEN": "csrf",
                     "JOB_SEARCH_TRUSTED_PROXY": "1",
                     "JOB_SEARCH_TLS_TERMINATED": "1",
+                    "JOB_SEARCH_TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
                 }
             )
             client = job_search_app.app.test_client()
@@ -185,8 +186,25 @@ class LevelEquivalencyTests(unittest.TestCase):
                 json={},
                 headers={"X-Forwarded-Proto": "https", "Authorization": "Bearer auth"},
             )
+            forged_direct = client.get(
+                "/api/state",
+                headers={"X-Forwarded-Proto": "https", "Authorization": "Bearer auth"},
+                environ_overrides={"REMOTE_ADDR": "8.8.8.8"},
+            )
+            untrusted_proxy = client.get(
+                "/api/state",
+                headers={"X-Forwarded-Proto": "https", "Authorization": "Bearer auth"},
+                environ_overrides={"REMOTE_ADDR": "10.0.0.2"},
+            )
+            trusted_proxy = client.get(
+                "/api/state",
+                headers={"X-Forwarded-Proto": "https", "Authorization": "Bearer auth"},
+            )
             self.assertEqual(unauthenticated.status_code, 401)
             self.assertEqual(no_csrf.status_code, 403)
+            self.assertEqual(forged_direct.status_code, 403)
+            self.assertEqual(untrusted_proxy.status_code, 403)
+            self.assertEqual(trusted_proxy.status_code, 200)
         finally:
             job_search_app.REQUEST_SECURITY = original_security
 

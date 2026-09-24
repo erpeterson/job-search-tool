@@ -159,7 +159,7 @@ complete every acceptance criterion listed with it.
   confirmed full-capture mode is the sole documented exception; and no call
   site bypasses the central serializer.
 
-- [ ] **REOPEN: enforce trustworthy reverse-proxy boundaries for external
+- [x] **REOPEN: enforce trustworthy reverse-proxy boundaries for external
   deployments.** `REQUEST_SECURITY` accepts `X-Forwarded-Proto: https` from any
   direct client once `JOB_SEARCH_TRUSTED_PROXY=1` is set; it has no configured
   proxy IP/CIDR allowlist or middleware that derives scheme/client address only
