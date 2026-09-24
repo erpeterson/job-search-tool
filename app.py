@@ -24,6 +24,7 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from job_search.http_client import SafeHttpClient
+from job_search.redaction import redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security
 from job_search.validation import (
     RequestValidationError,
@@ -672,7 +673,11 @@ def codex_model(conn=None):
 
 
 def capture_cache_enabled():
-    return os.environ.get("JOB_SEARCH_USE_CAPTURE_CACHE", "1") != "0"
+    return os.environ.get("JOB_SEARCH_USE_CAPTURE_CACHE", "0") == "1"
+
+
+def full_capture_enabled():
+    return os.environ.get("JOB_SEARCH_ENABLE_FULL_CAPTURE", "0") == "1"
 
 
 def background_task_snapshot(task):
@@ -801,13 +806,13 @@ def log_api_call(service, method, url, response=None, error=None, elapsed_ms=Non
         "ts": datetime.now(timezone.utc).isoformat(),
         "service": service,
         "method": method,
-        "url": url,
+        "url": redact_url(url),
         "status_code": status_code,
         "ok": response is not None and response.ok and error is None,
         "elapsed_ms": elapsed_ms,
         "error_type": type(error).__name__ if error else None,
-        "message": str(error)[:1000] if error else None,
-        "response_excerpt": clean_text(response_text)[:2000] if response_text else None,
+        "message": redact_value(str(error)[:1000]) if error else None,
+        "response_excerpt": redact_value(clean_text(response_text)[:2000]) if response_text else None,
     }
     api_logger.info(json.dumps(event, sort_keys=True))
 
@@ -816,7 +821,7 @@ def log_event(event_type, **fields):
     event = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event_type,
-        **fields,
+        **redact_value(fields),
     }
     event_logger.info(json.dumps(event, sort_keys=True, default=str))
 
@@ -848,17 +853,22 @@ def read_capture(service, operation, request_payload, force_refresh=False):
 
 
 def write_capture(service, operation, request_payload, response_payload, metadata=None):
+    if not capture_cache_enabled():
+        log_event("capture_write_skipped", service=service, operation=operation, reason="capture_disabled")
+        return None
     path = capture_path(service, operation, request_payload)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     capture = {
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "service": service,
         "operation": operation,
-        "request": request_payload,
-        "response": response_payload,
-        "metadata": metadata or {},
+        "request": redact_value(request_payload, full_capture=full_capture_enabled()),
+        "response": redact_value(response_payload, full_capture=full_capture_enabled()),
+        "metadata": redact_value(metadata or {}, full_capture=full_capture_enabled()),
     }
-    path.write_text(json.dumps(capture, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    with path.open("w", encoding="utf-8") as capture_file:
+        path.chmod(0o600)
+        capture_file.write(json.dumps(capture, indent=2, sort_keys=True, default=str) + "\n")
     log_event("capture_write", service=service, operation=operation, path=str(path))
     return path
 
@@ -1659,7 +1669,7 @@ def fetch_url(service, url, force_refresh=False):
     request_payload = {
         "method": "GET",
         "url": url,
-        "headers": request_headers(),
+        "headers": redact_headers(request_headers()),
     }
     cached = read_capture(service, "http_get", request_payload, force_refresh=force_refresh)
     if cached:

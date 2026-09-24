@@ -30,7 +30,7 @@ gate, so that result is not evidence of the required 80% coverage.
   clear error.  Cover unauthenticated state-changing requests, CSRF rejection,
   and permitted local development behavior in tests.
 
-- [ ] **Redact sensitive data before logs and replay captures are written.**
+- [x] **Redact sensitive data before logs and replay captures are written.**
   `fetch_url`, `log_api_call`, and `write_capture` persist complete URLs,
   headers, response bodies, Codex prompts, and model output under `logs/` and
   `captures/`.  Query tokens and personal/job-application content can therefore

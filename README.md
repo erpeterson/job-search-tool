@@ -42,6 +42,13 @@ model; blank uses your Codex CLI default.
 
 Data is stored locally in `job-search-tool/job_search.sqlite3`.
 
+Replay captures are disabled by default. Set `JOB_SEARCH_USE_CAPTURE_CACHE=1`
+only for short, local troubleshooting sessions; captures are owner-readable
+only and must be deleted after use. `JOB_SEARCH_ENABLE_FULL_CAPTURE=1` retains
+full replay payloads and should be used only with data-owner approval. Normal
+logs and redacted captures omit URL queries/credentials, authentication headers,
+tokens, prompts, posting text, and model output.
+
 ## Development
 
 Run the deterministic test suite from this directory:
