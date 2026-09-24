@@ -8,7 +8,7 @@ gate, so that result is not evidence of the required 80% coverage.
 
 ## P0 — security and safe operation
 
-- [ ] **Prevent SSRF in all outbound job-posting requests.** `http_url()` in
+- [x] **Prevent SSRF in all outbound job-posting requests.** `http_url()` in
   `job_search/validation.py` rejects literal private IP addresses, but accepts
   hostnames without resolving them; `fetch_url()` in `app.py` then follows
   redirects by default.  An attacker who can reach the API can use a hostname

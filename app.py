@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
+from job_search.http_client import SafeHttpClient
 from job_search.validation import (
     RequestValidationError,
     choice,
@@ -182,6 +183,7 @@ MIN_ANNUAL_COMPENSATION = 200_000
 UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
 BACKGROUND_TASKS = {}
 BACKGROUND_TASK_LOCK = threading.Lock()
+OUTBOUND_HTTP_CLIENT = SafeHttpClient()
 
 
 def connect():
@@ -1649,7 +1651,7 @@ def fetch_url(service, url, force_refresh=False):
     response = None
     error = None
     try:
-        response = requests.get(url, headers=request_headers(), timeout=30)
+        response = OUTBOUND_HTTP_CLIENT.get(service, url, headers=request_headers(), timeout=30)
         return response
     except requests.RequestException as exc:
         error = exc
