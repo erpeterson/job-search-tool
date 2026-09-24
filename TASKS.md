@@ -113,7 +113,7 @@ gate, so that result is not evidence of the required 80% coverage.
   service, include normal behavior, boundary validation, and at least one
   logged failure/recovery assertion, then meet the new coverage threshold.
 
-- [ ] **Document supported operations and safe data lifecycle.** The README
+- [x] **Document supported operations and safe data lifecycle.** The README
   describes running and many features, but does not define data ownership,
   capture/log retention and deletion, backup/restore, production exposure
   requirements, configuration validation, or quality checks.  Add concise

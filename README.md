@@ -71,6 +71,46 @@ and cannot target localhost or private/reserved IP addresses. Unexpected server
 errors return a generic response; diagnostic context is retained in the
 structured event log.
 
+## Operations and data lifecycle
+
+This is a single-user local tool. The data owner is the person running it;
+SQLite records, application packets, logs, and optional captures remain on the
+local filesystem and are never uploaded by the application itself.
+
+| Data | Location | Lifecycle |
+| --- | --- | --- |
+| CRM data and settings | `job_search.sqlite3` | Back up this file while the app is stopped; restore it by replacing it while stopped. |
+| Generated packets | sibling `applications/` directory | Review before sharing; delete manually only when no longer needed. |
+| Diagnostic logs | `logs/` | Rotated by configured size/count. Delete old rotated logs according to the data owner’s retention policy. |
+| Replay captures | `captures/` | Disabled by default; enable only briefly for troubleshooting and delete afterward. |
+
+`Purge tracked jobs` requires typing `PURGE`, deletes tracked roles and their
+notes/interactions, and intentionally preserves search history, settings, logs,
+and captures. Take a SQLite backup before purging; restoration is the only
+recovery path for purged rows.
+
+Every HTTP request receives a correlation ID (`X-Request-ID` may be supplied by
+the caller). Search, capture, and error events record it in the JSON event log,
+which is the starting point for troubleshooting. Runtime configuration is read
+from `.env` and validated at startup: invalid ports, intervals, timeouts, or log
+rotation values fail with `STARTUP_INVALID_CONFIGURATION` rather than starting
+with an unsafe fallback.
+
+The server binds to loopback by default. Do not expose it directly to a network.
+Non-loopback binding is refused unless bearer authentication, a CSRF token, a
+trusted TLS-terminating proxy, and explicit TLS configuration are supplied.
+External callers must use HTTPS, `Authorization: Bearer …`, and
+`X-CSRF-Token` for state-changing requests.
+
+Troubleshooting:
+
+- Run `./quality.sh` before reporting a defect; it identifies lint, test, and
+  coverage regressions.
+- If scraping fails, inspect `logs/api.log` using its correlation ID. Never
+  paste captures or logs containing application content into public channels.
+- If Codex is unavailable, verify `CODEX_CLI_PATH`, local CLI authentication,
+  and the configured timeout, then restart the app after changing `.env`.
+
 Codex CLI path and model can also be updated from the app's Configuration panel.
 Saved values are written to `job-search-tool/.env`, applied to the running
 process, and displayed only in masked form.
