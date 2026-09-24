@@ -63,7 +63,7 @@ gate, so that result is not evidence of the required 80% coverage.
   scalars, string booleans, nulls, duplicate/oversized ID lists, and each
   affected endpoint.
 
-- [ ] **Centralize exception translation and make every recovery observable.**
+- [x] **Centralize exception translation and make every recovery observable.**
   The project requires each caught exception to emit a unique telemetry event
   and a structured log with stable error code, component, operation,
   identifiers, and sanitized cause.  Current silent recovery includes malformed

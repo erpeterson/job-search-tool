@@ -207,6 +207,19 @@ class LevelEquivalencyTests(unittest.TestCase):
             job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
             job_search_app.codex_cli_available = self.original_codex_cli_available
 
+    def test_validation_response_contains_error_code_and_correlation_id(self):
+        events = []
+        job_search_app.log_event = lambda event_type, **fields: events.append((event_type, fields))
+        try:
+            response = job_search_app.app.test_client().post(
+                "/api/jobs", json={"url": "invalid", "pipeline": "Executive IC"}, headers={"X-Request-ID": "run-123"}
+            )
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.get_json()["error_code"], "API_CLIENT_INPUT_INVALID")
+            self.assertEqual(events[0][1]["error_code"], "API_CLIENT_INPUT_INVALID")
+        finally:
+            job_search_app.log_event = self.original_log_event
+
 
 if __name__ == "__main__":
     unittest.main()

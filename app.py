@@ -20,10 +20,11 @@ from urllib.parse import quote_plus, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, g, has_request_context, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from job_search.config import load_runtime_settings
+from job_search.errors import ClientInputError, translate_exception
 from job_search.http_client import SafeHttpClient
 from job_search.redaction import redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security
@@ -84,6 +85,7 @@ event_logger.propagate = False
 @app.before_request
 def enforce_request_security():
     """Protect all external bindings before any route can mutate local state."""
+    g.correlation_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
     if not REQUEST_SECURITY.enabled:
         return None
     if request.headers.get("X-Forwarded-Proto", "").lower() != "https":
@@ -94,6 +96,12 @@ def enforce_request_security():
         request.headers.get("X-CSRF-Token"), REQUEST_SECURITY.csrf_token
     ):
         return jsonify({"error": "CSRF validation failed."}), 403
+    return None
+
+
+@app.before_request
+def assign_request_correlation_id():
+    # The security hook initializes this first so rejected requests are traced.
     return None
 
 
@@ -658,6 +666,12 @@ def parse_json_field(value, fallback):
     try:
         return json.loads(value)
     except json.JSONDecodeError:
+        log_event(
+            "stored_json_parse_recovered",
+            error_code="STORED_JSON_PARSE_RECOVERED",
+            component="data_access.serialization",
+            operation="parse_json_field",
+        )
         return fallback
 
 
@@ -840,6 +854,7 @@ def log_event(event_type, **fields):
     event = {
         "ts": datetime.now(UTC).isoformat(),
         "event": event_type,
+        "correlation_id": getattr(g, "correlation_id", None) if has_request_context() else None,
         **redact_value(fields),
     }
     event_logger.info(json.dumps(event, sort_keys=True, default=str))
@@ -866,6 +881,13 @@ def read_capture(service, operation, request_payload, force_refresh=False):
     try:
         capture = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
+        log_event(
+            "capture_corruption_recovered",
+            error_code="CAPTURE_CORRUPTION_RECOVERED",
+            component="data_access.capture",
+            operation="read_capture",
+            path=str(path),
+        )
         return None
     log_event("capture_replay", service=service, operation=operation, path=str(path))
     return capture
@@ -1706,6 +1728,12 @@ def extract_job_json_ld(soup):
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
+            log_event(
+                "json_ld_parse_recovered",
+                error_code="JSON_LD_PARSE_RECOVERED",
+                component="business.posting_parser",
+                operation="extract_job_json_ld",
+            )
             continue
         candidates = payload if isinstance(payload, list) else [payload]
         for candidate in candidates:
@@ -3476,28 +3504,39 @@ def api_update_settings():
 @app.errorhandler(Exception)
 def api_error(exc):
     if isinstance(exc, RequestValidationError):
+        exc = ClientInputError(str(exc))
+    if isinstance(exc, ClientInputError):
+        mapped = translate_exception(exc)
         log_event(
             "api_request_validation_failed",
-            error_code="API_REQUEST_VALIDATION_FAILED",
+            error_code=mapped.error_code,
             component="presentation.api",
             operation=request.endpoint,
             path=request.path,
             message=str(exc),
         )
-        return jsonify({"error": str(exc)}), 400
+        return jsonify(mapped.body), mapped.status_code
     if isinstance(exc, HTTPException):
+        log_event(
+            "api_http_exception",
+            error_code="API_HTTP_EXCEPTION",
+            component="presentation.api",
+            operation=request.endpoint,
+            path=request.path,
+            status_code=exc.code,
+        )
         return exc
-    error_code = "API_UNHANDLED_EXCEPTION"
+    mapped = translate_exception(exc)
     log_event(
         "api_unhandled_exception",
-        error_code=error_code,
+        error_code=mapped.error_code,
         component="presentation.api",
         operation=request.endpoint,
         path=request.path,
         error_type=type(exc).__name__,
         message=str(exc)[:1000],
     )
-    return jsonify({"error": "An unexpected server error occurred.", "error_code": error_code}), 500
+    return jsonify(mapped.body), mapped.status_code
 
 
 def scheduler_loop():
