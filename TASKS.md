@@ -130,7 +130,7 @@ complete every acceptance criterion listed with it.
 
 ### P1 — security
 
-- [ ] **REOPEN: prevent DNS-rebinding SSRF at the actual TCP connection.**
+- [x] **REOPEN: prevent DNS-rebinding SSRF at the actual TCP connection.**
   `SafeHttpClient._validate_destination()` resolves a hostname and validates its
   addresses, but then passes the hostname to `requests.get()`
   (`job_search/http_client.py:52`). Requests performs a separate DNS lookup, so
