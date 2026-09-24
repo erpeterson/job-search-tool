@@ -25,6 +25,7 @@ from flask import Flask, Response, g, has_request_context, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from job_search.config import load_runtime_settings
+from job_search.domain.filtering import decide_job_filter
 from job_search.errors import ClientInputError, translate_exception
 from job_search.http_client import SafeHttpClient
 from job_search.redaction import redact_headers, redact_url, redact_value
@@ -74,7 +75,16 @@ CONFIG_KEYS = [
     "JOB_SEARCH_USE_CAPTURE_CACHE",
 ]
 
-app = Flask(__name__)
+
+def create_app(test_config=None):
+    """Create the presentation application with injectable Flask configuration."""
+    flask_app = Flask(__name__)
+    if test_config:
+        flask_app.config.update(test_config)
+    return flask_app
+
+
+app = create_app()
 REQUEST_SECURITY = load_request_security(os.environ)
 api_logger = logging.getLogger("job_search.api")
 api_logger.setLevel(logging.INFO)
@@ -904,26 +914,20 @@ def apply_filter(conn, job_id):
     job = conn.execute(
         "SELECT company, title, gpt_score, user_score, downlevel FROM jobs WHERE id = ?", (job_id,)
     ).fetchone()
-    filtered = 0
-    reasons = []
-    if job:
-        if job["downlevel"]:
-            filtered = 1
-            reasons.append("downlevel relative to Oracle IC6-equivalent target")
-        if use_gpt_threshold and job["gpt_score"] is not None and job["gpt_score"] < gpt_threshold:
-            filtered = 1
-            reasons.append(f"gpt_score {job['gpt_score']} below threshold {gpt_threshold}")
-        if job["user_score"] is not None and job["user_score"] < user_threshold:
-            filtered = 1
-            reasons.append(f"user_score {job['user_score']} below threshold {user_threshold}")
-    conn.execute("UPDATE jobs SET filtered = ?, updated_at = ? WHERE id = ?", (filtered, now(), job_id))
-    if job and filtered:
+    decision = decide_job_filter(
+        row_to_dict(job),
+        gpt_threshold=gpt_threshold,
+        user_threshold=user_threshold,
+        gpt_scoring_enabled=use_gpt_threshold,
+    )
+    conn.execute("UPDATE jobs SET filtered = ?, updated_at = ? WHERE id = ?", (int(decision.filtered), now(), job_id))
+    if job and decision.filtered:
         log_event(
             "job_filtered",
             job_id=job_id,
             company=job["company"],
             title=job["title"],
-            reasons=reasons,
+            reasons=decision.reasons,
             gpt_score=job["gpt_score"],
             user_score=job["user_score"],
             downlevel=bool(job["downlevel"]),

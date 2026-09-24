@@ -42,7 +42,7 @@ gate, so that result is not evidence of the required 80% coverage.
 
 ## P1 — architecture, validation, and resilience
 
-- [ ] **Split `app.py` into the required three tiers.** The 4,976-line module
+- [x] **Split `app.py` into the required three tiers.** The 4,976-line module
   currently combines Flask routes and embedded HTML/JS (presentation), search,
   scoring, packet, filtering, scheduler workflows (business logic), and SQLite,
   filesystem, HTTP, subprocess, and capture operations (data access).
