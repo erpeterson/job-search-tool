@@ -84,7 +84,7 @@ gate, so that result is not evidence of the required 80% coverage.
   error code, and documented defaults.  Use the same validation when the config
   endpoint updates `.env`; add tests for invalid and boundary values.
 
-- [ ] **Replace in-process daemon threads and mutable global task state with a
+- [x] **Replace in-process daemon threads and mutable global task state with a
   durable worker abstraction.** `BACKGROUND_TASKS` and `threading.Thread` lose
   task status on restart and can run long external work inside the web process;
   the scheduler has the same issue.  Define a task repository and worker/queue

@@ -12,6 +12,7 @@ import textwrap
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -28,6 +29,7 @@ from job_search.errors import ClientInputError, translate_exception
 from job_search.http_client import SafeHttpClient
 from job_search.redaction import redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security
+from job_search.task_repository import TaskRepository
 from job_search.validation import (
     RequestValidationError,
     boolean,
@@ -220,8 +222,7 @@ ORACLE_IC6_LEVEL_REFERENCE = (
 )
 MIN_ANNUAL_COMPENSATION = 200_000
 UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
-BACKGROUND_TASKS = {}
-BACKGROUND_TASK_LOCK = threading.Lock()
+TASK_DISPATCHER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="job-search-worker")
 OUTBOUND_HTTP_CLIENT = SafeHttpClient()
 
 
@@ -419,6 +420,16 @@ def init_db():
                 'Developer Experience Principal Engineer'
               )
             """
+        )
+
+    recovered_tasks = task_repository().initialize(now())
+    if recovered_tasks:
+        log_event(
+            "background_tasks_recovered",
+            error_code="BACKGROUND_TASKS_RECOVERED",
+            component="data_access.tasks",
+            operation="initialize",
+            recovered_count=recovered_tasks,
         )
 
 
@@ -713,81 +724,35 @@ def full_capture_enabled():
     return os.environ.get("JOB_SEARCH_ENABLE_FULL_CAPTURE", "0") == "1"
 
 
-def background_task_snapshot(task):
-    snapshot = dict(task)
-    snapshot["items"] = [dict(item) for item in task.get("items", [])]
-    return snapshot
+def task_repository():
+    return TaskRepository(DB_PATH)
 
 
 def get_background_task(task_id):
-    with BACKGROUND_TASK_LOCK:
-        task = BACKGROUND_TASKS.get(task_id)
-        return background_task_snapshot(task) if task else None
+    return task_repository().get(task_id)
 
 
 def list_background_tasks(limit=10):
-    with BACKGROUND_TASK_LOCK:
-        tasks = sorted(BACKGROUND_TASKS.values(), key=lambda task: task["created_at"], reverse=True)
-        return [background_task_snapshot(task) for task in tasks[:limit]]
+    return task_repository().list(limit)
 
 
 def update_background_task(task_id, **updates):
-    with BACKGROUND_TASK_LOCK:
-        task = BACKGROUND_TASKS.get(task_id)
-        if not task:
-            return None
-        task.update(updates)
-        task["updated_at"] = now()
-        return background_task_snapshot(task)
+    return task_repository().update(task_id, now(), **updates)
 
 
 def update_background_task_item(task_id, job_id, **updates):
-    with BACKGROUND_TASK_LOCK:
-        task = BACKGROUND_TASKS.get(task_id)
-        if not task:
-            return None
-        for item in task["items"]:
-            if item["job_id"] == job_id:
-                item.update(updates)
-                item["updated_at"] = now()
-                break
-        task["updated_at"] = now()
-        return background_task_snapshot(task)
+    return task_repository().update_item(task_id, job_id, now(), **updates)
 
 
 def start_background_task(operation, job_ids, worker):
     task_id = uuid.uuid4().hex
     created_at = now()
-    task = {
-        "id": task_id,
-        "operation": operation,
-        "status": "queued",
-        "created_at": created_at,
-        "updated_at": created_at,
-        "started_at": None,
-        "completed_at": None,
-        "total": len(job_ids),
-        "completed": 0,
-        "failed": 0,
-        "skipped": 0,
-        "current_job_id": None,
-        "message": "",
-        "items": [
-            {
-                "job_id": job_id,
-                "status": "queued",
-                "message": "",
-                "updated_at": created_at,
-            }
-            for job_id in job_ids
-        ],
-    }
-    with BACKGROUND_TASK_LOCK:
-        BACKGROUND_TASKS[task_id] = task
-    thread = threading.Thread(target=worker, args=(task_id, job_ids), daemon=True)
-    thread.start()
+    task = task_repository().create(task_id, operation, job_ids, created_at)
+    # Bounded single-worker dispatcher is the documented local-development
+    # implementation. State remains durable if the process stops mid-task.
+    TASK_DISPATCHER.submit(worker, task_id, job_ids)
     log_event("background_task_started", task_id=task_id, operation=operation, job_ids=job_ids)
-    return background_task_snapshot(task)
+    return task
 
 
 def masked_config():

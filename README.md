@@ -77,6 +77,12 @@ This is a single-user local tool. The data owner is the person running it;
 SQLite records, application packets, logs, and optional captures remain on the
 local filesystem and are never uploaded by the application itself.
 
+Bulk Codex work uses a bounded, single-worker local-development dispatcher.
+Task status and individual job results are durable in SQLite. If the process
+stops, queued/running tasks become `interrupted` at the next startup; select
+their jobs again to retry them. For production deployment, run the worker in a
+separate managed process backed by the same task repository.
+
 | Data | Location | Lifecycle |
 | --- | --- | --- |
 | CRM data and settings | `job_search.sqlite3` | Back up this file while the app is stopped; restore it by replacing it while stopped. |
