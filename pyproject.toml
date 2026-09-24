@@ -1,8 +1,7 @@
 [tool.coverage.run]
 branch = true
-# Application modules are introduced under job_search; app.py remains the
-# legacy presentation composition root until the architecture migration.
-source = ["job_search"]
+# Measure every first-party Python module, including the Flask composition root.
+source = ["."]
 omit = [
   "test_*.py",
   ".venv/*",

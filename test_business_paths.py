@@ -1,8 +1,8 @@
 import importlib.util
-import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 APP_PATH = Path(__file__).resolve().parent / "app.py"
 SPEC = importlib.util.spec_from_file_location("business_paths_app", APP_PATH)
@@ -17,8 +17,6 @@ class BusinessPathTests(unittest.TestCase):
         self.original_applications_dir = app_module.APPLICATIONS_DIR
         self.original_root = app_module.ROOT
         self.original_env_path = app_module.ENV_PATH
-        self.original_cache_flag = os.environ.get("JOB_SEARCH_USE_CAPTURE_CACHE")
-        self.original_codex_model = os.environ.get("CODEX_MODEL")
         app_module.CAPTURE_DIR = Path(self.tempdir.name) / "captures"
         app_module.APPLICATIONS_DIR = Path(self.tempdir.name) / "applications"
         app_module.ROOT = Path(self.tempdir.name)
@@ -29,14 +27,6 @@ class BusinessPathTests(unittest.TestCase):
         app_module.APPLICATIONS_DIR = self.original_applications_dir
         app_module.ROOT = self.original_root
         app_module.ENV_PATH = self.original_env_path
-        if self.original_cache_flag is None:
-            os.environ.pop("JOB_SEARCH_USE_CAPTURE_CACHE", None)
-        else:
-            os.environ["JOB_SEARCH_USE_CAPTURE_CACHE"] = self.original_cache_flag
-        if self.original_codex_model is None:
-            os.environ.pop("CODEX_MODEL", None)
-        else:
-            os.environ["CODEX_MODEL"] = self.original_codex_model
         self.tempdir.cleanup()
 
     def test_location_compensation_and_sales_filters_cover_boundary_cases(self):
@@ -56,22 +46,23 @@ class BusinessPathTests(unittest.TestCase):
             app_module.application_packet_abs_path("../../outside")
 
     def test_corrupt_capture_is_recovered_and_emits_telemetry(self):
-        os.environ["JOB_SEARCH_USE_CAPTURE_CACHE"] = "1"
-        payload = {"url": "https://example.test"}
-        path = app_module.capture_path("manual", "http_get", payload)
-        path.parent.mkdir(parents=True)
-        path.write_text("not-json", encoding="utf-8")
-        events = []
-        original_log_event = app_module.log_event
-        app_module.log_event = lambda event_type, **fields: events.append((event_type, fields))
-        try:
-            self.assertIsNone(app_module.read_capture("manual", "http_get", payload))
-        finally:
-            app_module.log_event = original_log_event
+        with patch.object(app_module.os, "environ", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}):
+            payload = {"url": "https://example.test"}
+            path = app_module.capture_path("manual", "http_get", payload)
+            path.parent.mkdir(parents=True)
+            path.write_text("not-json", encoding="utf-8")
+            events = []
+            original_log_event = app_module.log_event
+            app_module.log_event = lambda event_type, **fields: events.append((event_type, fields))
+            try:
+                self.assertIsNone(app_module.read_capture("manual", "http_get", payload))
+            finally:
+                app_module.log_event = original_log_event
         self.assertEqual(events[0][1]["error_code"], "CAPTURE_CORRUPTION_RECOVERED")
 
     def test_config_endpoint_persists_validated_value(self):
-        response = app_module.app.test_client().post("/api/config", json={"CODEX_MODEL": "test-model"})
+        with patch.object(app_module.os, "environ", {}):
+            response = app_module.app.test_client().post("/api/config", json={"CODEX_MODEL": "test-model"})
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("CODEX_MODEL=test-model", app_module.ENV_PATH.read_text(encoding="utf-8"))
