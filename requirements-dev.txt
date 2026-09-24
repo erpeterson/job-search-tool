@@ -1,0 +1,3 @@
+# Pinned development tools for deterministic local and CI quality checks.
+coverage==7.6.10
+ruff==0.9.10

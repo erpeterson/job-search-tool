@@ -1,0 +1,29 @@
+[tool.coverage.run]
+branch = true
+# Application modules are introduced under job_search; app.py remains the
+# legacy presentation composition root until the architecture migration.
+source = ["job_search"]
+omit = [
+  "test_*.py",
+  ".venv/*",
+  "captures/*",
+  "logs/*",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [".venv", "captures", "logs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"] # Embedded HTML/JS and search prompts intentionally retain long source lines.
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

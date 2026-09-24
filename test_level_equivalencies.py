@@ -3,7 +3,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 APP_PATH = Path(__file__).resolve().parent / "app.py"
 SPEC = importlib.util.spec_from_file_location("job_search_app", APP_PATH)
 job_search_app = importlib.util.module_from_spec(SPEC)
@@ -196,13 +195,18 @@ class LevelEquivalencyTests(unittest.TestCase):
         job_search_app.gpt_scoring_enabled = lambda: True
         job_search_app.codex_cli_available = lambda: True
         try:
-            for payload, expected in (([], "JSON object"), ({"job_ids": [1, 1]}, "duplicates"), ({"job_ids": list(range(1, 52))}, "at most 50")):
+            for payload, expected in (
+                ([], "JSON object"),
+                ({"job_ids": [1, 1]}, "duplicates"),
+                ({"job_ids": list(range(1, 52))}, "at most 50"),
+            ):
                 response = client.post("/api/jobs/bulk/score-gpt", json=payload)
                 self.assertEqual(response.status_code, 400)
                 self.assertIn(expected, response.get_json()["error"])
         finally:
             job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
             job_search_app.codex_cli_available = self.original_codex_cli_available
+
 
 if __name__ == "__main__":
     unittest.main()

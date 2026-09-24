@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import json
 import hashlib
+import json
 import logging
 import os
 import re
@@ -8,11 +8,11 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-import threading
 import textwrap
+import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -23,8 +23,8 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from job_search.http_client import SafeHttpClient
 from job_search.config import load_runtime_settings
+from job_search.http_client import SafeHttpClient
 from job_search.redaction import redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security
 from job_search.validation import (
@@ -60,7 +60,7 @@ CODEX_CLI_TIMEOUT_SECONDS = RUNTIME_SETTINGS.codex_timeout_seconds
 HOST = RUNTIME_SETTINGS.host
 PORT = RUNTIME_SETTINGS.port
 DEBUG = RUNTIME_SETTINGS.debug
-AUTORUN = False # the scheduler is buggy and eats codex credits.. disable it for now; os.environ.get("JOB_SEARCH_AUTORUN", "1") != "0"
+AUTORUN = False  # the scheduler is buggy and eats codex credits.. disable it for now; os.environ.get("JOB_SEARCH_AUTORUN", "1") != "0"
 SEARCH_INTERVAL_SECONDS = RUNTIME_SETTINGS.search_interval_seconds
 LOG_MAX_BYTES = RUNTIME_SETTINGS.log_max_bytes
 LOG_BACKUP_COUNT = RUNTIME_SETTINGS.log_backup_count
@@ -146,7 +146,14 @@ PIPELINES = [
 ]
 
 JOB_STATUSES = {
-    "researching", "interested", "applied", "interviewing", "offer", "rejected", "declined", "paused",
+    "researching",
+    "interested",
+    "applied",
+    "interviewing",
+    "offer",
+    "rejected",
+    "declined",
+    "paused",
 }
 COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_interested"}
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
@@ -170,7 +177,9 @@ PIPELINE_CRITERIA = {
     },
 }
 
-SALES_ROLE_EXCLUSION_QUERY = '-"Account Executive" -"Sales Executive" -"Sales Director" -"Account Manager" -"Business Development" -sales'
+SALES_ROLE_EXCLUSION_QUERY = (
+    '-"Account Executive" -"Sales Executive" -"Sales Director" -"Account Manager" -"Business Development" -sales'
+)
 SALES_ROLE_EXCLUSION_CRITERIA = "Exclude Account Executive and other sales roles."
 SALES_ROLE_TITLE_TERMS = (
     "account executive",
@@ -187,9 +196,9 @@ DEFAULT_SEARCH_QUERIES = [
     {
         "board": board,
         "pipeline": pipeline,
-        "keywords": f'{config["keywords"]} {SALES_ROLE_EXCLUSION_QUERY}',
+        "keywords": f"{config['keywords']} {SALES_ROLE_EXCLUSION_QUERY}",
         "location": "Remote",
-        "criteria": f'{config["description"]} {SALES_ROLE_EXCLUSION_CRITERIA}',
+        "criteria": f"{config['description']} {SALES_ROLE_EXCLUSION_CRITERIA}",
         "seeded": 1,
     }
     for pipeline, config in PIPELINE_CRITERIA.items()
@@ -369,7 +378,9 @@ def init_db():
         ensure_column(conn, "search_queries", "seeded", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "discovered_jobs", "query_id", "INTEGER")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url) WHERE url IS NOT NULL AND url != ''")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_level_equivalencies_company ON level_equivalencies(normalized_company)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_level_equivalencies_company ON level_equivalencies(normalized_company)"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_company_interests_status ON company_interests(status)")
         defaults = {
             "gpt_threshold": "40",
@@ -539,7 +550,12 @@ def estimate_level_equivalency(company, title):
 def estimate_and_cache_level_equivalency(conn, company, title):
     equivalency = estimate_level_equivalency(company, title)
     if not equivalency:
-        log_event("level_equivalency_unknown", company=company, title=title, reason="No cached calibration or reliable local title estimate.")
+        log_event(
+            "level_equivalency_unknown",
+            company=company,
+            title=title,
+            reason="No cached calibration or reliable local title estimate.",
+        )
         return None
     ts = now()
     conn.execute(
@@ -806,7 +822,7 @@ def log_api_call(service, method, url, response=None, error=None, elapsed_ms=Non
     status_code = getattr(response, "status_code", None) if response is not None else None
     response_text = getattr(response, "text", "") if response is not None else ""
     event = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "service": service,
         "method": method,
         "url": redact_url(url),
@@ -822,7 +838,7 @@ def log_api_call(service, method, url, response=None, error=None, elapsed_ms=Non
 
 def log_event(event_type, **fields):
     event = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "event": event_type,
         **redact_value(fields),
     }
@@ -862,7 +878,7 @@ def write_capture(service, operation, request_payload, response_payload, metadat
     path = capture_path(service, operation, request_payload)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     capture = {
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
         "service": service,
         "operation": operation,
         "request": redact_value(request_payload, full_capture=full_capture_enabled()),
@@ -898,7 +914,9 @@ def apply_filter(conn, job_id):
     gpt_threshold = int(cfg.get("gpt_threshold", "40"))
     user_threshold = int(cfg.get("user_threshold", "60"))
     use_gpt_threshold = gpt_scoring_enabled()
-    job = conn.execute("SELECT company, title, gpt_score, user_score, downlevel FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    job = conn.execute(
+        "SELECT company, title, gpt_score, user_score, downlevel FROM jobs WHERE id = ?", (job_id,)
+    ).fetchone()
     filtered = 0
     reasons = []
     if job:
@@ -1010,15 +1028,14 @@ def get_job(conn, job_id):
 def list_search_queries(conn):
     return [
         row_to_dict(row)
-        for row in conn.execute("SELECT * FROM search_queries ORDER BY enabled DESC, seeded DESC, pipeline, board, keywords, location")
+        for row in conn.execute(
+            "SELECT * FROM search_queries ORDER BY enabled DESC, seeded DESC, pipeline, board, keywords, location"
+        )
     ]
 
 
 def list_search_runs(conn):
-    return [
-        row_to_dict(row)
-        for row in conn.execute("SELECT * FROM search_runs ORDER BY started_at DESC LIMIT 20")
-    ]
+    return [row_to_dict(row) for row in conn.execute("SELECT * FROM search_runs ORDER BY started_at DESC LIMIT 20")]
 
 
 def search_schedule_state(conn):
@@ -1191,7 +1208,9 @@ def list_application_packets(conn):
 def application_packet_slug(job):
     company = re.sub(r"[^a-z0-9]+", "-", (job.get("company") or "unknown-company").lower()).strip("-")
     title = re.sub(r"[^a-z0-9]+", "-", (job.get("title") or "unknown-role").lower()).strip("-")
-    identifier = re.sub(r"[^a-z0-9]+", "-", (job.get("source_job_id") or str(job.get("id") or "job")).lower()).strip("-")
+    identifier = re.sub(r"[^a-z0-9]+", "-", (job.get("source_job_id") or str(job.get("id") or "job")).lower()).strip(
+        "-"
+    )
     return f"{datetime.now().strftime('%Y-%m')}-{company[:60]}-{title[:90]}-{identifier[:40]}"
 
 
@@ -1201,7 +1220,7 @@ def application_packet_rules():
     manual = CAREER_MANUAL_PATH.read_text(encoding="utf-8")
     start = manual.find("# Downstream Artifact Rules")
     end = manual.find("# Open Questions", start)
-    return manual[start:end if end >= 0 else None].strip() if start >= 0 else ""
+    return manual[start : end if end >= 0 else None].strip() if start >= 0 else ""
 
 
 def application_packet_context(job):
@@ -1216,7 +1235,8 @@ def application_packet_context(job):
             "url": job.get("url"),
             "pipeline": job.get("pipeline"),
             "source_board": job.get("source_board"),
-            "posting_text": job.get("posting_text") or "No posting text was captured. Do not invent requirements beyond the role title and metadata.",
+            "posting_text": job.get("posting_text")
+            or "No posting text was captured. Do not invent requirements beyond the role title and metadata.",
         },
         "application_packet_rules": application_packet_rules(),
         "master_resume": master_resume,
@@ -1268,7 +1288,9 @@ def generate_application_packet_with_codex(job):
     if not job.get("url"):
         raise ValueError("Job does not have a URL for Codex packet generation.")
     if not codex_cli_available():
-        raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI.")
+        raise RuntimeError(
+            f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."
+        )
 
     context = application_packet_context(job)
     prompt = {
@@ -1306,17 +1328,21 @@ def generate_application_packet_with_codex(job):
         payload = validate_application_packet_payload(parse_model_json(output_text))
         if not application_packet_has_model_attribution(payload, model):
             context["codex_generation_metadata"] = {
-                "generation_date": datetime.now(timezone.utc).date().isoformat(),
+                "generation_date": datetime.now(UTC).date().isoformat(),
                 "model": model,
             }
             output_text, retry_model = call_codex_json(
                 model, prompt, "generate_application_packet", force_refresh=True, return_metadata=True
             )
             if retry_model != model:
-                raise RuntimeError("Codex CLI used a different model while regenerating the application packet attribution.")
+                raise RuntimeError(
+                    "Codex CLI used a different model while regenerating the application packet attribution."
+                )
             payload = validate_application_packet_payload(parse_model_json(output_text))
             if not application_packet_has_model_attribution(payload, model):
-                raise RuntimeError("Codex did not include the exact invoked model in every application-packet attribution.")
+                raise RuntimeError(
+                    "Codex did not include the exact invoked model in every application-packet attribution."
+                )
         packet_dir = APPLICATIONS_DIR / application_packet_slug(job)
         if packet_dir.exists():
             raise FileExistsError(f"Application packet directory already exists: {repo_relative(packet_dir)}")
@@ -1345,12 +1371,6 @@ def generate_application_packet_with_codex(job):
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
-
-    packet_dir = infer_generated_packet(job, before_dirs)
-    return {
-        "output_text": output_text,
-        "packet_dir": packet_dir,
-    }
 
 
 def create_application_packet(conn, job_id):
@@ -1397,7 +1417,16 @@ def bulk_score_worker(task_id, job_ids):
             except Exception as exc:
                 failed += 1
                 update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
-                log_event("bulk_codex_score_error", error_code="BULK_CODEX_SCORE_FAILED", component="business.bulk_scoring", operation="populate_codex_score", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
+                log_event(
+                    "bulk_codex_score_error",
+                    error_code="BULK_CODEX_SCORE_FAILED",
+                    component="business.bulk_scoring",
+                    operation="populate_codex_score",
+                    task_id=task_id,
+                    job_id=job_id,
+                    error_type=type(exc).__name__,
+                    message=str(exc)[:1000],
+                )
             finally:
                 update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
     status = "complete" if failed == 0 else "error"
@@ -1412,7 +1441,9 @@ def bulk_packet_worker(task_id, job_ids):
     with connect() as conn:
         for job_id in job_ids:
             update_background_task(task_id, current_job_id=job_id)
-            update_background_task_item(task_id, job_id, status="running", message="Generating application packet with Codex")
+            update_background_task_item(
+                task_id, job_id, status="running", message="Generating application packet with Codex"
+            )
             try:
                 job = get_job(conn, job_id)
                 if not job:
@@ -1420,7 +1451,9 @@ def bulk_packet_worker(task_id, job_ids):
                     update_background_task_item(task_id, job_id, status="skipped", message="Job not found")
                 elif job.get("application_packet_path"):
                     skipped += 1
-                    update_background_task_item(task_id, job_id, status="skipped", message="Application packet already associated")
+                    update_background_task_item(
+                        task_id, job_id, status="skipped", message="Application packet already associated"
+                    )
                 else:
                     packet = create_application_packet(conn, job_id)
                     completed += 1
@@ -1433,13 +1466,24 @@ def bulk_packet_worker(task_id, job_ids):
             except Exception as exc:
                 failed += 1
                 update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
-                log_event("bulk_application_packet_error", error_code="BULK_APPLICATION_PACKET_FAILED", component="business.bulk_packets", operation="create_application_packet", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
+                log_event(
+                    "bulk_application_packet_error",
+                    error_code="BULK_APPLICATION_PACKET_FAILED",
+                    component="business.bulk_packets",
+                    operation="create_application_packet",
+                    task_id=task_id,
+                    job_id=job_id,
+                    error_type=type(exc).__name__,
+                    message=str(exc)[:1000],
+                )
             finally:
                 update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
     status = "complete" if failed == 0 else "error"
     message = f"Complete: {completed} generated, {skipped} skipped, {failed} failed."
     update_background_task(task_id, status=status, completed_at=now(), current_job_id=None, message=message)
-    log_event("background_task_finished", task_id=task_id, operation="application_packets", status=status, message=message)
+    log_event(
+        "background_task_finished", task_id=task_id, operation="application_packets", status=status, message=message
+    )
 
 
 def calibration_examples(conn):
@@ -1541,22 +1585,52 @@ def scrape_job_from_url(url, force_refresh=False):
     page_title = clean_text(soup.title.get_text(" ")) if soup.title else ""
     title = (
         nested_value(json_ld, "title")
-        or selector_text(soup, ["h1", ".top-card-layout__title", ".jobsearch-JobInfoHeader-title", "[data-testid='jobsearch-JobInfoHeader-title']"])
+        or selector_text(
+            soup,
+            [
+                "h1",
+                ".top-card-layout__title",
+                ".jobsearch-JobInfoHeader-title",
+                "[data-testid='jobsearch-JobInfoHeader-title']",
+            ],
+        )
         or meta_content(soup, ["og:title", "twitter:title"])
         or page_title
     )
     company = (
         nested_value(json_ld, "hiringOrganization", "name")
-        or selector_text(soup, [".topcard__org-name-link", ".topcard__flavor", "[data-testid='inlineHeader-companyName']", "[data-company-name]", ".jobsearch-InlineCompanyRating-companyHeader a"])
+        or selector_text(
+            soup,
+            [
+                ".topcard__org-name-link",
+                ".topcard__flavor",
+                "[data-testid='inlineHeader-companyName']",
+                "[data-company-name]",
+                ".jobsearch-InlineCompanyRating-companyHeader a",
+            ],
+        )
         or meta_content(soup, ["og:site_name"])
     )
-    location = (
-        location_from_json_ld(json_ld)
-        or selector_text(soup, [".topcard__flavor--bullet", ".job-search-card__location", "[data-testid='job-location']", ".jobsearch-JobInfoHeader-subtitle div"])
+    location = location_from_json_ld(json_ld) or selector_text(
+        soup,
+        [
+            ".topcard__flavor--bullet",
+            ".job-search-card__location",
+            "[data-testid='job-location']",
+            ".jobsearch-JobInfoHeader-subtitle div",
+        ],
     )
     description = (
         nested_value(json_ld, "description")
-        or selector_text(soup, ["#job-details", ".show-more-less-html__markup", "#jobDescriptionText", "[data-testid='jobDescriptionText']"])
+        or selector_text(
+            soup,
+            [
+                "#job-details",
+                ".show-more-less-html__markup",
+                "#jobDescriptionText",
+                "[data-testid='jobDescriptionText']",
+            ],
+        )
         or clean_text(soup.get_text(" "))[:5000]
     )
     posting_text = clean_text(BeautifulSoup(description or "", "html.parser").get_text(" "))
@@ -1894,7 +1968,10 @@ def compensation_filter_decision(result):
         return True, "No explicit compensation below threshold found"
     high = max(values)
     if high < MIN_ANNUAL_COMPENSATION:
-        return False, f"Explicit compensation below ${MIN_ANNUAL_COMPENSATION:,}/year; highest parsed annualized value is ${int(high):,}"
+        return (
+            False,
+            f"Explicit compensation below ${MIN_ANNUAL_COMPENSATION:,}/year; highest parsed annualized value is ${int(high):,}",
+        )
     return True, f"Explicit compensation meets threshold; highest parsed annualized value is ${int(high):,}"
 
 
@@ -1916,7 +1993,9 @@ def run_job_search(trigger="manual", force_refresh=False):
         run_id = cur.lastrowid
         queries = [
             row_to_dict(row)
-            for row in conn.execute("SELECT * FROM search_queries WHERE enabled = 1 ORDER BY seeded DESC, pipeline, board, keywords")
+            for row in conn.execute(
+                "SELECT * FROM search_queries WHERE enabled = 1 ORDER BY seeded DESC, pipeline, board, keywords"
+            )
         ]
 
     found_count = 0
@@ -2093,7 +2172,9 @@ def run_job_search(trigger="manual", force_refresh=False):
                         run_id=run_id,
                     )
                     continue
-                decision, reason, tracked_job_id, score, scorecard, level_assessment, downlevel = classify_discovery(conn, result, force_refresh=force_refresh)
+                decision, reason, tracked_job_id, score, scorecard, level_assessment, downlevel = classify_discovery(
+                    conn, result, force_refresh=force_refresh
+                )
                 if decision != "tracked":
                     rejected_count += 1
                 else:
@@ -2189,7 +2270,12 @@ def refine_search_query(conn, query_id, force_refresh=False):
         log_event("query_refinement_skipped", query_id=query_id, reason="Codex scoring disabled")
         return
     if not codex_cli_available():
-        log_event("query_refinement_skipped", query_id=query_id, reason="Codex CLI unavailable", codex_cli_path=codex_cli_path())
+        log_event(
+            "query_refinement_skipped",
+            query_id=query_id,
+            reason="Codex CLI unavailable",
+            codex_cli_path=codex_cli_path(),
+        )
         return
     query = row_to_dict(conn.execute("SELECT * FROM search_queries WHERE id = ?", (query_id,)).fetchone())
     if not query:
@@ -2226,7 +2312,8 @@ def refine_search_query(conn, query_id, force_refresh=False):
             "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
         },
         "pipeline": query.get("pipeline"),
-        "pipeline_criteria": query.get("criteria") or PIPELINE_CRITERIA.get(query.get("pipeline"), {}).get("description", ""),
+        "pipeline_criteria": query.get("criteria")
+        or PIPELINE_CRITERIA.get(query.get("pipeline"), {}).get("description", ""),
         "current_keywords": query.get("keywords"),
         "location": query.get("location"),
         "recent_results": recent,
@@ -2273,7 +2360,15 @@ def classify_discovery(conn, result, force_refresh=False):
             reason=reason,
         )
         job_id = track_discovery_without_gpt(conn, result, reason)
-        return "tracked", reason, job_id, None, {}, result.get("cached_level_assessment", ""), bool(result.get("cached_downlevel"))
+        return (
+            "tracked",
+            reason,
+            job_id,
+            None,
+            {},
+            result.get("cached_level_assessment", ""),
+            bool(result.get("cached_downlevel")),
+        )
     if not codex_cli_available():
         reason = "Codex CLI is unavailable; discovery tracked without Codex score."
         log_event(
@@ -2286,13 +2381,23 @@ def classify_discovery(conn, result, force_refresh=False):
             codex_cli_path=codex_cli_path(),
         )
         job_id = track_discovery_without_gpt(conn, result, reason)
-        return "tracked", reason, job_id, None, {}, result.get("cached_level_assessment", ""), bool(result.get("cached_downlevel"))
+        return (
+            "tracked",
+            reason,
+            job_id,
+            None,
+            {},
+            result.get("cached_level_assessment", ""),
+            bool(result.get("cached_downlevel")),
+        )
 
     score = score_discovery_with_codex(conn, result, force_refresh=force_refresh)
     scorecard = score.get("scorecard", {})
     total = int(score.get("total_score", 0))
     downlevel = bool(score.get("downlevel", False))
-    level_assessment = score.get("level_assessment", "") or result.get("cached_level_assessment", "") or UNKNOWN_LEVEL_ASSESSMENT
+    level_assessment = (
+        score.get("level_assessment", "") or result.get("cached_level_assessment", "") or UNKNOWN_LEVEL_ASSESSMENT
+    )
     pipeline = normalize_pipeline(score.get("pipeline"), result.get("pipeline", ""))
 
     if result.get("cached_downlevel"):
@@ -2384,7 +2489,9 @@ def score_with_codex_cli(conn, job, force_refresh=False):
     if not gpt_scoring_enabled():
         raise RuntimeError("Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it.")
     if not codex_cli_available():
-        raise RuntimeError(f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring.")
+        raise RuntimeError(
+            f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."
+        )
 
     model = codex_model(conn)
     prompt = {
@@ -2552,8 +2659,12 @@ def call_codex_json(model, prompt, operation, force_refresh=False, return_metada
             "output_text": output_text,
             "effective_model": effective_model,
             "returncode": completed.returncode if completed is not None else None,
-            "stdout_excerpt": clean_text(completed.stdout)[:2000] if completed is not None and completed.stdout else None,
-            "stderr_excerpt": clean_text(completed.stderr)[:2000] if completed is not None and completed.stderr else None,
+            "stdout_excerpt": clean_text(completed.stdout)[:2000]
+            if completed is not None and completed.stdout
+            else None,
+            "stderr_excerpt": clean_text(completed.stderr)[:2000]
+            if completed is not None and completed.stderr
+            else None,
             "error_type": type(error).__name__ if error else None,
             "error_message": str(error) if error else None,
         }
@@ -2661,9 +2772,15 @@ def api_codex_task(task_id):
 def api_bulk_score_gpt():
     payload = request_json_object()
     if not gpt_scoring_enabled():
-        return jsonify({"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}), 409
+        return jsonify(
+            {"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}
+        ), 409
     if not codex_cli_available():
-        return jsonify({"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."}), 409
+        return jsonify(
+            {
+                "error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."
+            }
+        ), 409
     job_ids = clean_job_ids(payload)
     task = start_background_task("scorecards", job_ids, bulk_score_worker)
     return jsonify({"task": task}), 202
@@ -2673,7 +2790,9 @@ def api_bulk_score_gpt():
 def api_bulk_generate_application_packets():
     payload = request_json_object()
     if not codex_cli_available():
-        return jsonify({"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."}), 409
+        return jsonify(
+            {"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."}
+        ), 409
     job_ids = clean_job_ids(payload)
     task = start_background_task("application_packets", job_ids, bulk_packet_worker)
     return jsonify({"task": task}), 202
@@ -2950,11 +3069,16 @@ def api_create_company_interest():
                 normalize_lookup_text(company_name),
                 status,
                 interest_score if interest_score != "" else None,
-                rationale, notes, next_step, contacts,
+                rationale,
+                notes,
+                next_step,
+                contacts,
             ),
         )
         company_id = cur.fetchone()["id"]
-        return jsonify({"company": get_company_interest(conn, company_id), "companies": list_company_interests(conn)}), 201
+        return jsonify(
+            {"company": get_company_interest(conn, company_id), "companies": list_company_interests(conn)}
+        ), 201
 
 
 @app.post("/api/companies/<int:company_id>")
@@ -2964,7 +3088,9 @@ def api_update_company_interest(company_id):
         existing = get_company_interest(conn, company_id)
         if not existing:
             return jsonify({"error": "Company interest not found"}), 404
-        company_name = optional_text(payload.get("company", existing["company"]), "company", max_length=300) or existing["company"]
+        company_name = (
+            optional_text(payload.get("company", existing["company"]), "company", max_length=300) or existing["company"]
+        )
         interest_score = payload.get("interest_score")
         if interest_score not in (None, ""):
             interest_score = integer(interest_score, "interest_score", minimum=0, maximum=100)
@@ -2985,7 +3111,10 @@ def api_update_company_interest(company_id):
                 normalize_lookup_text(company_name),
                 status,
                 interest_score if interest_score != "" else None,
-                rationale, notes, next_step, contacts,
+                rationale,
+                notes,
+                next_step,
+                contacts,
                 now(),
                 company_id,
             ),
@@ -3002,7 +3131,9 @@ def api_create_job():
     status = choice(payload.get("status", "researching"), "status", JOB_STATUSES, required=True)
     scrape_error = None
     try:
-        scraped = scrape_job_from_url(url, force_refresh=boolean(payload.get("force_refresh"), "force_refresh", default=False))
+        scraped = scrape_job_from_url(
+            url, force_refresh=boolean(payload.get("force_refresh"), "force_refresh", default=False)
+        )
     except Exception as exc:
         scrape_error = str(exc)
         scraped = fallback_job_from_url(url)
@@ -3031,14 +3162,20 @@ def api_create_job():
             (
                 ts,
                 ts,
-                optional_text(payload.get("company", ""), "company", max_length=300) or scraped.get("company") or "Unknown company",
-                optional_text(payload.get("title", ""), "title", max_length=500) or scraped.get("title") or "Unknown title",
+                optional_text(payload.get("company", ""), "company", max_length=300)
+                or scraped.get("company")
+                or "Unknown company",
+                optional_text(payload.get("title", ""), "title", max_length=500)
+                or scraped.get("title")
+                or "Unknown title",
                 scraped.get("url") or url,
                 optional_text(payload.get("location", ""), "location", max_length=500) or scraped.get("location", ""),
                 pipeline,
                 status,
-                optional_text(payload.get("posting_text", ""), "posting_text", max_length=100_000) or scraped.get("posting_text", ""),
-                optional_text(payload.get("notes", ""), "notes", max_length=20_000) or f"Added manually from URL.{f' Scrape failed: {scrape_error[:500]}' if scrape_error else ''}",
+                optional_text(payload.get("posting_text", ""), "posting_text", max_length=100_000)
+                or scraped.get("posting_text", ""),
+                optional_text(payload.get("notes", ""), "notes", max_length=20_000)
+                or f"Added manually from URL.{f' Scrape failed: {scrape_error[:500]}' if scrape_error else ''}",
                 scraped.get("source_board"),
                 scraped.get("source_job_id"),
                 ts if scraped else None,
@@ -3062,7 +3199,11 @@ def api_create_job():
                     message=score_error[:1000],
                 )
         else:
-            unavailable_reason = "Codex scoring is disabled." if not gpt_scoring_enabled() else f"Codex CLI is unavailable at {codex_cli_path()!r}."
+            unavailable_reason = (
+                "Codex scoring is disabled."
+                if not gpt_scoring_enabled()
+                else f"Codex CLI is unavailable at {codex_cli_path()!r}."
+            )
             score_error = f"Automatic Codex scoring skipped: {unavailable_reason}"
             log_event("manual_job_auto_score_skipped", job_id=job_id, reason=unavailable_reason)
         return jsonify({"job": get_job(conn, job_id), "scrape_error": scrape_error, "score_error": score_error}), 201
@@ -3133,7 +3274,11 @@ def api_update_search_query(query_id):
             WHERE id = ?
             """,
             (
-                board, pipeline, keywords, location, criteria,
+                board,
+                pipeline,
+                keywords,
+                location,
+                criteria,
                 (1 if boolean(payload["enabled"], "enabled") else 0) if "enabled" in payload else None,
                 query_id,
             ),
@@ -3212,7 +3357,9 @@ def api_score_gpt(job_id):
         if not job:
             return jsonify({"error": "Job not found"}), 404
         if not gpt_scoring_enabled():
-            return jsonify({"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}), 409
+            return jsonify(
+                {"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}
+            ), 409
         score = populate_codex_score(conn, job_id)
         return jsonify({"job": get_job(conn, job_id), "raw_score": score})
 
@@ -3235,7 +3382,13 @@ def api_score_user(job_id):
             SET user_score = ?, user_scorecard_json = ?, user_rationale = ?, updated_at = ?
             WHERE id = ?
             """,
-            (total, json.dumps(scorecard), optional_text(payload.get("user_rationale", ""), "user_rationale", max_length=20_000), now(), job_id),
+            (
+                total,
+                json.dumps(scorecard),
+                optional_text(payload.get("user_rationale", ""), "user_rationale", max_length=20_000),
+                now(),
+                job_id,
+            ),
         )
         apply_filter(conn, job_id)
         return jsonify({"job": get_job(conn, job_id)})
@@ -3311,10 +3464,10 @@ def api_update_settings():
         validated["codex_model"] = optional_text(payload["codex_model"], "codex_model", max_length=200)
     with connect() as conn:
         for key, value in validated.items():
-                conn.execute(
-                    "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (key, value),
-                )
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
         for row in conn.execute("SELECT id FROM jobs"):
             apply_filter(conn, row["id"])
         return jsonify({"settings": settings(conn), "jobs": list_jobs(conn, include_filtered=True)})

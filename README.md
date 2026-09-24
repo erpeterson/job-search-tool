@@ -51,11 +51,19 @@ tokens, prompts, posting text, and model output.
 
 ## Development
 
-Run the deterministic test suite from this directory:
+Install the pinned developer tools once, then run the single reproducible
+quality gate from this directory:
 
 ```bash
-./.venv/bin/python -m unittest -v
+./.venv/bin/pip install -r requirements-dev.txt
+./quality.sh
 ```
+
+It checks formatting, lint rules, tests, and branch coverage, enforcing at
+least 80% coverage. CI runs the same command. If the script reports a missing
+module, rerun the developer-tool installation; if it reports coverage below the
+threshold, add deterministic tests for the listed uncovered branches rather
+than lowering the threshold.
 
 The API validates JSON request shapes, bounded text fields, allowed workflow
 values, score ranges, and manually submitted URLs. Manual URLs must use HTTP(S)

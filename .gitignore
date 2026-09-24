@@ -5,3 +5,4 @@ job_search.sqlite3
 captures/
 logs/
 __pycache__/
+.coverage

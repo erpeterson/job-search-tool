@@ -5,7 +5,9 @@ from job_search.http_client import OutboundRequestError, SafeHttpClient
 
 
 def resolver_for(*addresses):
-    return lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in addresses]
+    return lambda *_args, **_kwargs: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0)) for address in addresses
+    ]
 
 
 class FakeResponse:
@@ -41,7 +43,9 @@ class SafeHttpClientTests(unittest.TestCase):
             return FakeResponse()
 
         client = SafeHttpClient(resolver=resolver_for("8.8.8.8"), request=request)
-        response = client.get("manual_posting", "https://jobs.example.test/1", headers={"Accept": "text/html"}, timeout=3)
+        response = client.get(
+            "manual_posting", "https://jobs.example.test/1", headers={"Accept": "text/html"}, timeout=3
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(observed["allow_redirects"])

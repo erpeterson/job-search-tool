@@ -2,8 +2,8 @@ import unittest
 
 from job_search.validation import (
     RequestValidationError,
-    choice,
     boolean,
+    choice,
     environment_value,
     http_url,
     integer,

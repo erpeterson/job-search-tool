@@ -7,7 +7,8 @@ application rules testable outside the presentation layer.
 from __future__ import annotations
 
 import ipaddress
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 

@@ -95,7 +95,7 @@ gate, so that result is not evidence of the required 80% coverage.
 
 ## P2 — quality gates, tests, and documentation
 
-- [ ] **Add reproducible quality gates with an enforced 80% coverage minimum.**
+- [x] **Add reproducible quality gates with an enforced 80% coverage minimum.**
   `requirements.txt` only lists runtime dependencies, and no lint, static
   analysis, coverage configuration, or CI workflow exists.  Add pinned dev
   tooling (for example Ruff and coverage.py), configuration, and a single

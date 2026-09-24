@@ -10,7 +10,11 @@ class RuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.codex_timeout_seconds, 270)
 
     def test_rejects_malformed_and_out_of_range_values(self):
-        for environment in ({"JOB_SEARCH_PORT": "not-a-port"}, {"CODEX_CLI_TIMEOUT_SECONDS": "0"}, {"JOB_SEARCH_LOG_BACKUP_COUNT": "-1"}):
+        for environment in (
+            {"JOB_SEARCH_PORT": "not-a-port"},
+            {"CODEX_CLI_TIMEOUT_SECONDS": "0"},
+            {"JOB_SEARCH_LOG_BACKUP_COUNT": "-1"},
+        ):
             with self.assertRaisesRegex(StartupConfigurationError, "STARTUP_INVALID_CONFIGURATION"):
                 load_runtime_settings(environment)
 

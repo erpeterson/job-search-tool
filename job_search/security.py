@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 
 class StartupSecurityError(RuntimeError):

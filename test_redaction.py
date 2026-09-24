@@ -8,7 +8,9 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(redact_url("https://user:secret@example.com/path?token=abc"), "https://example.com/path")
 
     def test_removes_sensitive_headers_and_nested_payloads(self):
-        value = redact_value({"prompt": "resume text", "url": "https://example.com/?token=secret", "note": "Bearer abc"})
+        value = redact_value(
+            {"prompt": "resume text", "url": "https://example.com/?token=secret", "note": "Bearer abc"}
+        )
         self.assertEqual(value["prompt"], REDACTED)
         self.assertEqual(value["url"], "https://example.com/")
         self.assertNotIn("abc", value["note"])

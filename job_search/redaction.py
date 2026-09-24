@@ -6,8 +6,9 @@ import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-
-SENSITIVE_KEY = re.compile(r"(authorization|cookie|token|secret|password|api.?key|prompt|posting_text|output_text)", re.I)
+SENSITIVE_KEY = re.compile(
+    r"(authorization|cookie|token|secret|password|api.?key|prompt|posting_text|output_text)", re.I
+)
 SENSITIVE_VALUE = re.compile(r"(?i)(bearer\s+|api[_-]?key\s*[=:]\s*|token\s*[=:]\s*)[^\s,;]+")
 REDACTED = "[REDACTED]"
 
