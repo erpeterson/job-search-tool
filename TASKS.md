@@ -21,7 +21,7 @@ gate, so that result is not evidence of the required 80% coverage.
   deterministic tests for private DNS answers, redirects to private IPs, and
   normal public URLs.
 
-- [ ] **Require authentication and CSRF protection before allowing non-loopback
+- [x] **Require authentication and CSRF protection before allowing non-loopback
   binding.** `JOB_SEARCH_HOST` can expose the unauthenticated Flask app beyond
   `127.0.0.1`; its endpoints can write `.env`, invoke Codex, purge jobs, and
   delete records.  Enforce loopback-only binding unless explicit production

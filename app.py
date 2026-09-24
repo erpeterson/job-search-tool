@@ -24,6 +24,7 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from job_search.http_client import SafeHttpClient
+from job_search.security import authorized, csrf_valid, load_request_security
 from job_search.validation import (
     RequestValidationError,
     choice,
@@ -67,12 +68,29 @@ CONFIG_KEYS = [
 ]
 
 app = Flask(__name__)
+REQUEST_SECURITY = load_request_security(os.environ)
 api_logger = logging.getLogger("job_search.api")
 api_logger.setLevel(logging.INFO)
 api_logger.propagate = False
 event_logger = logging.getLogger("job_search.events")
 event_logger.setLevel(logging.INFO)
 event_logger.propagate = False
+
+
+@app.before_request
+def enforce_request_security():
+    """Protect all external bindings before any route can mutate local state."""
+    if not REQUEST_SECURITY.enabled:
+        return None
+    if request.headers.get("X-Forwarded-Proto", "").lower() != "https":
+        return jsonify({"error": "HTTPS is required for externally exposed deployments."}), 400
+    if not authorized(request.headers.get("Authorization"), REQUEST_SECURITY.auth_token):
+        return jsonify({"error": "Authentication is required."}), 401
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and not csrf_valid(
+        request.headers.get("X-CSRF-Token"), REQUEST_SECURITY.csrf_token
+    ):
+        return jsonify({"error": "CSRF validation failed."}), 403
+    return None
 
 
 class CodexCliError(RuntimeError):

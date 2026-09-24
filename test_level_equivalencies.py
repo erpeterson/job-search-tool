@@ -167,5 +167,29 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["error"], "note is required.")
 
+    def test_external_binding_rejects_unauthenticated_and_missing_csrf_mutations(self):
+        original_security = job_search_app.REQUEST_SECURITY
+        try:
+            job_search_app.REQUEST_SECURITY = job_search_app.load_request_security(
+                {
+                    "JOB_SEARCH_HOST": "0.0.0.0",
+                    "JOB_SEARCH_AUTH_TOKEN": "auth",
+                    "JOB_SEARCH_CSRF_TOKEN": "csrf",
+                    "JOB_SEARCH_TRUSTED_PROXY": "1",
+                    "JOB_SEARCH_TLS_TERMINATED": "1",
+                }
+            )
+            client = job_search_app.app.test_client()
+            unauthenticated = client.post("/api/search/run", json={}, headers={"X-Forwarded-Proto": "https"})
+            no_csrf = client.post(
+                "/api/search/run",
+                json={},
+                headers={"X-Forwarded-Proto": "https", "Authorization": "Bearer auth"},
+            )
+            self.assertEqual(unauthenticated.status_code, 401)
+            self.assertEqual(no_csrf.status_code, 403)
+        finally:
+            job_search_app.REQUEST_SECURITY = original_security
+
 if __name__ == "__main__":
     unittest.main()
