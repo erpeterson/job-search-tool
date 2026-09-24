@@ -148,9 +148,10 @@ records the outcome, exit code, and total elapsed time in milliseconds and
 seconds. Replay-cache hits are logged separately because they do not invoke
 Codex.
 
-The logs capture job-board request URL, method, status code, elapsed time, error
-type, and a short response excerpt. They are intended for troubleshooting board
-blocks such as Indeed `403` responses.
+The logs capture a redacted job-board URL, method, status code, elapsed time,
+error type, and content length/hash metadata. They are intended for
+troubleshooting board blocks such as Indeed `403` responses without retaining
+posting or Codex content.
 
 Filtering, discovery, duplicate-skip, capture, replay, and Codex-disabled
 decisions are written as structured newline-delimited JSON to:
@@ -159,16 +160,15 @@ decisions are written as structured newline-delimited JSON to:
 job-search-tool/logs/job-search.log
 ```
 
-Replayable request/response captures are stored under:
+Redacted diagnostic captures are stored under:
 
 ```text
 job-search-tool/captures/
 ```
 
-Captured job-board responses are keyed by request payload, so rerunning the same
-search can replay the saved response instead of repeatedly hitting LinkedIn or
-Indeed. Codex CLI request/response payloads use the same capture mechanism for
-scoring and search refinement when Codex scoring is enabled.
+Only the explicitly approved `JOB_SEARCH_ENABLE_FULL_CAPTURE=1` mode retains
+replayable request/response content. Normal captures retain safe metadata only;
+they are not a substitute for a full replay artifact.
 
 Manual searches include a `Force refresh` checkbox. When checked, the search
 bypasses replay and makes live LinkedIn, Indeed, and Codex CLI requests, then

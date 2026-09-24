@@ -28,7 +28,7 @@ from job_search.config import load_runtime_settings
 from job_search.domain.filtering import decide_job_filter
 from job_search.errors import ClientInputError, translate_exception
 from job_search.http_client import SafeHttpClient
-from job_search.redaction import redact_headers, redact_url, redact_value
+from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security
 from job_search.task_repository import TaskRepository
 from job_search.validation import (
@@ -820,7 +820,7 @@ def log_api_call(service, method, url, response=None, error=None, elapsed_ms=Non
         "elapsed_ms": elapsed_ms,
         "error_type": type(error).__name__ if error else None,
         "message": redact_value(str(error)[:1000]) if error else None,
-        "response_excerpt": redact_value(clean_text(response_text)[:2000]) if response_text else None,
+        "response_content": redact_content_metadata(response_text),
     }
     api_logger.info(json.dumps(event, sort_keys=True))
 

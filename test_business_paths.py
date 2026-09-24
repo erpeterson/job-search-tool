@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,6 +67,65 @@ class BusinessPathTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("CODEX_MODEL=test-model", app_module.ENV_PATH.read_text(encoding="utf-8"))
+
+    def test_normal_telemetry_and_captures_exclude_http_and_codex_content(self):
+        sentinels = {
+            "posting": "POSTING-SENTINEL",
+            "prompt": "PROMPT-SENTINEL",
+            "model": "MODEL-OUTPUT-SENTINEL",
+            "stderr": "STDERR-SENTINEL",
+            "token": "URL-TOKEN-SENTINEL",
+            "cookie": "COOKIE-SENTINEL",
+        }
+        api_events = []
+        app_events = []
+        originals = (
+            app_module.OUTBOUND_HTTP_CLIENT,
+            app_module.subprocess.run,
+            app_module.api_logger.info,
+            app_module.event_logger.info,
+        )
+
+        class HttpResponse:
+            status_code = 200
+            ok = True
+            headers = {"Set-Cookie": sentinels["cookie"]}
+            text = sentinels["posting"]
+
+        class HttpClient:
+            @staticmethod
+            def get(*_args, **_kwargs):
+                return HttpResponse()
+
+        class CompletedProcess:
+            returncode = 0
+            stdout = sentinels["model"]
+            stderr = f"model: test-model {sentinels['stderr']}"
+
+        app_module.OUTBOUND_HTTP_CLIENT = HttpClient()
+        app_module.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
+        app_module.api_logger.info = api_events.append
+        app_module.event_logger.info = app_events.append
+        environment = {"JOB_SEARCH_USE_CAPTURE_CACHE": "1", "JOB_SEARCH_ENABLE_FULL_CAPTURE": "0"}
+        try:
+            with patch.object(app_module.os, "environ", environment):
+                app_module.fetch_url("manual_posting", f"https://example.test/job?token={sentinels['token']}")
+                app_module.call_codex_json(
+                    "test-model", {"prompt": sentinels["prompt"]}, "redaction_test", force_refresh=True
+                )
+                captures = [path.read_text(encoding="utf-8") for path in app_module.CAPTURE_DIR.rglob("*.json")]
+        finally:
+            (
+                app_module.OUTBOUND_HTTP_CLIENT,
+                app_module.subprocess.run,
+                app_module.api_logger.info,
+                app_module.event_logger.info,
+            ) = originals
+
+        persisted = "\n".join([*api_events, *app_events, *captures])
+        for sentinel in sentinels.values():
+            self.assertNotIn(sentinel, persisted)
+        self.assertIn("response_content", json.loads(api_events[0]))
 
 
 if __name__ == "__main__":

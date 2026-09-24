@@ -145,7 +145,7 @@ complete every acceptance criterion listed with it.
   TLS-hostname verification, and timeout tests pass; and all production
   outbound requests use this transport.
 
-- [ ] **REOPEN: redact personal/job and Codex content by field semantics, not
+- [x] **REOPEN: redact personal/job and Codex content by field semantics, not
   only secret-like strings.** The current redactor does not classify
   `response_excerpt`, `output_excerpt`, `stdout_excerpt`, `stderr_excerpt`, or
   response `text` as sensitive. Consequently, `app.py:823`, `:1359`, and the

@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 SENSITIVE_KEY = re.compile(
-    r"(authorization|cookie|token|secret|password|api.?key|prompt|posting_text|output_text)", re.I
+    r"(authorization|cookie|token|secret|password|api.?key|prompt|posting_text|output_text|"
+    r"response_excerpt|output_excerpt|stdout_excerpt|stderr_excerpt|error_message|response_text|text|instruction)",
+    re.I,
 )
 SENSITIVE_VALUE = re.compile(r"(?i)(bearer\s+|api[_-]?key\s*[=:]\s*|token\s*[=:]\s*)[^\s,;]+")
 REDACTED = "[REDACTED]"
+
+
+def redact_content_metadata(value: Any) -> dict[str, Any] | None:
+    """Describe free-form content without retaining it in telemetry."""
+    if value is None:
+        return None
+    text = str(value)
+    return {
+        "redacted": True,
+        "length": len(text),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
 
 
 def redact_url(value: str) -> str:
