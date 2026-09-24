@@ -42,6 +42,20 @@ model; blank uses your Codex CLI default.
 
 Data is stored locally in `job-search-tool/job_search.sqlite3`.
 
+## Development
+
+Run the deterministic test suite from this directory:
+
+```bash
+./.venv/bin/python -m unittest -v
+```
+
+The API validates JSON request shapes, bounded text fields, allowed workflow
+values, score ranges, and manually submitted URLs. Manual URLs must use HTTP(S)
+and cannot target localhost or private/reserved IP addresses. Unexpected server
+errors return a generic response; diagnostic context is retained in the
+structured event log.
+
 Codex CLI path and model can also be updated from the app's Configuration panel.
 Saved values are written to `job-search-tool/.env`, applied to the running
 process, and displayed only in masked form.

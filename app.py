@@ -23,6 +23,16 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import HTTPException
 
+from job_search.validation import (
+    RequestValidationError,
+    choice,
+    environment_value,
+    http_url,
+    integer,
+    optional_text,
+    require_json_object,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "job_search.sqlite3"
@@ -72,6 +82,16 @@ class CodexCliError(RuntimeError):
         super().__init__(f"Codex CLI {operation}{suffix}. See logs and captures for details.")
 
 
+class ManagedSqliteConnection(sqlite3.Connection):
+    """Close SQLite handles when a request/workflow leaves its transaction."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def configure_logging():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     for logger, path in ((api_logger, API_LOG_PATH), (event_logger, APP_LOG_PATH)):
@@ -101,6 +121,12 @@ PIPELINES = [
     "Adjacent industries",
     "Wildcards",
 ]
+
+JOB_STATUSES = {
+    "researching", "interested", "applied", "interviewing", "offer", "rejected", "declined", "paused",
+}
+COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_interested"}
+SUPPORTED_BOARDS = {"linkedin", "indeed"}
 
 PIPELINE_CRITERIA = {
     "Executive IC": {
@@ -159,9 +185,12 @@ BACKGROUND_TASK_LOCK = threading.Lock()
 
 
 def connect():
-    conn = sqlite3.connect(DB_PATH)
+    # A short busy timeout makes concurrent request/background-worker writes
+    # wait briefly rather than failing immediately with "database is locked".
+    conn = sqlite3.connect(DB_PATH, timeout=10, factory=ManagedSqliteConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 
@@ -1279,6 +1308,7 @@ def generate_application_packet_with_codex(job):
             elapsed_ms=elapsed_ms,
             output_excerpt=clean_text(output_text)[:2000] if output_text else None,
             model=model,
+            error_code="APPLICATION_PACKET_GENERATION_FAILED" if error else None,
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
@@ -1334,7 +1364,7 @@ def bulk_score_worker(task_id, job_ids):
             except Exception as exc:
                 failed += 1
                 update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
-                log_event("bulk_codex_score_error", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
+                log_event("bulk_codex_score_error", error_code="BULK_CODEX_SCORE_FAILED", component="business.bulk_scoring", operation="populate_codex_score", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
             finally:
                 update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
     status = "complete" if failed == 0 else "error"
@@ -1370,7 +1400,7 @@ def bulk_packet_worker(task_id, job_ids):
             except Exception as exc:
                 failed += 1
                 update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
-                log_event("bulk_application_packet_error", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
+                log_event("bulk_application_packet_error", error_code="BULK_APPLICATION_PACKET_FAILED", component="business.bulk_packets", operation="create_application_packet", task_id=task_id, job_id=job_id, error_type=type(exc).__name__, message=str(exc)[:1000])
             finally:
                 update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
     status = "complete" if failed == 0 else "error"
@@ -1866,6 +1896,16 @@ def run_job_search(trigger="manual", force_refresh=False):
             results = fetch_jobs_for_query(query, force_refresh=force_refresh)
         except Exception as exc:
             messages.append(f"{query['board']}:{query['keywords']}: {exc}")
+            log_event(
+                "job_search_query_failed",
+                error_code="JOB_SEARCH_QUERY_FAILED",
+                component="business.search",
+                operation="fetch_jobs_for_query",
+                query_id=query.get("id"),
+                board=query.get("board"),
+                error_type=type(exc).__name__,
+                message=str(exc)[:1000],
+            )
             continue
 
         with connect() as conn:
@@ -2493,6 +2533,7 @@ def call_codex_json(model, prompt, operation, force_refresh=False, return_metada
             elapsed_ms=elapsed_ms,
             elapsed_seconds=round(elapsed_ms / 1000, 3),
             returncode=completed.returncode if completed is not None else None,
+            error_code="CODEX_CLI_CALL_FAILED" if error else None,
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
@@ -2838,10 +2879,17 @@ def api_company_interest(company_id):
 
 @app.post("/api/companies")
 def api_create_company_interest():
-    payload = request.get_json(silent=True) or {}
-    company_name = clean_text(payload.get("company", "")) or "Unknown company"
+    payload = require_json_object(request.get_json(silent=True) or {})
+    company_name = optional_text(payload.get("company", ""), "company", max_length=300) or "Unknown company"
     ts = now()
     interest_score = payload.get("interest_score")
+    if interest_score not in (None, ""):
+        interest_score = integer(interest_score, "interest_score", minimum=0, maximum=100)
+    status = choice(payload.get("status", "watching"), "status", COMPANY_STATUSES, required=True)
+    rationale = optional_text(payload.get("rationale", ""), "rationale", max_length=20_000)
+    notes = optional_text(payload.get("notes", ""), "notes", max_length=20_000)
+    next_step = optional_text(payload.get("next_step", ""), "next_step", max_length=2_000)
+    contacts = optional_text(payload.get("contacts", ""), "contacts", max_length=10_000)
     with connect() as conn:
         cur = conn.execute(
             """
@@ -2866,12 +2914,9 @@ def api_create_company_interest():
                 ts,
                 company_name,
                 normalize_lookup_text(company_name),
-                payload.get("status", "watching"),
+                status,
                 interest_score if interest_score != "" else None,
-                payload.get("rationale", "").strip(),
-                payload.get("notes", "").strip(),
-                payload.get("next_step", "").strip(),
-                payload.get("contacts", "").strip(),
+                rationale, notes, next_step, contacts,
             ),
         )
         company_id = cur.fetchone()["id"]
@@ -2880,13 +2925,20 @@ def api_create_company_interest():
 
 @app.post("/api/companies/<int:company_id>")
 def api_update_company_interest(company_id):
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
     with connect() as conn:
         existing = get_company_interest(conn, company_id)
         if not existing:
             return jsonify({"error": "Company interest not found"}), 404
-        company_name = clean_text(payload.get("company", existing["company"])) or existing["company"]
+        company_name = optional_text(payload.get("company", existing["company"]), "company", max_length=300) or existing["company"]
         interest_score = payload.get("interest_score")
+        if interest_score not in (None, ""):
+            interest_score = integer(interest_score, "interest_score", minimum=0, maximum=100)
+        status = choice(payload.get("status", existing["status"]), "status", COMPANY_STATUSES, required=True)
+        rationale = optional_text(payload.get("rationale", ""), "rationale", max_length=20_000)
+        notes = optional_text(payload.get("notes", ""), "notes", max_length=20_000)
+        next_step = optional_text(payload.get("next_step", ""), "next_step", max_length=2_000)
+        contacts = optional_text(payload.get("contacts", ""), "contacts", max_length=10_000)
         conn.execute(
             """
             UPDATE company_interests
@@ -2897,12 +2949,9 @@ def api_update_company_interest(company_id):
             (
                 company_name,
                 normalize_lookup_text(company_name),
-                payload.get("status", existing["status"]),
+                status,
                 interest_score if interest_score != "" else None,
-                payload.get("rationale", ""),
-                payload.get("notes", ""),
-                payload.get("next_step", ""),
-                payload.get("contacts", ""),
+                rationale, notes, next_step, contacts,
                 now(),
                 company_id,
             ),
@@ -2912,14 +2961,11 @@ def api_update_company_interest(company_id):
 
 @app.post("/api/jobs")
 def api_create_job():
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
     ts = now()
-    url = payload.get("url", "").strip()
-    pipeline = payload.get("pipeline", "").strip()
-    if not url:
-        return jsonify({"error": "URL is required."}), 400
-    if not pipeline:
-        return jsonify({"error": "Pipeline is required."}), 400
+    url = http_url(payload.get("url"))
+    pipeline = choice(payload.get("pipeline"), "pipeline", PIPELINES, required=True)
+    status = choice(payload.get("status", "researching"), "status", JOB_STATUSES, required=True)
     scrape_error = None
     try:
         scraped = scrape_job_from_url(url, force_refresh=bool(payload.get("force_refresh")))
@@ -2928,6 +2974,9 @@ def api_create_job():
         scraped = fallback_job_from_url(url)
         log_event(
             "manual_job_scrape_failed",
+            error_code="MANUAL_JOB_SCRAPE_FAILED",
+            component="business.job_ingestion",
+            operation="scrape_job_from_url",
             url=url,
             pipeline=pipeline,
             error_type=type(exc).__name__,
@@ -2948,14 +2997,14 @@ def api_create_job():
             (
                 ts,
                 ts,
-                payload.get("company", "").strip() or scraped.get("company") or "Unknown company",
-                payload.get("title", "").strip() or scraped.get("title") or "Unknown title",
+                optional_text(payload.get("company", ""), "company", max_length=300) or scraped.get("company") or "Unknown company",
+                optional_text(payload.get("title", ""), "title", max_length=500) or scraped.get("title") or "Unknown title",
                 scraped.get("url") or url,
-                payload.get("location", "").strip() or scraped.get("location", ""),
+                optional_text(payload.get("location", ""), "location", max_length=500) or scraped.get("location", ""),
                 pipeline,
-                payload.get("status", "researching"),
-                payload.get("posting_text", "").strip() or scraped.get("posting_text", ""),
-                payload.get("notes", "").strip() or f"Added manually from URL.{f' Scrape failed: {scrape_error[:500]}' if scrape_error else ''}",
+                status,
+                optional_text(payload.get("posting_text", ""), "posting_text", max_length=100_000) or scraped.get("posting_text", ""),
+                optional_text(payload.get("notes", ""), "notes", max_length=20_000) or f"Added manually from URL.{f' Scrape failed: {scrape_error[:500]}' if scrape_error else ''}",
                 scraped.get("source_board"),
                 scraped.get("source_job_id"),
                 ts if scraped else None,
@@ -2971,6 +3020,9 @@ def api_create_job():
                 score_error = str(exc)
                 log_event(
                     "manual_job_auto_score_failed",
+                    error_code="MANUAL_JOB_AUTO_SCORE_FAILED",
+                    component="business.job_scoring",
+                    operation="populate_codex_score",
                     job_id=job_id,
                     error_type=type(exc).__name__,
                     message=score_error[:1000],
@@ -2984,7 +3036,7 @@ def api_create_job():
 
 @app.post("/api/search/run")
 def api_run_search():
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
     force_refresh = bool(payload.get("force_refresh"))
     run = run_job_search(trigger="manual", force_refresh=force_refresh)
     with connect() as conn:
@@ -3000,8 +3052,13 @@ def api_run_search():
 
 @app.post("/api/search/queries")
 def api_create_search_query():
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
     ts = now()
+    board = choice(payload.get("board", "linkedin"), "board", SUPPORTED_BOARDS, required=True)
+    pipeline = choice(payload.get("pipeline", ""), "pipeline", PIPELINES)
+    keywords = optional_text(payload.get("keywords", ""), "keywords", max_length=2_000)
+    if not keywords:
+        raise RequestValidationError("keywords is required.")
     with connect() as conn:
         conn.execute(
             """
@@ -3009,13 +3066,13 @@ def api_create_search_query():
             VALUES (?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
-                payload.get("board", "linkedin"),
-                payload.get("pipeline", ""),
-                payload.get("keywords", "").strip(),
-                payload.get("location", "").strip(),
+                board,
+                pipeline,
+                keywords,
+                optional_text(payload.get("location", ""), "location", max_length=500),
                 1 if payload.get("enabled", True) else 0,
                 ts,
-                payload.get("criteria", "").strip(),
+                optional_text(payload.get("criteria", ""), "criteria", max_length=10_000),
             ),
         )
         return jsonify({"search_queries": list_search_queries(conn)}), 201
@@ -3023,7 +3080,12 @@ def api_create_search_query():
 
 @app.post("/api/search/queries/<int:query_id>")
 def api_update_search_query(query_id):
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
+    board = choice(payload["board"], "board", SUPPORTED_BOARDS, required=True) if "board" in payload else None
+    pipeline = choice(payload["pipeline"], "pipeline", PIPELINES) if "pipeline" in payload else None
+    keywords = optional_text(payload["keywords"], "keywords", max_length=2_000) if "keywords" in payload else None
+    location = optional_text(payload["location"], "location", max_length=500) if "location" in payload else None
+    criteria = optional_text(payload["criteria"], "criteria", max_length=10_000) if "criteria" in payload else None
     with connect() as conn:
         conn.execute(
             """
@@ -3037,11 +3099,7 @@ def api_update_search_query(query_id):
             WHERE id = ?
             """,
             (
-                payload.get("board"),
-                payload.get("pipeline"),
-                payload.get("keywords"),
-                payload.get("location"),
-                payload.get("criteria"),
+                board, pipeline, keywords, location, criteria,
                 1 if payload.get("enabled") is True else 0 if payload.get("enabled") is False else None,
                 query_id,
             ),
@@ -3051,12 +3109,14 @@ def api_update_search_query(query_id):
 
 @app.post("/api/config")
 def api_update_config():
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
     updates = {}
     for key in CONFIG_KEYS:
         if key not in payload:
             continue
-        value = str(payload.get(key, "")).strip()
+        value = environment_value(payload.get(key, ""), key, max_length=4_000)
+        if key in {"JOB_SEARCH_ENABLE_GPT_SCORING", "JOB_SEARCH_USE_CAPTURE_CACHE"} and value not in {"0", "1"}:
+            raise RequestValidationError(f"{key} must be 0 or 1.")
         if value or key == "CODEX_MODEL":
             updates[key] = value
     if not updates:
@@ -3094,7 +3154,7 @@ def api_update_config():
 
 @app.post("/api/admin/purge-jobs")
 def api_purge_jobs():
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
     if payload.get("confirm") != "PURGE":
         return jsonify({"error": "Type PURGE to confirm tracked job deletion."}), 400
     with connect() as conn:
@@ -3125,17 +3185,23 @@ def api_score_gpt(job_id):
 
 @app.post("/api/jobs/<int:job_id>/score-user")
 def api_score_user(job_id):
-    payload = request.get_json(silent=True) or {}
-    scorecard = {field: clamp_score(payload.get("scorecard", {}).get(field, 0)) for field in RUBRIC_FIELDS}
-    total = int(payload.get("total_score") or round(sum(scorecard.values()) * 100 / (len(RUBRIC_FIELDS) * 10)))
+    payload = require_json_object(request.get_json(silent=True) or {})
+    raw_scorecard = payload.get("scorecard", {})
+    if not isinstance(raw_scorecard, dict):
+        raise RequestValidationError("scorecard must be a JSON object.")
+    scorecard = {field: integer(raw_scorecard.get(field, 0), field, minimum=0, maximum=10) for field in RUBRIC_FIELDS}
+    derived_total = round(sum(scorecard.values()) * 100 / (len(RUBRIC_FIELDS) * 10))
+    total = integer(payload.get("total_score", derived_total), "total_score", minimum=0, maximum=100)
     with connect() as conn:
+        if not get_job(conn, job_id):
+            return jsonify({"error": "Job not found"}), 404
         conn.execute(
             """
             UPDATE jobs
             SET user_score = ?, user_scorecard_json = ?, user_rationale = ?, updated_at = ?
             WHERE id = ?
             """,
-            (total, json.dumps(scorecard), payload.get("user_rationale", ""), now(), job_id),
+            (total, json.dumps(scorecard), optional_text(payload.get("user_rationale", ""), "user_rationale", max_length=20_000), now(), job_id),
         )
         apply_filter(conn, job_id)
         return jsonify({"job": get_job(conn, job_id)})
@@ -3143,8 +3209,10 @@ def api_score_user(job_id):
 
 @app.post("/api/jobs/<int:job_id>/interactions")
 def api_add_interaction(job_id):
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
     with connect() as conn:
+        if not get_job(conn, job_id):
+            return jsonify({"error": "Job not found"}), 404
         conn.execute(
             """
             INSERT INTO interactions(job_id, occurred_on, person_name, person_role, channel, summary, notes_to_self, next_step, created_at)
@@ -3152,13 +3220,13 @@ def api_add_interaction(job_id):
             """,
             (
                 job_id,
-                payload.get("occurred_on", ""),
-                payload.get("person_name", ""),
-                payload.get("person_role", ""),
-                payload.get("channel", ""),
-                payload.get("summary", ""),
-                payload.get("notes_to_self", ""),
-                payload.get("next_step", ""),
+                optional_text(payload.get("occurred_on", ""), "occurred_on", max_length=40),
+                optional_text(payload.get("person_name", ""), "person_name", max_length=300),
+                optional_text(payload.get("person_role", ""), "person_role", max_length=300),
+                optional_text(payload.get("channel", ""), "channel", max_length=100),
+                optional_text(payload.get("summary", ""), "summary", max_length=20_000),
+                optional_text(payload.get("notes_to_self", ""), "notes_to_self", max_length=20_000),
+                optional_text(payload.get("next_step", ""), "next_step", max_length=2_000),
                 now(),
             ),
         )
@@ -3168,11 +3236,16 @@ def api_add_interaction(job_id):
 
 @app.post("/api/jobs/<int:job_id>/notes")
 def api_add_note(job_id):
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
+    note = optional_text(payload.get("note", ""), "note", max_length=20_000)
+    if not note:
+        raise RequestValidationError("note is required.")
     with connect() as conn:
+        if not get_job(conn, job_id):
+            return jsonify({"error": "Job not found"}), 404
         conn.execute(
             "INSERT INTO notes(job_id, created_at, note) VALUES (?, ?, ?)",
-            (job_id, now(), payload.get("note", "")),
+            (job_id, now(), note),
         )
         conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now(), job_id))
         return jsonify({"job": get_job(conn, job_id)}), 201
@@ -3180,24 +3253,33 @@ def api_add_note(job_id):
 
 @app.post("/api/jobs/<int:job_id>/status")
 def api_update_status(job_id):
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
+    status = choice(payload.get("status", "researching"), "status", JOB_STATUSES, required=True)
     with connect() as conn:
+        if not get_job(conn, job_id):
+            return jsonify({"error": "Job not found"}), 404
         conn.execute(
             "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
-            (payload.get("status", "researching"), now(), job_id),
+            (status, now(), job_id),
         )
         return jsonify({"job": get_job(conn, job_id)})
 
 
 @app.post("/api/settings")
 def api_update_settings():
-    payload = request.get_json(silent=True) or {}
+    payload = require_json_object(request.get_json(silent=True) or {})
+    validated = {}
+    if "gpt_threshold" in payload:
+        validated["gpt_threshold"] = str(integer(payload["gpt_threshold"], "gpt_threshold", minimum=0, maximum=100))
+    if "user_threshold" in payload:
+        validated["user_threshold"] = str(integer(payload["user_threshold"], "user_threshold", minimum=0, maximum=100))
+    if "codex_model" in payload:
+        validated["codex_model"] = optional_text(payload["codex_model"], "codex_model", max_length=200)
     with connect() as conn:
-        for key in ("gpt_threshold", "user_threshold", "codex_model"):
-            if key in payload:
+        for key, value in validated.items():
                 conn.execute(
                     "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (key, str(payload[key])),
+                    (key, value),
                 )
         for row in conn.execute("SELECT id FROM jobs"):
             apply_filter(conn, row["id"])
@@ -3206,9 +3288,29 @@ def api_update_settings():
 
 @app.errorhandler(Exception)
 def api_error(exc):
+    if isinstance(exc, RequestValidationError):
+        log_event(
+            "api_request_validation_failed",
+            error_code="API_REQUEST_VALIDATION_FAILED",
+            component="presentation.api",
+            operation=request.endpoint,
+            path=request.path,
+            message=str(exc),
+        )
+        return jsonify({"error": str(exc)}), 400
     if isinstance(exc, HTTPException):
         return exc
-    return jsonify({"error": str(exc)}), 500
+    error_code = "API_UNHANDLED_EXCEPTION"
+    log_event(
+        "api_unhandled_exception",
+        error_code=error_code,
+        component="presentation.api",
+        operation=request.endpoint,
+        path=request.path,
+        error_type=type(exc).__name__,
+        message=str(exc)[:1000],
+    )
+    return jsonify({"error": "An unexpected server error occurred.", "error_code": error_code}), 500
 
 
 def scheduler_loop():
@@ -3226,6 +3328,14 @@ def scheduler_loop():
             if now() - last_search_at >= SEARCH_INTERVAL_SECONDS:
                 run_job_search(trigger="scheduled", force_refresh=True)
         except Exception as exc:
+            log_event(
+                "scheduled_search_failed",
+                error_code="SCHEDULED_SEARCH_FAILED",
+                component="business.scheduler",
+                operation="scheduler_loop",
+                error_type=type(exc).__name__,
+                message=str(exc)[:1000],
+            )
             with connect() as conn:
                 conn.execute(
                     "INSERT INTO search_runs(started_at, completed_at, trigger, status, message) VALUES (?, ?, 'scheduled', 'error', ?)",

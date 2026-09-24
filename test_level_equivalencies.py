@@ -152,5 +152,20 @@ class LevelEquivalencyTests(unittest.TestCase):
 
         self.assertEqual(job_search_app.extract_codex_reported_model(stderr), "gpt-5.6-terra")
 
+    def test_job_create_rejects_invalid_url_at_api_boundary(self):
+        response = job_search_app.app.test_client().post(
+            "/api/jobs",
+            json={"url": "file:///private/source.md", "pipeline": "Executive IC"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("http or https URL", response.get_json()["error"])
+
+    def test_note_requires_existing_job_and_content(self):
+        response = job_search_app.app.test_client().post("/api/jobs/999/notes", json={"note": ""})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["error"], "note is required.")
+
 if __name__ == "__main__":
     unittest.main()
