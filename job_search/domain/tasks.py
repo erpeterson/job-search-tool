@@ -97,6 +97,48 @@ class BackgroundTaskRegistry:
         thread.start()
         return _snapshot(task)
 
+    def start_call(self, operation_name, call, job_ids=()):
+        """Run ``call()`` in the background as a single task and store its return value as ``result``."""
+
+        def worker(task_id, _job_ids):
+            self.update(task_id, status="running", started_at=now(), message=f"{operation_name} running")
+            try:
+                result = call()
+            except AppError as exc:
+                record_exception(
+                    f"{operation_name}_task_failed",
+                    "domain.tasks",
+                    operation_name,
+                    exc,
+                    level=logging.WARNING,
+                    recovery="Stored the failure on the task for the client to read.",
+                    task_id=task_id,
+                )
+                self._finish(task_id, "error", exc.message, error_code=exc.error_code)
+                return
+            except Exception as exc:
+                record_exception(
+                    f"{operation_name}_task_crashed",
+                    "domain.tasks",
+                    operation_name,
+                    exc,
+                    recovery="Stored a generic failure on the task.",
+                    task_id=task_id,
+                )
+                self._finish(task_id, "error", GENERIC_ITEM_ERROR, error_code=f"{operation_name}_task_crashed")
+                return
+            self._finish(task_id, "complete", f"{operation_name} complete", result=result)
+
+        return self.start(operation_name, list(job_ids), worker)
+
+    def _finish(self, task_id, status, message, **fields):
+        counts = {"completed": 1} if status == "complete" else {"failed": 1}
+        for job_id in [item["job_id"] for item in (self.get(task_id) or {}).get("items", [])]:
+            self.update_item(task_id, job_id, status=status, message=message)
+        self.update(
+            task_id, status=status, message=message, completed_at=now(), current_job_id=None, **counts, **fields
+        )
+
     def _guarded(self, worker, task_id, job_ids):
         """Thread entry point: a crash outside per-item handling still ends the task in ``error``."""
         try:
@@ -127,12 +169,40 @@ class BackgroundTaskRegistry:
 
 
 class BulkOperations:
-    """Background workers that score or generate packets for many jobs."""
+    """Background work: bulk scoring and packets, plus single long-running operations.
 
-    def __init__(self, registry, scoring, packets):
+    Single operations validate preconditions synchronously, so the caller still gets
+    immediate 4xx errors, then run the slow part as a pollable task.
+    """
+
+    def __init__(self, registry, scoring, packets, search=None):
         self._registry = registry
         self._scoring = scoring
         self._packets = packets
+        self._search = search
+
+    def start_search(self, force_refresh=False):
+        def call():
+            return {"run": self._search.run(trigger="manual", force_refresh=force_refresh)}
+
+        return self._registry.start_call("search_run", call)
+
+    def start_packet(self, job_id):
+        self._packets.check_can_generate(job_id)
+        return self._registry.start_call(
+            "application_packet", lambda: {"packet": self._packets.create_packet(job_id)}, [job_id]
+        )
+
+    def start_score(self, job_id):
+        self._scoring.check_can_score(job_id)
+        return self._registry.start_call("codex_score", lambda: self._score_result(job_id), [job_id])
+
+    def start_auto_score(self, job_id):
+        """Score a newly added job in the background; the caller has already checked availability."""
+        return self._registry.start_call("codex_auto_score", lambda: self._score_result(job_id), [job_id])
+
+    def _score_result(self, job_id):
+        return {"raw_score": self._scoring.populate_score(job_id)}
 
     def start_scoring(self, job_ids):
         self._scoring.ensure_available()

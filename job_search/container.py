@@ -93,11 +93,12 @@ def build_container(
     if thread_factory:
         task_kwargs["thread_factory"] = thread_factory
     tasks = BackgroundTaskRegistry(**task_kwargs)
+    bulk = BulkOperations(tasks, scoring, packets, search)
     return Container(
         config=config,
         runtime=runtime,
         db=db,
-        jobs=JobService(db, runtime, boards, scoring),
+        jobs=JobService(db, runtime, boards, scoring, bulk),
         companies=CompanyService(db),
         scoring=scoring,
         profile=profile,
@@ -105,6 +106,6 @@ def build_container(
         search=search,
         settings=SettingsService(db, runtime, EnvFile(config.env_path), config.default_codex_model),
         tasks=tasks,
-        bulk=BulkOperations(tasks, scoring, packets),
+        bulk=bulk,
         scheduler=SearchScheduler(db, search, config.search_interval_seconds, config.autorun),
     )

@@ -279,3 +279,23 @@ class TestSecurityHeaders:
         for name, value in SECURITY_HEADERS.items():
             assert response.headers.get(name) == value, f"{path}: missing or wrong {name}: {response.headers.get(name)}"
         assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"], "framing must be blocked"
+
+
+def test_fetch_has_an_overall_deadline(tmp_path, monkeypatch):
+    from conftest import FakeHttp, FakeResolver
+
+    from job_search.data import http_client
+    from job_search.data.captures import CaptureStore
+    from job_search.domain.errors import ExternalServiceError
+
+    ticks = iter(range(0, 10_000, 20))  # every clock read advances 20 seconds
+    monkeypatch.setattr(http_client.time, "monotonic", lambda: float(next(ticks)))
+    fake_http = FakeHttp()
+    fake_http.route("slow.example", text="x" * 200_000)
+    client = http_client.HttpClient(
+        CaptureStore(tmp_path, lambda: False), get=fake_http, resolve=FakeResolver(), timeout_seconds=5
+    )
+    assert client.deadline_seconds == 30, "deadline is timeout x (redirects + 1)"
+    with pytest.raises(ExternalServiceError) as info:
+        client._get_following_redirects("https://slow.example/")
+    assert info.value.error_code == "http_fetch_deadline_exceeded", info.value.error_code
