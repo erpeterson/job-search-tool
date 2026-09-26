@@ -34,20 +34,22 @@ def estimate_level_equivalency(title, target):
     return None
 
 
-def find_cached_level_equivalency(level_repo, company, title):
+def _match(rows, title):
+    """Return the longest cached title pattern matching ``title`` (rows are sorted longest first)."""
     normalized_title = normalize_lookup_text(title)
-    for row in level_repo.for_company(normalize_lookup_text(company)):
+    for row in rows:
         pattern = row["normalized_title_pattern"]
         if pattern and (normalized_title == pattern or normalized_title.startswith(f"{pattern} ")):
             return row
     return None
 
 
-def lookup_level_equivalency(level_repo, company, title, target):
-    """Return a cached calibration, estimating and caching one when possible."""
-    cached = find_cached_level_equivalency(level_repo, company, title)
-    if cached:
-        return cached
+def find_cached_level_equivalency(level_repo, company, title):
+    return _match(level_repo.for_company(normalize_lookup_text(company)), title)
+
+
+def _estimate_and_cache(level_repo, company, title, target):
+    """Estimate a calibration and store it. Returns True when one was cached."""
     equivalency = estimate_level_equivalency(title, target)
     if not equivalency:
         log_event(
@@ -56,7 +58,7 @@ def lookup_level_equivalency(level_repo, company, title, target):
             title=title,
             reason="No cached calibration or reliable local title estimate.",
         )
-        return None
+        return False
     level_repo.upsert(
         {
             **equivalency,
@@ -79,7 +81,36 @@ def lookup_level_equivalency(level_repo, company, title, target):
         source_url=equivalency["source_url"],
         source="local_title_taxonomy",
     )
+    return True
+
+
+def lookup_level_equivalency(level_repo, company, title, target):
+    """Return a cached calibration, estimating and caching one when possible."""
+    cached = find_cached_level_equivalency(level_repo, company, title)
+    if cached:
+        return cached
+    if not _estimate_and_cache(level_repo, company, title, target):
+        return None
     return find_cached_level_equivalency(level_repo, company, title)
+
+
+class LevelCalibrationCache:
+    """Level lookups for a batch of results: cached rows load in one query, misses are estimated and cached."""
+
+    def __init__(self, level_repo, target, companies):
+        self._repo = level_repo
+        self._target = target
+        self._rows = level_repo.for_companies({normalize_lookup_text(company) for company in companies})
+
+    def lookup(self, company, title):
+        normalized_company = normalize_lookup_text(company)
+        cached = _match(self._rows.get(normalized_company, []), title)
+        if cached:
+            return cached
+        if not _estimate_and_cache(self._repo, company, title, self._target):
+            return None
+        self._rows[normalized_company] = self._repo.for_company(normalized_company)
+        return _match(self._rows[normalized_company], title)
 
 
 def level_assessment_from_equivalency(equivalency, target):
