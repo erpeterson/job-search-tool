@@ -9,14 +9,8 @@ from job_search.domain.errors import AppError, NotFoundError, public_error_code
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.levels import level_assessment_from_equivalency, lookup_level_equivalency
 from job_search.domain.model_output import validate_refinement_payload
-from job_search.domain.rules import (
-    DEFAULT_SEARCH_QUERIES,
-    DOWNLEVEL_HIGH_SCORE_EXCEPTION,
-    ORACLE_IC6_LEVEL_REFERENCE,
-    PIPELINE_CRITERIA,
-    UNKNOWN_LEVEL_ASSESSMENT,
-)
-from job_search.domain.scoring import score_total
+from job_search.domain.rules import SEARCH_BOARDS, UNKNOWN_LEVEL_ASSESSMENT
+from job_search.domain.scoring import level_reference, score_total
 from job_search.domain.text import (
     clean_text,
     normalize_pipeline,
@@ -24,17 +18,6 @@ from job_search.domain.text import (
     with_sales_role_exclusion_keywords,
 )
 from job_search.observability import correlation_scope, log_event, operation, record_exception, traced
-
-REFINEMENT_INSTRUCTIONS = [
-    "Return JSON only.",
-    "Keep the same job board and pipeline.",
-    "Improve the keywords so the next run is more likely to find high-scoring roles for this pipeline.",
-    "Prefer query terms that imply Oracle IC6 Architect-equivalent or higher scope.",
-    "Avoid terms that produced downlevel or low-score results.",
-    "Explicitly exclude Account Executive and other sales roles.",
-    "Keep the query concise enough for LinkedIn or Indeed public search boxes.",
-    "Do not use Eric's personal LinkedIn or Indeed profile data.",
-]
 
 
 def _result_fields(result):
@@ -88,8 +71,9 @@ def _discovered_job_fields(result, pipeline, notes, level_assessment, downlevel,
 
 
 class SearchService:
-    def __init__(self, db, runtime, boards, scoring, codex, parse_json):
+    def __init__(self, db, runtime, boards, scoring, codex, parse_json, profile):
         self._db = db
+        self._profile = profile
         self._runtime = runtime
         self._boards = boards
         self._scoring = scoring
@@ -101,13 +85,14 @@ class SearchService:
     def seed_default_queries(self):
         ts = now()
         with self._db.unit_of_work() as uow:
-            for query in DEFAULT_SEARCH_QUERIES:
+            exclusion = self._profile.sales_exclusion
+            for query in self._profile.default_search_queries(SEARCH_BOARDS):
                 existing = uow.search.find_seeded_query(query["board"], query["pipeline"])
                 if existing:
                     uow.search.update_seeded_query(
                         existing["id"],
-                        with_sales_role_exclusion_keywords(existing["keywords"] or query["keywords"]),
-                        with_sales_role_exclusion_criteria(existing["criteria"] or query["criteria"]),
+                        with_sales_role_exclusion_keywords(existing["keywords"] or query["keywords"], exclusion),
+                        with_sales_role_exclusion_criteria(existing["criteria"] or query["criteria"], exclusion),
                         query["location"],
                     )
                 else:
@@ -237,7 +222,7 @@ class SearchService:
 
     def _process_result(self, run_id, query_id, result, force_refresh, messages):
         """Filter, deduplicate, score, and track one discovered result. Returns the count bucket."""
-        rejection = first_rejection(result)
+        rejection = first_rejection(result, self._profile)
         if rejection:
             filter_name, reason = rejection
             log_event(
@@ -253,11 +238,15 @@ class SearchService:
             return "rejected"
 
         with self._db.unit_of_work() as uow:
-            equivalency = lookup_level_equivalency(uow.levels, result.get("company"), result.get("title"))
+            equivalency = lookup_level_equivalency(
+                uow.levels, result.get("company"), result.get("title"), self._profile.target_level
+            )
             already_tracked = uow.jobs.find_id_by_url(result.get("url")) is not None
             examples, model = self._scoring.scoring_inputs(uow)
         if equivalency:
-            result["cached_level_assessment"] = level_assessment_from_equivalency(equivalency)
+            result["cached_level_assessment"] = level_assessment_from_equivalency(
+                equivalency, self._profile.target_level
+            )
             result["cached_downlevel"] = bool(equivalency["downlevel"])
             log_event(
                 "level_equivalency_matched",
@@ -314,12 +303,14 @@ class SearchService:
                 or result.get("cached_level_assessment", "")
                 or UNKNOWN_LEVEL_ASSESSMENT
             )
-            pipeline = normalize_pipeline(score.get("pipeline"), result.get("pipeline", ""))
+            pipeline = normalize_pipeline(
+                score.get("pipeline"), self._profile.pipeline_names, result.get("pipeline", "")
+            )
             notes = "Auto-discovered from job search."
-            if downlevel and score_total(score) < DOWNLEVEL_HIGH_SCORE_EXCEPTION:
+            if downlevel and score_total(score) < self._profile.downlevel_high_score_exception:
                 log_event(
                     "discovery_downlevel_tracked",
-                    reason="Downlevel relative to IC6-equivalent; tracked and hidden by default.",
+                    reason="Downlevel relative to the target level; tracked and hidden by default.",
                     gpt_score=score_total(score),
                     level_assessment=level_assessment,
                     downlevel=downlevel,
@@ -387,15 +378,12 @@ class SearchService:
         if not query or not recent:
             return
         prompt = {
-            "task": "Refine a job-board search query for Eric Peterson.",
-            "instructions": REFINEMENT_INSTRUCTIONS,
-            "level_reference": {
-                "canonical_source": "local Oracle IC6 target definition",
-                "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
-            },
+            "task": f"Refine a job-board search query for {self._profile.candidate_name}.",
+            "instructions": list(self._profile.refinement_instructions),
+            "level_reference": level_reference(self._profile),
             "pipeline": query.get("pipeline"),
             "pipeline_criteria": query.get("criteria")
-            or PIPELINE_CRITERIA.get(query.get("pipeline"), {}).get("description", ""),
+            or getattr(self._profile.pipelines.get(query.get("pipeline")), "description", ""),
             "current_keywords": query.get("keywords"),
             "location": query.get("location"),
             "recent_results": recent,

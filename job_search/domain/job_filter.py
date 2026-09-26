@@ -18,7 +18,7 @@ def filter_decision(job, gpt_threshold, user_threshold, use_gpt_threshold):
     """Return ``(filtered, reasons)`` for a job row."""
     reasons = []
     if job["downlevel"]:
-        reasons.append("downlevel relative to Oracle IC6-equivalent target")
+        reasons.append("downlevel relative to the target level")
     if use_gpt_threshold and job["gpt_score"] is not None and job["gpt_score"] < gpt_threshold:
         reasons.append(f"gpt_score {job['gpt_score']} below threshold {gpt_threshold}")
     if job["user_score"] is not None and job["user_score"] < user_threshold:

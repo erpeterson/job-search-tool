@@ -7,12 +7,12 @@ import re
 from flask import request
 
 from job_search.domain.errors import UnsupportedMediaTypeError, ValidationError
-from job_search.domain.rules import COMPANY_STATUSES, JOB_STATUSES, PIPELINES, RUBRIC_FIELDS, SEARCH_BOARDS
+from job_search.domain.rules import COMPANY_STATUSES, JOB_STATUSES, RUBRIC_FIELDS, SEARCH_BOARDS
 from job_search.observability import record_exception
 
 SHORT_TEXT = 500
 LONG_TEXT = 20_000
-POSTING_TEXT = 200_000
+POSTING_TEXT = 200000
 _INT_PATTERN = re.compile(r"^-?\d+(\.0+)?$")
 
 
@@ -124,7 +124,7 @@ def require_confirmation(payload, word, error_code):
         raise ValidationError(f"Type {word} to confirm.", error_code)
 
 
-def manual_job(payload):
+def manual_job(payload, pipelines):
     url = text(payload, "url", max_length=2048)
     if not url:
         raise ValidationError("URL is required.", "manual_job_url_required")
@@ -132,7 +132,7 @@ def manual_job(payload):
         raise ValidationError("Pipeline is required.", "manual_job_pipeline_required")
     return {
         "url": url,
-        "pipeline": choice(payload, "pipeline", PIPELINES),
+        "pipeline": choice(payload, "pipeline", pipelines),
         "company": text(payload, "company"),
         "title": text(payload, "title"),
         "location": text(payload, "location"),
@@ -180,12 +180,12 @@ def interaction(payload):
     return fields
 
 
-def search_query(payload, partial=False):
+def search_query(payload, pipelines, partial=False):
     fields = {}
     if not partial or "board" in payload:
         fields["board"] = choice(payload, "board", SEARCH_BOARDS, default="linkedin")
     if not partial or "pipeline" in payload:
-        fields["pipeline"] = choice(payload, "pipeline", PIPELINES, default="", allow_blank=True)
+        fields["pipeline"] = choice(payload, "pipeline", pipelines, default="", allow_blank=True)
     if not partial or "keywords" in payload:
         fields["keywords"] = text(payload, "keywords", max_length=2000, required=True)
     if not partial or "location" in payload:

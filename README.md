@@ -96,6 +96,7 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_INTERVAL_SECONDS` | `86400` | Scheduled search cadence (scheduler currently disabled). |
 | `JOB_SEARCH_LOG_MAX_BYTES` / `JOB_SEARCH_LOG_BACKUP_COUNT` | `1048576` / `5` | Log rotation. |
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
+| `JOB_SEARCH_PROFILE_PATH` | `<workspace>/job-search-profile.json`, else `profile.example.json` | Search profile JSON (see below). An explicit path must exist. |
 | `JOB_SEARCH_DB_PATH` | `job-search-tool/job_search.sqlite3` | SQLite database file. Relative paths resolve against `job-search-tool/`. |
 | `JOB_SEARCH_LOG_DIR` | `job-search-tool/logs` | Directory for `api.log` and `job-search.log`. |
 | `JOB_SEARCH_CAPTURE_DIR` | `job-search-tool/captures` | Directory for replayable request/response captures. |
@@ -242,6 +243,20 @@ Response replay is enabled by default. To force live requests, set:
 JOB_SEARCH_USE_CAPTURE_CACHE=0
 ```
 
+
+## Search Profile
+
+Everything specific to the candidate lives in a JSON search profile, not in code:
+the candidate name, pipelines and their keywords, the sales-role exclusion, the
+target level (label, reference text, and title patterns for at-or-above and
+below), the compensation floor, the home-metro and US/non-US location terms, the
+downlevel exception score, and the scoring and query-refinement instructions sent
+to Codex.
+
+`profile.example.json` ships with the current values. To customize, copy it to
+`<workspace>/job-search-profile.json` (or anywhere, and set
+`JOB_SEARCH_PROFILE_PATH`). The profile is validated at startup; an invalid
+profile stops the app with exit code `2` and a message naming the bad field.
 
 ## Automated Search
 
