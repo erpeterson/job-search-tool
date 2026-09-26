@@ -53,6 +53,11 @@ def _resolve_all(host, port):
     return [info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
 
 
+def _http_succeeded(response):
+    status = response.get("status_code")
+    return isinstance(status, int) and 200 <= status < 300 and not response.get("error_type")
+
+
 class HttpClient:
     def __init__(
         self,
@@ -135,7 +140,9 @@ class HttpClient:
 
     def fetch(self, service, url, force_refresh=False):
         request_payload = {"method": "GET", "url": url, "headers": REQUEST_HEADERS}
-        cached = self._captures.read(service, "http_get", request_payload, force_refresh=force_refresh)
+        cached = self._captures.read(
+            service, "http_get", request_payload, force_refresh=force_refresh, is_success=_http_succeeded
+        )
         if cached:
             return HttpResponse.from_capture(cached["response"])
 

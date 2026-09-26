@@ -11,7 +11,7 @@ from job_search.config import RuntimeSettings
 from job_search.data.captures import CaptureStore
 from job_search.data.codex_client import CodexClient, extract_codex_reported_model, parse_model_json
 from job_search.data.env_file import EnvFile
-from job_search.data.http_client import HttpClient, HttpResponse
+from job_search.data.http_client import REQUEST_HEADERS, HttpClient, HttpResponse
 from job_search.data.job_boards import IndeedBoard, JobBoardClient, extract_job_json_ld, location_from_json_ld
 from job_search.data.packet_store import PandocConverter
 from job_search.domain.errors import (
@@ -70,6 +70,16 @@ class TestCodexClient:
         assert client.call_json("", {"q": 1}, "op", force_refresh=True).output_text == '{"n": 2}'
         assert "-m" not in runner.calls[0]["command"], "blank model uses the Codex CLI default"
 
+    def test_failed_codex_capture_is_not_replayed(self, codex):
+        client, runner = codex
+        runner.respond({"partial": True}, returncode=1)
+        with pytest.raises(CodexCliError):
+            client.call_json("m", {"q": 9}, "op")
+        runner.respond({"ok": True})
+        result = client.call_json("m", {"q": 9}, "op")
+        assert result.output_text == '{"ok": true}', "a non-zero-exit capture must not be replayed as success"
+        assert len(runner.calls) == 2, "the second call must run Codex live"
+
     def test_nonzero_exit_raises(self, codex):
         client, runner = codex
         runner.respond("", returncode=3)
@@ -87,16 +97,56 @@ class TestCodexClient:
 
 
 class TestHttpAndCaptures:
-    def test_request_errors_are_logged_captured_and_raised(self, captures):
+    def test_failed_request_is_captured_but_not_replayed(self, captures):
         http = FakeHttp()
         http.route("x.com", error=requests.ConnectionError("down"))
         client = HttpClient(captures, get=http, resolve=FakeResolver())
         with pytest.raises(requests.ConnectionError):
             client.fetch("svc", "https://x.com/a")
-        replay = client.fetch("svc", "https://x.com/a")
-        assert isinstance(replay, HttpResponse), type(replay)
-        with pytest.raises(requests.HTTPError, match="replayed from capture"):
-            replay.raise_for_status()
+        assert captures.path_for(
+            "svc", "http_get", {"method": "GET", "url": "https://x.com/a", "headers": REQUEST_HEADERS}
+        ).exists(), "failure captures are kept as evidence"
+        with pytest.raises(requests.ConnectionError):
+            client.fetch("svc", "https://x.com/a")
+        assert len(http.calls) == 2, "a failed capture must not be replayed; the client retries live"
+
+    def test_non_2xx_response_is_not_replayed(self, captures):
+        http = FakeHttp()
+        http.route("x.com", status_code=403, text="blocked")
+        client = HttpClient(captures, get=http, resolve=FakeResolver())
+        client.fetch("svc", "https://x.com/b")
+        client.fetch("svc", "https://x.com/b")
+        assert len(http.calls) == 2, "a 403 capture must not be replayed as a cached result"
+
+    def test_successful_response_is_replayed(self, captures):
+        http = FakeHttp()
+        http.route("x.com", text="ok")
+        client = HttpClient(captures, get=http, resolve=FakeResolver())
+        client.fetch("svc", "https://x.com/c")
+        replay = client.fetch("svc", "https://x.com/c")
+        assert isinstance(replay, HttpResponse) and replay.text == "ok", "2xx captures replay"
+        assert len(http.calls) == 1, "a successful capture avoids a second live call"
+
+    def test_capture_write_failure_does_not_mask_original_error(self, captures, monkeypatch):
+        from job_search.observability import METRICS
+
+        def deny(*_args, **_kwargs):
+            raise PermissionError("read-only disk")
+
+        monkeypatch.setattr("job_search.data.captures.tempfile.NamedTemporaryFile", deny)
+        http = FakeHttp()
+        http.route("x.com", error=requests.ConnectionError("down"))
+        client = HttpClient(captures, get=http, resolve=FakeResolver())
+        before = METRICS.snapshot().get("blame.capture_write_failed", 0)
+        with pytest.raises(requests.ConnectionError):
+            client.fetch("svc", "https://x.com/d")
+        assert METRICS.snapshot()["blame.capture_write_failed"] == before + 1, "write failure must be recorded"
+
+    def test_capture_write_is_atomic(self, captures):
+        path = captures.write("svc", "op", {"a": 1}, {"text": "x"})
+        assert path.exists(), "capture should be written"
+        leftovers = [p.name for p in path.parent.iterdir() if p.suffix == ".tmp"]
+        assert leftovers == [], f"no temporary files should remain: {leftovers}"
 
     def test_corrupt_capture_is_a_cache_miss(self, captures):
         path = captures.path_for("svc", "op", {"a": 1})
