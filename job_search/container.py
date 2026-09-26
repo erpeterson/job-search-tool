@@ -36,6 +36,7 @@ class Container:
     search: SearchService
     settings: SettingsService
     profile: SearchProfile
+    packet_store: PacketStore
     tasks: BackgroundTaskRegistry
     bulk: BulkOperations
     scheduler: SearchScheduler
@@ -45,6 +46,7 @@ class Container:
         self.db.create_schema()
         self.settings.seed_defaults()
         self.search.seed_default_queries()
+        self.packet_store.ensure_root()
 
 
 def build_container(
@@ -102,6 +104,7 @@ def build_container(
         companies=CompanyService(db),
         scoring=scoring,
         profile=profile,
+        packet_store=store,
         packets=packets,
         search=search,
         settings=SettingsService(db, runtime, EnvFile(config.env_path), config.default_codex_model),

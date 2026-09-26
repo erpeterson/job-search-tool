@@ -8,6 +8,7 @@ from datetime import date
 from flask import request
 
 from job_search.domain.errors import UnsupportedMediaTypeError, ValidationError
+from job_search.domain.jobs import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from job_search.domain.rules import COMPANY_STATUSES, JOB_STATUSES, RUBRIC_FIELDS, SEARCH_BOARDS
 from job_search.observability import record_exception
 
@@ -118,6 +119,14 @@ def job_ids(payload):
     if not ids:
         raise ValidationError("Select at least one job.", "job_ids_empty")
     return ids
+
+
+def list_window():
+    """``limit``/``offset`` query parameters for job listings."""
+    return (
+        integer(request.args, "limit", 1, MAX_LIST_LIMIT, default=DEFAULT_LIST_LIMIT),
+        integer(request.args, "offset", 0, 10**9, default=0),
+    )
 
 
 MAX_FILENAME_CHARS = 255
