@@ -7,8 +7,10 @@ stable error code.
 """
 
 import functools
+import gzip
 import json
 import logging
+import shutil
 import sys
 import threading
 import time
@@ -19,6 +21,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 ROOT_LOGGER_NAME = "job_search"
 EVENT_LOGGER_NAME = "job_search.events"
@@ -224,7 +227,32 @@ class _BelowLevelFilter(logging.Filter):
         return record.levelno < self.level
 
 
-def configure_file_logging(event_log_path, api_log_path, max_bytes, backup_count):
+class ArchivingRotatingFileHandler(RotatingFileHandler):
+    """Rotates at ``maxBytes`` into a timestamped ``.gz`` archive that is never deleted.
+
+    Logs are evidence, so rotated files are compressed and kept rather than discarded;
+    removing old archives is a deliberate manual step.
+    """
+
+    def __init__(self, filename, max_bytes):
+        super().__init__(filename, maxBytes=max_bytes, backupCount=0)
+
+    def doRollover(self):  # noqa: N802 - overrides logging.Handler API
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        source = Path(self.baseFilename)
+        if source.exists() and source.stat().st_size:
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+            archive = source.with_name(f"{source.name}.{stamp}.gz")
+            with source.open("rb") as raw, gzip.open(archive, "wb") as compressed:
+                shutil.copyfileobj(raw, compressed)
+            source.unlink()
+        if not self.delay:
+            self.stream = self._open()
+
+
+def configure_file_logging(event_log_path, api_log_path, max_bytes):
     """Attach rotating JSON-lines handlers for the event and API logs."""
     event_log_path.parent.mkdir(parents=True, exist_ok=True)
     api_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,7 +261,7 @@ def configure_file_logging(event_log_path, api_log_path, max_bytes, backup_count
         logger.setLevel(logging.INFO)
         if any(getattr(handler, "_job_search_file", False) for handler in logger.handlers):
             continue
-        handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count)
+        handler = ArchivingRotatingFileHandler(path, max_bytes)
         handler.setFormatter(logging.Formatter("%(message)s"))
         handler._job_search_file = True
         logger.addHandler(handler)
