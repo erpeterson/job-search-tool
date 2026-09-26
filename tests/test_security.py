@@ -169,3 +169,65 @@ class TestRequestBodies:
         assert config.max_request_bytes == 2048, config.max_request_bytes
         with pytest.raises(ConfigurationError):
             AppConfig.from_env({"JOB_SEARCH_MAX_REQUEST_BYTES": "10"}, app_dir=tmp_path)
+
+
+class TestSsrfGuards:
+    @pytest.fixture
+    def http_client(self, tmp_path):
+        from conftest import FakeHttp, FakeResolver
+
+        from job_search.data.captures import CaptureStore
+        from job_search.data.http_client import HttpClient
+
+        fake_http, resolver = FakeHttp(), FakeResolver()
+        client = HttpClient(
+            CaptureStore(tmp_path / "captures", lambda: False), get=fake_http, resolve=resolver, max_response_bytes=64
+        )
+        return client, fake_http, resolver
+
+    def error_code(self, client, url):
+        from job_search.domain.errors import AppError
+
+        with pytest.raises(AppError) as info:
+            client.fetch("svc", url)
+        return info.value.error_code
+
+    def test_redirect_to_loopback_is_refused(self, http_client):
+        client, fake_http, _ = http_client
+        fake_http.route("public.example", status_code=302, headers={"Location": "http://127.0.0.1:5050/api/state"})
+        assert self.error_code(client, "https://public.example/job") == "http_redirect_blocked"
+        assert fake_http.calls == ["https://public.example/job"], "the loopback target must never be requested"
+
+    def test_hostname_resolving_to_private_address_is_refused(self, http_client):
+        client, fake_http, resolver = http_client
+        resolver.addresses["internal.example"] = ["10.0.0.1"]
+        assert self.error_code(client, "http://internal.example/") == "http_host_resolves_private"
+        assert fake_http.calls == [], "no request is made to a private address"
+
+    def test_oversized_body_is_rejected(self, http_client):
+        client, fake_http, _ = http_client
+        fake_http.route("big.example", text="x" * 1000)
+        assert self.error_code(client, "https://big.example/") == "http_response_too_large"
+
+    def test_safe_redirect_is_followed(self, http_client):
+        client, fake_http, _ = http_client
+        fake_http.route("old.example", status_code=301, headers={"Location": "/new"})
+        fake_http.route("old.example/new", text="ok")
+        fake_http.routes.reverse()  # match the more specific route first
+        response = client.fetch("svc", "https://old.example/job")
+        assert response.text == "ok", f"a public redirect should be followed, got {response.text!r}"
+
+    def test_redirect_loops_are_capped(self, http_client):
+        client, fake_http, _ = http_client
+        fake_http.route("loop.example", status_code=302, headers={"Location": "https://loop.example/again"})
+        assert self.error_code(client, "https://loop.example/") == "http_too_many_redirects"
+
+    def test_non_http_scheme_and_unresolvable_host(self, http_client):
+        client, _, resolver = http_client
+        assert self.error_code(client, "file:///etc/passwd") == "http_url_invalid_scheme"
+
+        def fail(host, port):
+            raise OSError("nodename nor servname provided")
+
+        client._resolve = fail
+        assert self.error_code(client, "https://nowhere.invalid/") == "http_host_unresolvable"

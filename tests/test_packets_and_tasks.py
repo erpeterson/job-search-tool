@@ -68,7 +68,7 @@ class TestPacketGeneration:
         assert post(client, f"/api/jobs/{job_id}/application-packet/generate").status_code == 502
 
     def test_pandoc_failure_publishes_nothing(self, config, environ, http, codex_runner, workspace):
-        from conftest import ImmediateThread, make_client
+        from conftest import FakeResolver, ImmediateThread, make_client
 
         from job_search.container import build_container
 
@@ -79,6 +79,7 @@ class TestPacketGeneration:
             codex_runner=codex_runner,
             pandoc=FakePandoc(fail_on="Resume.md"),
             thread_factory=ImmediateThread,
+            resolve_host=FakeResolver(),
         )
         container.bootstrap()
         client = make_client(container)

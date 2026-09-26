@@ -131,6 +131,7 @@ class AppConfig:
     default_codex_cli_path: str
     allowed_hosts: tuple
     max_request_bytes: int
+    http_max_response_bytes: int
 
     @classmethod
     def from_env(cls, environ=None, app_dir=None):
@@ -168,6 +169,9 @@ class AppConfig:
             default_codex_model=environ.get("CODEX_MODEL", ""),
             default_codex_cli_path=environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex",
             allowed_hosts=_allowed_hosts(environ, host, port),
+            http_max_response_bytes=_int_env(
+                environ, "JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES", 5 * 1024**2, 1024, 256 * 1024**2
+            ),
             max_request_bytes=_int_env(environ, "JOB_SEARCH_MAX_REQUEST_BYTES", 1024 * 1024, 1024, 64 * 1024**2),
         )
 
