@@ -20,6 +20,7 @@ from job_search.observability import (
     configure_file_logging,
     install_thread_excepthook,
     log_event,
+    process_run_id,
     record_exception,
 )
 from job_search.web.app import create_app
@@ -81,7 +82,9 @@ def run(args, environ, serve, out, app_dir):
     app = create_app(container)
     print(f"Job Search Console running at http://{config.host}:{config.port}", file=out)
     print(f"Database: {config.db_path}", file=out)
-    log_event("app_started", host=config.host, port=config.port)
+    log_event(
+        "app_started", host=config.host, port=config.port, pid=os.getpid(), started_process_run_id=process_run_id()
+    )
     outcome = "error"
     try:
         serve(app, config)
