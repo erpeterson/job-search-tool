@@ -51,6 +51,10 @@ class DuplicateJobError(ConflictError):
         self.existing_job = existing_job
 
 
+class CapacityError(AppError):
+    """Too much work is already in progress; retry later."""
+
+
 class DependencyUnavailableError(AppError):
     """A required local dependency (Codex CLI, feature flag) is unavailable."""
 

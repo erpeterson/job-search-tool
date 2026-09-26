@@ -103,6 +103,7 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_HTTP_TIMEOUT_SECONDS` | `30` | Timeout for each job-board or posting request. |
 | `JOB_SEARCH_DB_TIMEOUT_SECONDS` | `30` | SQLite busy timeout. |
 | `JOB_SEARCH_MAX_RETAINED_TASKS` | `50` | Finished bulk tasks kept in memory for polling. |
+| `JOB_SEARCH_MAX_RUNNING_TASKS` | `2` | Background tasks allowed to run at once. Starting another returns `429`; a task that includes a job already being processed returns `409`. |
 
 Configured paths are resolved at startup; an existing path of the wrong type (for
 example a file where a directory is expected) stops startup with exit code `2`.
@@ -147,7 +148,7 @@ redirects; 180 seconds by default), after which it fails with
 - State-changing requests must send JSON (`Content-Type: application/json`) or
   no body at all; malformed JSON returns `400`.
 - API errors return JSON `{"error": ..., "request_id": ...}` with `400`
-  (validation), `403` (disallowed host or cross-origin request), `404`, `409` (conflict or Codex/scoring unavailable), `413` (body too large),
+  (validation), `403` (disallowed host or cross-origin request), `404`, `409` (conflict or Codex/scoring unavailable), `413` (body too large), `429` (too many background tasks running),
   `415` (non-empty body that is not `application/json`), `502`
   (Codex/Pandoc failure), or `500`. A `500` never includes internal details;
   search the logs for its `request_id`.
