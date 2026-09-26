@@ -58,6 +58,9 @@ class PacketStore:
         self._applications_dir = applications_dir
         self._converter = converter
 
+    def ensure_root(self):
+        self._applications_dir.mkdir(parents=True, exist_ok=True)
+
     def relative(self, path):
         return path.resolve().relative_to(self._workspace_root).as_posix()
 
@@ -67,7 +70,8 @@ class PacketStore:
 
     def list_packet_dirs(self):
         """Return ``(relative_path, name, markdown_files)`` for each packet folder with Markdown."""
-        self._applications_dir.mkdir(parents=True, exist_ok=True)
+        if not self._applications_dir.is_dir():
+            return []
         packets = []
         for path in sorted(self._applications_dir.iterdir()):
             if not path.is_dir():

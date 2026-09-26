@@ -46,7 +46,7 @@ P3 = hygiene or completeness.
 | T-27 | Move long-running work out of request handlers | Performance | P2 | Done |
 | T-28 | Cap concurrent background tasks | Performance | P2 | Done |
 | T-29 | Refactor N+1 queries into batched queries and index the company join | Performance | P2 | Done |
-| T-30 | Bound API response sizes | Performance | P3 | Open |
+| T-30 | Bound API response sizes | Performance | P3 | Done |
 | T-31 | Define lifecycle and retention for generated data | Data handling | P2 | Done |
 | T-32 | Write `.env` atomically | Data handling | P3 | Open |
 | T-33 | Resolve the disabled scheduler | Code standards | P3 | Open |

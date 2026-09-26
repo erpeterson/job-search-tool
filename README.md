@@ -180,6 +180,16 @@ is uploaded except the Codex prompts sent through your Codex CLI.
 Decision (T-31): rotated logs are archived, not deleted, because logs are
 evidence. `JOB_SEARCH_LOG_BACKUP_COUNT` was removed with this change.
 
+## Response Size
+
+List responses (`/api/state`, and the job lists returned after delete, purge,
+and threshold changes) carry job summaries only; posting text, notes,
+rationales, and scorecards come from `GET /api/jobs/<id>`. Job listings accept
+`limit` (default 2000, maximum 5000) and `offset`, and `/api/state` reports
+`jobs_total`. With 1,000 jobs, `/api/state` stays under 1 MB (checked in
+`tests/test_response_bounds.py`). GET requests never create directories; the
+`applications/` folder is created at startup.
+
 ## Errors, Logs, And Troubleshooting
 
 - State-changing requests must send JSON (`Content-Type: application/json`) or
