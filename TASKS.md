@@ -50,7 +50,7 @@ P3 = hygiene or completeness.
 | T-31 | Define lifecycle and retention for generated data | Data handling | P2 | Done |
 | T-32 | Write `.env` atomically | Data handling | P3 | Open |
 | T-33 | Resolve the disabled scheduler | Code standards | P3 | Open |
-| T-34 | Fix accessibility gaps in the web UI | Accessibility | P2 | Open |
+| T-34 | Fix accessibility gaps in the web UI | Accessibility | P2 | Done |
 | T-35 | Extract frontend script and remove inline handlers | Security / Frontend | P3 | Open |
 | T-36 | Add assertion messages to bare test asserts | Tests | P2 | Open |
 | T-37 | Cover untested boundary and failure paths | Tests | P3 | Open |

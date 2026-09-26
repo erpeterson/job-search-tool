@@ -299,3 +299,14 @@ def test_fetch_has_an_overall_deadline(tmp_path, monkeypatch):
     with pytest.raises(ExternalServiceError) as info:
         client._get_following_redirects("https://slow.example/")
     assert info.value.error_code == "http_fetch_deadline_exceeded", info.value.error_code
+
+
+def test_ui_has_no_blocking_dialogs_or_color_only_scores():
+    from pathlib import Path
+
+    html = (Path(__file__).parent.parent / "job_search" / "web" / "static" / "index.html").read_text()
+    code = html.replace("replacement for alert()", "").replace("replacement for prompt()", "")
+    assert "alert(" not in code and "prompt(" not in code, "use the aria-live region and <dialog> instead"
+    assert 'role="alert" aria-live="assertive"' in html, "errors need an assertive live region"
+    assert "scoreBadge(" in html and "score-label" in html, "scores need a text label, not just colour"
+    assert 'aria-current="page"' in html, "the active nav button must be marked"
