@@ -38,6 +38,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIn("Job Search Console", template.read_text(encoding="utf-8"))
         self.assertNotIn("INDEX_HTML", PRESENTATION.read_text(encoding="utf-8"))
 
+    def test_web_process_does_not_start_background_workers_or_schedulers(self):
+        source = PRESENTATION.read_text(encoding="utf-8")
+        startup = source[source.index("def start_background_task") : source.index("def scheduler_loop")]
+        scheduler = source[source.index("def start_scheduler") : source.index("def main")]
+        self.assertNotIn(".submit(", startup, "HTTP task submission must only persist queued work.")
+        self.assertNotIn("Thread(", scheduler, "Web startup must not start a scheduler thread.")
+
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))

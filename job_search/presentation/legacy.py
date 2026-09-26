@@ -7,10 +7,8 @@ import re
 import shutil
 import tempfile
 import textwrap
-import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
@@ -255,7 +253,6 @@ ORACLE_IC6_LEVEL_REFERENCE = (
 )
 MIN_ANNUAL_COMPENSATION = 200_000
 UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
-TASK_DISPATCHER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="job-search-worker")
 OUTBOUND_HTTP_CLIENT = SafeHttpClient()
 
 
@@ -611,11 +608,29 @@ def start_background_task(operation, job_ids, worker):
     task_id = uuid.uuid4().hex
     created_at = now()
     task = task_repository().create(task_id, operation, job_ids, created_at)
-    # Bounded single-worker dispatcher is the documented local-development
-    # implementation. State remains durable if the process stops mid-task.
-    TASK_DISPATCHER.submit(worker, task_id, job_ids)
-    log_event("background_task_started", task_id=task_id, operation=operation, job_ids=job_ids)
+    log_event("background_task_queued", task_id=task_id, operation=operation, job_ids=job_ids)
     return task
+
+
+def process_background_task_item(claim):
+    """Worker callback kept outside HTTP handlers; invoked by ``job_search.worker``."""
+    operation, job_id = claim["operation"], claim["job_id"]
+    if operation == "scorecards":
+        with connect() as conn:
+            if not get_job(conn, job_id):
+                return "skipped", "Job not found"
+            score = populate_codex_score(conn, job_id)
+        return "complete", f"Codex score {int(score.get('total_score', 0))}"
+    if operation == "application_packets":
+        with connect() as conn:
+            job = get_job(conn, job_id)
+            if not job:
+                return "skipped", "Job not found"
+            if job.get("application_packet_path"):
+                return "skipped", "Application packet already associated"
+            packet = create_application_packet(conn, job_id)
+        return "complete", packet.get("path") or "Application packet generated"
+    return "error", f"Unsupported task operation: {operation}"
 
 
 def masked_config():
@@ -2963,10 +2978,8 @@ def scheduler_loop():
 
 
 def start_scheduler():
-    if not AUTORUN:
-        return
-    thread = threading.Thread(target=scheduler_loop, name="job-search-scheduler", daemon=True)
-    thread.start()
+    # Scheduling belongs to a separately managed process; web startup never runs it.
+    return None
 
 
 def main():

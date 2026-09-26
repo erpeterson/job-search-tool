@@ -200,7 +200,7 @@ complete every acceptance criterion listed with it.
   the repository's documented equivalent); and the coverage report is at least
   80% without omitting application modules.
 
-- [ ] **REOPEN: provide an actual managed worker/scheduler boundary, or
+- [x] **REOPEN: provide an actual managed worker/scheduler boundary, or
   explicitly restrict deployment to single-process development.** Background
   work still executes in the web process through `ThreadPoolExecutor`
   (`app.py:235`, `:763`), and scheduling still starts a daemon thread

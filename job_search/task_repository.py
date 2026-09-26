@@ -58,17 +58,30 @@ class TaskRepository:
                     status TEXT NOT NULL,
                     message TEXT NOT NULL DEFAULT '',
                     updated_at INTEGER NOT NULL,
+                    lease_owner TEXT,
+                    lease_expires_at INTEGER,
                     PRIMARY KEY(task_id, job_id)
                 );
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(background_task_items)")}
+            if "lease_owner" not in columns:
+                connection.execute("ALTER TABLE background_task_items ADD COLUMN lease_owner TEXT")
+            if "lease_expires_at" not in columns:
+                connection.execute("ALTER TABLE background_task_items ADD COLUMN lease_expires_at INTEGER")
             cursor = connection.execute(
                 """
                 UPDATE background_tasks
-                SET status = 'interrupted', completed_at = ?, updated_at = ?,
-                    message = 'Worker stopped before task completion; retry the selected jobs.'
-                WHERE status IN ('queued', 'running')
+                SET status = 'queued', updated_at = ?, current_job_id = NULL,
+                    message = 'Queued for a managed worker.'
+                WHERE status = 'running'
                 """,
+                (timestamp,),
+            )
+            connection.execute(
+                """UPDATE background_task_items
+                SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
                 (timestamp, timestamp),
             )
             return cursor.rowcount
@@ -146,3 +159,71 @@ class TaskRepository:
             )
             connection.execute("UPDATE background_tasks SET updated_at = ? WHERE id = ?", (timestamp, task_id))
         return self.get(task_id)
+
+    def claim_next_item(self, worker_id: str, timestamp: int, lease_seconds: int) -> dict[str, Any] | None:
+        """Atomically claim one queued or expired item for a named worker."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT i.task_id, i.job_id, t.operation FROM background_task_items i
+                JOIN background_tasks t ON t.id = i.task_id
+                WHERE i.status = 'queued' OR (i.status = 'running' AND i.lease_expires_at <= ?)
+                ORDER BY t.created_at, i.job_id LIMIT 1""",
+                (timestamp,),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            lease_expires_at = timestamp + lease_seconds
+            connection.execute(
+                """UPDATE background_task_items SET status = 'running', lease_owner = ?, lease_expires_at = ?,
+                updated_at = ? WHERE task_id = ? AND job_id = ?""",
+                (worker_id, lease_expires_at, timestamp, row["task_id"], row["job_id"]),
+            )
+            connection.execute(
+                """UPDATE background_tasks SET status = 'running', started_at = COALESCE(started_at, ?),
+                current_job_id = ?, updated_at = ? WHERE id = ?""",
+                (timestamp, row["job_id"], timestamp, row["task_id"]),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        return {**dict(row), "lease_owner": worker_id, "lease_expires_at": lease_expires_at}
+
+    def complete_claim(
+        self, task_id: str, job_id: int, worker_id: str, timestamp: int, *, status: str, message: str
+    ) -> bool:
+        """Finish a claimed item only when its lease is still owned by this worker."""
+        if status not in {"complete", "skipped", "error"}:
+            raise ValueError("status must be complete, skipped, or error")
+        with self._connection() as connection:
+            updated = connection.execute(
+                """UPDATE background_task_items SET status = ?, message = ?, lease_owner = NULL,
+                lease_expires_at = NULL, updated_at = ? WHERE task_id = ? AND job_id = ? AND lease_owner = ?""",
+                (status, message[:1000], timestamp, task_id, job_id, worker_id),
+            ).rowcount
+            if not updated:
+                return False
+            counts = connection.execute(
+                """SELECT SUM(status = 'complete') AS completed, SUM(status = 'skipped') AS skipped,
+                SUM(status = 'error') AS failed, SUM(status IN ('queued', 'running')) AS pending
+                FROM background_task_items WHERE task_id = ?""",
+                (task_id,),
+            ).fetchone()
+            complete = counts["pending"] == 0
+            connection.execute(
+                """UPDATE background_tasks SET completed = ?, skipped = ?, failed = ?, current_job_id = NULL,
+                status = ?, completed_at = CASE WHEN ? THEN ? ELSE completed_at END, updated_at = ? WHERE id = ?""",
+                (
+                    counts["completed"] or 0,
+                    counts["skipped"] or 0,
+                    counts["failed"] or 0,
+                    "error" if complete and counts["failed"] else "complete" if complete else "running",
+                    complete,
+                    timestamp,
+                    timestamp,
+                    task_id,
+                ),
+            )
+        return True

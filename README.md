@@ -65,6 +65,24 @@ module, rerun the developer-tool installation; if it reports coverage below the
 threshold, add deterministic tests for the listed uncovered branches rather
 than lowering the threshold.
 
+## Managed background processes
+
+The web process only queues durable Codex tasks; it never runs a worker or
+scheduler thread. Start one managed worker separately for the same database:
+
+```bash
+./.venv/bin/python -m job_search.worker --database job_search.sqlite3
+```
+
+Run scheduled searches through a separately supervised scheduler invocation:
+
+```bash
+./.venv/bin/python -m job_search.scheduler --database job_search.sqlite3
+```
+
+Both processes use SQLite leases. A live lease prevents duplicate work; an
+expired lease makes interrupted work retryable.
+
 The API validates JSON request shapes, bounded text fields, allowed workflow
 values, score ranges, and manually submitted URLs. Manual URLs must use HTTP(S)
 and cannot target localhost or private/reserved IP addresses. Unexpected server
