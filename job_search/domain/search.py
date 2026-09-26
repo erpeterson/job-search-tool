@@ -5,7 +5,7 @@ import logging
 
 from job_search.domain.clock import now
 from job_search.domain.discovery_filters import first_rejection
-from job_search.domain.errors import AppError, NotFoundError
+from job_search.domain.errors import AppError, NotFoundError, public_error_code
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.levels import level_assessment_from_equivalency, lookup_level_equivalency
 from job_search.domain.model_output import validate_refinement_payload
@@ -205,7 +205,9 @@ class SearchService:
                 query_id=query["id"],
                 board=query["board"],
             )
-            messages.append(f"{label}: {exc}")
+            messages.append(
+                f"{label}: board fetch failed ({public_error_code(exc, 'search_board_fetch_failed')}); see logs."
+            )
             return
         with self._db.unit_of_work() as uow:
             uow.search.set_query_last_run(query["id"], now())
@@ -231,7 +233,7 @@ class SearchService:
                 board=query.get("board"),
                 keywords=query.get("keywords"),
             )
-            messages.append(f"{label}: {exc}")
+            messages.append(f"{label}: query refinement failed ({exc.error_code}); see logs.")
 
     def _process_result(self, run_id, query_id, result, force_refresh, messages):
         """Filter, deduplicate, score, and track one discovered result. Returns the count bucket."""

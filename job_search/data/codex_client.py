@@ -119,7 +119,9 @@ class CodexClient:
             error = exc
             record_exception("codex_cli_launch_failed", "data.codex_client", operation, exc, cli_path=cli_path)
             raise ExternalServiceError(
-                f"Codex CLI could not be started at {cli_path!r}. Check CODEX_CLI_PATH.", "codex_cli_launch_failed"
+                "Codex CLI could not be started. Check CODEX_CLI_PATH.",
+                "codex_cli_launch_failed",
+                detail=f"cli_path={cli_path!r}",
             ) from exc
         except CodexCliError as exc:
             error = exc

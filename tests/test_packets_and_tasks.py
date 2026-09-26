@@ -266,3 +266,41 @@ class TestBackgroundCrashHandling:
         thread.join()
         after = METRICS.snapshot().get("blame.thread_unhandled_exception", 0)
         assert after == before + 1, "uncaught thread exceptions must be recorded"
+
+
+def test_pandoc_failure_response_omits_stderr(config, environ, http, codex_runner):
+    import subprocess
+
+    from conftest import FakeResolver, ImmediateThread, make_client
+
+    from job_search.container import build_container
+    from job_search.data.packet_store import PandocConverter
+
+    failing = PandocConverter(
+        which=lambda _name: "/usr/bin/pandoc",
+        runner=lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="SECRET /Users/me/tmp stderr"),
+    )
+    container = build_container(
+        config,
+        environ=environ,
+        http_get=http,
+        codex_runner=codex_runner,
+        pandoc=failing,
+        thread_factory=ImmediateThread,
+        resolve_host=FakeResolver(),
+    )
+    container.bootstrap()
+    job_id = insert_job(container)
+    codex_runner.respond(packet_response())
+    response = post(make_client(container), f"/api/jobs/{job_id}/application-packet/generate")
+    body = response.get_json()
+    assert response.status_code == 502, f"pandoc failure should be 502: {body}"
+    assert "SECRET" not in json.dumps(body), f"stderr must not be returned to the client: {body}"
+    assert "pandoc_conversion_failed" in body["error"] or "Pandoc conversion failed" in body["error"], body
+
+
+def test_codex_unavailable_message_omits_cli_path(client, container, environ):
+    environ["CODEX_CLI_PATH"] = "/secret/location/codex"
+    job_id = insert_job(container)
+    body = post(client, f"/api/jobs/{job_id}/application-packet/generate").get_json()
+    assert "/secret/location" not in body["error"], f"the CLI path must not be returned: {body}"

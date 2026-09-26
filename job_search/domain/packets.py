@@ -100,9 +100,9 @@ class PacketService:
     def ensure_available(self):
         if not self._runtime.codex_cli_available():
             raise DependencyUnavailableError(
-                f"Codex CLI is unavailable at {self._runtime.codex_cli_path()!r}. "
-                "Set CODEX_CLI_PATH or install Codex CLI.",
+                "Codex CLI is unavailable. Set CODEX_CLI_PATH or install Codex CLI.",
                 "packet_codex_cli_unavailable",
+                detail=f"cli_path={self._runtime.codex_cli_path()!r}",
             )
 
     def list_packets(self):

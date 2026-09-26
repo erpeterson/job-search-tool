@@ -138,6 +138,9 @@ def record_exception(error_code, component, operation, exc, level=logging.ERROR,
         "cause": sanitize_cause(exc),
         **context,
     }
+    detail = getattr(exc, "detail", None)
+    if detail:
+        fields["detail"] = sanitize_cause(detail, limit=2000)
     if recovery:
         fields["recovery"] = recovery
     if level >= logging.ERROR:
