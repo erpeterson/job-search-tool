@@ -226,3 +226,81 @@ complete every acceptance criterion listed with it.
   sanitized cause; startup catches configuration/security errors, logs a stable
   event to stderr, and exits nonzero without a traceback; and tests exercise
   each listed path plus malformed startup configuration.
+
+## Validation audit — reopened work (2026-09-25)
+
+`./quality.sh` passes (111 tests; 82% aggregate branch coverage), and the DNS
+pinning, redaction, proxy-CIDR, and CI implementations were found to be
+substantive. The following checked tasks nevertheless do not meet their own
+closure criteria.
+
+### P0 — architecture and durable execution
+
+- [ ] **REOPEN: finish the three-tier migration instead of relocating the
+  monolith.** `app.py` is now thin, but
+  `job_search/presentation/legacy.py` remains a roughly 3,000-line mixed-tier
+  module. It imports concrete data-access classes and BeautifulSoup, creates
+  SQLite connections, contains SQL (`:394-502`, `:777-1038`, `:1649-2198`),
+  performs scraping, Codex/subprocess orchestration, filtering and search
+  workflows, and exposes the Flask routes. The existing architecture test only
+  searches the text between the first route and `scheduler_loop`, so it does
+  not detect this violation. Move remaining workflow/domain functions into
+  application services and concrete SQL/HTTP/filesystem/Codex work into
+  data-access adapters; make presentation routes only validate/map requests and
+  call injected services. **Close only when:** no presentation module imports
+  concrete data-access implementations, BeautifulSoup, or subprocess/HTTP
+  clients; no presentation module opens database connections or contains SQL;
+  all workflow functions currently in `legacy.py` reside in application
+  services with port contracts; `legacy.py` is removed or reduced to route
+  registration/composition; and AST-based architecture tests enforce these
+  boundaries across every presentation module rather than a source slice.
+
+- [ ] **REOPEN: make durable-task leases safe for long-running work and make
+  worker/scheduler CLIs operationally compliant.** The managed worker now
+  claims tasks, but `process_one()` has no lease heartbeat/renewal. A Codex or
+  packet operation exceeding the 300-second default lease can be claimed by a
+  second worker while the first still runs. Both `job_search.worker` and
+  `job_search.scheduler` also lack top-level exception translation/logging;
+  their `main()` functions can emit tracebacks and do not guarantee `ERROR`
+  diagnostics on stderr. Implement atomic lease renewal/ownership checks for
+  the full processing interval, bounded retry/timeout policy, and top-level CLI
+  handlers that emit structured stable error codes to stderr and return
+  OS-appropriate nonzero statuses. **Close only when:** a deterministic test
+  advances time beyond the initial lease while a first worker is still active
+  and proves a second worker cannot claim it after renewal; a crashed/no-
+  heartbeat worker becomes reclaimable; worker and scheduler fatal failures
+  produce one structured `ERROR` line without a traceback; and README lifecycle
+  text no longer claims an in-web dispatcher or an obsolete interrupted-task
+  state.
+
+### P1 — observability and startup handling
+
+- [ ] **REOPEN: actually catch both startup configuration and startup security
+  failures, and observe remaining swallowed parsing failures.** The root
+  wrapper checks for a non-existent `SecurityConfigurationError`, while the
+  policy raises `StartupSecurityError`; running
+  `JOB_SEARCH_HOST=0.0.0.0 ./.venv/bin/python app.py` currently prints a Python
+  traceback and exits 1 instead of producing the required controlled stderr
+  diagnostic. `JobService._present()` also catches malformed scorecard JSON
+  (`job_search/application/job_service.py:63`) without emitting telemetry.
+  Import and handle the actual typed startup exceptions (not class-name
+  strings), emit a structured startup event to stderr, and inject an
+  observability port into `JobService` for parse recovery. **Close only when:**
+  malformed runtime configuration and missing/invalid external-binding security
+  configuration both exit 2 with exactly one stable `ERROR` record and no
+  traceback; malformed persisted scorecard JSON returns the documented fallback
+  and emits a unique event containing error code, component, operation, record
+  ID, and sanitized cause; and subprocess tests cover all three paths.
+
+### P2 — documentation accuracy
+
+- [ ] **REOPEN: reconcile operations documentation with the implemented worker
+  model.** The new managed-worker section is correct, but the later Operations
+  section still states that bulk work uses a "bounded, single-worker
+  local-development dispatcher" and that queued/running tasks become
+  `interrupted` at web startup. Neither matches the current separate worker and
+  lease/requeue implementation. **Close only when:** README has one consistent
+  source of truth for web, worker, and scheduler processes; describes lease
+  expiry/retry accurately; documents required supervision and command flags;
+  and a documentation test checks for the managed-worker commands while
+  rejecting obsolete dispatcher/interrupted-state wording.
