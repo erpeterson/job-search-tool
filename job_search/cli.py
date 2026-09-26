@@ -11,8 +11,10 @@ import sys
 
 from job_search.config import DEFAULT_APP_DIR, AppConfig
 from job_search.container import build_container
+from job_search.data.captures import CaptureStore
 from job_search.data.env_file import EnvFile
-from job_search.domain.errors import ConfigurationError
+from job_search.domain.errors import ConfigurationError, ValidationError
+from job_search.domain.retention import prune_captures
 from job_search.observability import (
     configure_console_logging,
     configure_file_logging,
@@ -33,7 +35,26 @@ def parse_args(argv):
     parser.add_argument("-v", "--verbose", action="store_true", help="Write non-error logs to stdout.")
     parser.add_argument("--host", help="Bind address (overrides JOB_SEARCH_HOST).")
     parser.add_argument("--port", help="Port (overrides JOB_SEARCH_PORT).")
+    commands = parser.add_subparsers(dest="command", metavar="COMMAND")
+    prune = commands.add_parser(
+        "prune-captures", help="Delete old request/response captures (dry run unless --yes is given)."
+    )
+    prune.add_argument("--older-than", type=int, required=True, metavar="DAYS", help="Age threshold in days.")
+    prune.add_argument("--yes", action="store_true", help="Actually delete the listed captures.")
     return parser.parse_args(argv)
+
+
+def run_prune_captures(args, environ, out, app_dir):
+    """List captures older than --older-than days; delete them only with --yes."""
+    config = AppConfig.from_env(startup_settings(environ, app_dir / ".env", args), app_dir=app_dir)
+    configure_file_logging(config.event_log_path, config.api_log_path, config.log_max_bytes)
+    result = prune_captures(CaptureStore(config.capture_dir, lambda: True), args.older_than, confirmed=args.yes)
+    for path in result.candidates:
+        print(path, file=out)
+    if result.confirmed:
+        print(f"Deleted {result.deleted} of {len(result.candidates)} capture files.", file=out)
+    else:
+        print(f"Dry run: {len(result.candidates)} capture files would be deleted. Re-run with --yes.", file=out)
 
 
 def startup_settings(environ, env_path, args):
@@ -53,7 +74,7 @@ def run(args, environ, serve, out, app_dir):
     environ = startup_settings(environ, app_dir / ".env", args)
     config = AppConfig.from_env(environ, app_dir=app_dir)
     install_thread_excepthook()
-    configure_file_logging(config.event_log_path, config.api_log_path, config.log_max_bytes, config.log_backup_count)
+    configure_file_logging(config.event_log_path, config.api_log_path, config.log_max_bytes)
     container = build_container(config, environ=environ)
     container.bootstrap()
     container.scheduler.start()
@@ -79,9 +100,17 @@ def _serve(app, config):
 def main(argv=None, environ=None, serve=_serve, out=None, app_dir=DEFAULT_APP_DIR):
     args = parse_args(argv)
     configure_console_logging(verbose=args.verbose)
+    environ = os.environ if environ is None else environ
     try:
-        run(args, os.environ if environ is None else environ, serve, out or sys.stdout, app_dir)
+        if args.command == "prune-captures":
+            run_prune_captures(args, environ, out or sys.stdout, app_dir)
+        else:
+            run(args, environ, serve, out or sys.stdout, app_dir)
         return EXIT_OK
+    except ValidationError as exc:
+        record_exception(exc.error_code, "cli", "arguments", exc, recovery="Exiting with usage error code.")
+        print(f"Invalid arguments: {exc.message}", file=sys.stderr)
+        return EXIT_CONFIG_ERROR
     except ConfigurationError as exc:
         record_exception(exc.error_code, "cli", "startup", exc, recovery="Exiting with configuration error code.")
         print(f"Configuration error: {exc.message}", file=sys.stderr)
