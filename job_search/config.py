@@ -78,6 +78,27 @@ def _check_bind_safety(environ, host, debug):
         )
 
 
+_PATH_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _path_env(environ, key, default, base, kind):
+    """Resolve a configured path (relative values resolve against ``base``) and check its type if it exists."""
+    raw = environ.get(key, "").strip()
+    if not raw:
+        path = default
+    elif _PATH_CONTROL_CHARS.search(raw):
+        raise ConfigurationError(f"{key} must not contain control characters.", "config_path_invalid")
+    else:
+        candidate = Path(raw).expanduser()
+        path = candidate if candidate.is_absolute() else base / candidate
+    path = path.resolve()
+    if kind == "dir" and path.exists() and not path.is_dir():
+        raise ConfigurationError(f"{key} must be a directory; {path} is not.", "config_path_not_directory")
+    if kind == "file" and path.exists() and not path.is_file():
+        raise ConfigurationError(f"{key} must be a file; {path} is not.", "config_path_not_file")
+    return path
+
+
 _HOST_ENTRY_PATTERN = re.compile(r"^[a-z0-9.\-\[\]:]{1,262}$")
 
 
@@ -126,13 +147,16 @@ class AppConfig:
     max_request_bytes: int
     http_max_response_bytes: int
     pandoc_timeout_seconds: int
+    http_timeout_seconds: int
+    db_timeout_seconds: int
+    max_retained_tasks: int
 
     @classmethod
     def from_env(cls, environ=None, app_dir=None):
         environ = os.environ if environ is None else environ
         app_dir = Path(app_dir or DEFAULT_APP_DIR).resolve()
-        workspace_root = Path(environ.get("JOB_SEARCH_WORKSPACE_ROOT") or app_dir.parent).resolve()
-        log_dir = app_dir / "logs"
+        workspace_root = _path_env(environ, "JOB_SEARCH_WORKSPACE_ROOT", app_dir.parent, app_dir, "dir")
+        log_dir = _path_env(environ, "JOB_SEARCH_LOG_DIR", app_dir / "logs", app_dir, "dir")
         host = environ.get("JOB_SEARCH_HOST", "127.0.0.1").strip()
         if not host:
             raise ConfigurationError("JOB_SEARCH_HOST must not be empty.", "config_empty_host")
@@ -142,15 +166,33 @@ class AppConfig:
         return cls(
             app_dir=app_dir,
             workspace_root=workspace_root,
-            db_path=app_dir / "job_search.sqlite3",
+            db_path=_path_env(environ, "JOB_SEARCH_DB_PATH", app_dir / "job_search.sqlite3", app_dir, "file"),
             env_path=app_dir / ".env",
             log_dir=log_dir,
             api_log_path=log_dir / "api.log",
             event_log_path=log_dir / "job-search.log",
-            capture_dir=app_dir / "captures",
-            guidance_path=workspace_root / "supporting-documents" / "20260731-job-search-guidance.md",
-            career_manual_path=workspace_root / "career-manual" / "Career-Manual.md",
-            master_resume_path=workspace_root / "resume" / "Master-Resume.md",
+            capture_dir=_path_env(environ, "JOB_SEARCH_CAPTURE_DIR", app_dir / "captures", app_dir, "dir"),
+            guidance_path=_path_env(
+                environ,
+                "JOB_SEARCH_GUIDANCE_PATH",
+                workspace_root / "supporting-documents" / "20260731-job-search-guidance.md",
+                workspace_root,
+                "file",
+            ),
+            career_manual_path=_path_env(
+                environ,
+                "JOB_SEARCH_CAREER_MANUAL_PATH",
+                workspace_root / "career-manual" / "Career-Manual.md",
+                workspace_root,
+                "file",
+            ),
+            master_resume_path=_path_env(
+                environ,
+                "JOB_SEARCH_MASTER_RESUME_PATH",
+                workspace_root / "resume" / "Master-Resume.md",
+                workspace_root,
+                "file",
+            ),
             applications_dir=workspace_root / "applications",
             host=host,
             port=port,
@@ -164,6 +206,9 @@ class AppConfig:
             default_codex_cli_path=environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex",
             allowed_hosts=_allowed_hosts(environ, host, port),
             pandoc_timeout_seconds=_int_env(environ, "PANDOC_TIMEOUT_SECONDS", 120, 1, 3600),
+            http_timeout_seconds=_int_env(environ, "JOB_SEARCH_HTTP_TIMEOUT_SECONDS", 30, 1, 600),
+            db_timeout_seconds=_int_env(environ, "JOB_SEARCH_DB_TIMEOUT_SECONDS", 30, 1, 600),
+            max_retained_tasks=_int_env(environ, "JOB_SEARCH_MAX_RETAINED_TASKS", 50, 1, 10_000),
             http_max_response_bytes=_int_env(
                 environ, "JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES", 5 * 1024**2, 1024, 256 * 1024**2
             ),

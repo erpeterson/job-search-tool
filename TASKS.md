@@ -38,7 +38,7 @@ P3 = hygiene or completeness.
 | T-19 | Split `RuntimeSettings` and stop mutating `os.environ` | Architecture | P2 | Done |
 | T-20 | Move orchestration out of Flask routes | Architecture | P2 | Done |
 | T-21 | Move domain decisions out of the job-board adapter | Architecture | P3 | Open |
-| T-22 | Make hardcoded paths, timeouts, and limits configurable | Configuration | P2 | Open |
+| T-22 | Make hardcoded paths, timeouts, and limits configurable | Configuration | P2 | Done |
 | T-23 | Move the user-specific search profile out of source code | Configuration | P2 | Open |
 | T-24 | Fix `.env.example` and `run.sh` configuration handling | Configuration / CLI | P2 | Open |
 | T-25 | Close request-validation gaps | Validation | P2 | Open |
