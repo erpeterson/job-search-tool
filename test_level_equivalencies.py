@@ -134,13 +134,21 @@ class LevelEquivalencyTests(unittest.TestCase):
         job_search_app.gpt_scoring_enabled = lambda: True
         job_search_app.codex_cli_available = lambda: True
 
-        def fake_populate_score(conn, job_id):
-            conn.execute("UPDATE jobs SET gpt_score = ? WHERE id = ?", (88, job_id))
-            return {"total_score": 88}
+        class FakeScoringWorkflow:
+            def populate_by_id(self, job_id, *, force_refresh):
+                with job_search_app.connect() as conn:
+                    conn.execute("UPDATE jobs SET gpt_score = ? WHERE id = ?", (88, job_id))
+                return {"total_score": 88}
 
-        job_search_app.populate_codex_score = fake_populate_score
+        original_workflow = job_search_app.codex_scoring_workflow
+        job_search_app.codex_scoring_workflow = lambda: FakeScoringWorkflow()
         client = job_search_app.app.test_client()
-        response = client.post("/api/jobs", json={"url": "https://example.com/jobs/123", "pipeline": "Executive IC"})
+        try:
+            response = client.post(
+                "/api/jobs", json={"url": "https://example.com/jobs/123", "pipeline": "Executive IC"}
+            )
+        finally:
+            job_search_app.codex_scoring_workflow = original_workflow
 
         self.assertEqual(response.status_code, 201)
         self.assertIsNone(response.get_json()["score_error"])

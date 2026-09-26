@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from bs4 import BeautifulSoup
+
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
@@ -47,7 +49,7 @@ class AppHelperTests(unittest.TestCase):
 
     def test_html_json_ld_and_markdown_helpers(self):
         html = '<script type="application/ld+json">{"@type":"JobPosting","title":"Architect"}</script>'
-        soup = helpers_app.BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         self.assertEqual(helpers_app.extract_job_json_ld(soup)["title"], "Architect")
         self.assertEqual(
             helpers_app.render_inline_markdown("**bold** and `code`"), "<strong>bold</strong> and <code>code</code>"

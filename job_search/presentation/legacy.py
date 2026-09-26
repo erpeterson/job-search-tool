@@ -9,13 +9,13 @@ import tempfile
 import textwrap
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin, urlparse
 
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -30,39 +30,30 @@ from flask import (
 )
 from werkzeug.exceptions import HTTPException
 
+from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
 from job_search.application.company_service import CompanyService
+from job_search.application.console_query_service import ConsoleQueryService
 from job_search.application.discovery_policy import DiscoveryPolicy
+from job_search.application.discovery_service import DiscoveryService
 from job_search.application.filtering_service import FilteringService
+from job_search.application.initialization_service import InitializationService
+from job_search.application.job_scoring_policy import JobScoringPolicy
 from job_search.application.job_service import JobService
 from job_search.application.level_service import LevelService, normalize_lookup_text
 from job_search.application.manual_job_service import ManualJobService
 from job_search.application.packet_attachment_service import PacketAttachmentService
+from job_search.application.packet_generation_service import PacketGenerationService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
+from job_search.application.search_run_service import SearchRunService
 from job_search.application.settings_service import SettingsService
+from job_search.application.task_execution_service import TaskExecutionService
+from job_search.composition import database_session, infrastructure
 from job_search.config import load_runtime_settings
-from job_search.data_access.board_gateway import CallableBoardGateway
-from job_search.data_access.codex_cli import CodexCliGateway
-from job_search.data_access.company_repository import SqliteCompanyRepository
-from job_search.data_access.document_writer import PacketDocumentWriter
-from job_search.data_access.filter_repository import SqliteJobFilterRepository
-from job_search.data_access.http_gateway import CapturingHttpGateway
-from job_search.data_access.job_board_parser import JobBoardParser
-from job_search.data_access.job_repository import SqliteJobRepository
-from job_search.data_access.level_repository import SqliteLevelRepository
-from job_search.data_access.packet_storage import PacketStorage
-from job_search.data_access.schema import initialize_schema
-from job_search.data_access.search_query_repository import SqliteSearchQueryRepository
-from job_search.data_access.search_repository import SqliteSearchRepository
-from job_search.data_access.settings_repository import SqliteSettingsRepository
-from job_search.data_access.sqlite import open_connection
-from job_search.domain.filtering import decide_job_filter
 from job_search.errors import ClientInputError, translate_exception
-from job_search.http_client import SafeHttpClient
 from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security, trusted_proxy_peer
-from job_search.task_repository import TaskRepository
 from job_search.validation import (
     RequestValidationError,
     boolean,
@@ -253,11 +244,18 @@ ORACLE_IC6_LEVEL_REFERENCE = (
 )
 MIN_ANNUAL_COMPENSATION = 200_000
 UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
-OUTBOUND_HTTP_CLIENT = SafeHttpClient()
+INFRASTRUCTURE = infrastructure()
+OUTBOUND_HTTP_CLIENT = INFRASTRUCTURE.http_client()
 
 
-def connect():
-    return open_connection(DB_PATH)
+class _DatabaseSessionProvider:
+    """Deferred composition provider so tests can replace ``DB_PATH`` safely."""
+
+    def __call__(self):
+        return database_session(DB_PATH)
+
+
+connect = _DatabaseSessionProvider()
 
 
 def dependency(name, fallback):
@@ -272,32 +270,50 @@ def dependency(name, fallback):
 
 def job_service() -> JobService:
     """Compose the framework-independent job use case for a request."""
-    return dependency("job_service", lambda: JobService(SqliteJobRepository(connect), observe=log_event))
+    return dependency("job_service", lambda: JobService(INFRASTRUCTURE.job_repository(connect), observe=log_event))
 
 
 def company_service() -> CompanyService:
-    return dependency("company_service", lambda: CompanyService(SqliteCompanyRepository(connect)))
+    return dependency("company_service", lambda: CompanyService(INFRASTRUCTURE.company_repository(connect)))
 
 
 def search_query_service() -> SearchQueryService:
-    return dependency("search_query_service", lambda: SearchQueryService(SqliteSearchQueryRepository(connect)))
+    return dependency("search_query_service", lambda: SearchQueryService(INFRASTRUCTURE.query_repository(connect)))
 
 
 def settings_service() -> SettingsService:
-    return dependency("settings_service", lambda: SettingsService(SqliteSettingsRepository(connect)))
+    return dependency("settings_service", lambda: SettingsService(INFRASTRUCTURE.settings_repository(connect)))
 
 
 def filtering_service() -> FilteringService:
+    def observe(job, decision):
+        if decision.filtered:
+            log_event(
+                "job_filtered",
+                job_id=job.get("id"),
+                company=job["company"],
+                title=job["title"],
+                reasons=decision.reasons,
+                gpt_score=job["gpt_score"],
+                user_score=job["user_score"],
+                downlevel=bool(job["downlevel"]),
+                gpt_scoring_enabled=gpt_scoring_enabled(),
+            )
+
     return dependency(
         "filtering_service",
-        lambda: FilteringService(SqliteJobFilterRepository(connect), now, gpt_scoring_enabled=gpt_scoring_enabled()),
+        lambda: FilteringService(
+            INFRASTRUCTURE.filter_repository(connect),
+            now,
+            gpt_scoring_enabled=gpt_scoring_enabled(),
+            observe=observe,
+        ),
     )
 
 
 def manual_job_service() -> ManualJobService:
     def score(job_id: int) -> object:
-        with connect() as connection:
-            return populate_codex_score(connection, job_id)
+        return codex_scoring_workflow().populate_by_id(job_id, force_refresh=False)
 
     def scoring_availability() -> str | None:
         if not gpt_scoring_enabled():
@@ -329,7 +345,7 @@ def manual_job_service() -> ManualJobService:
             )
 
     return ManualJobService(
-        SqliteJobRepository(connect),
+        INFRASTRUCTURE.job_repository(connect),
         lambda url, force_refresh: scrape_job_from_url(url, force_refresh=force_refresh),
         fallback_job_from_url,
         filtering_service().refresh_job,
@@ -341,7 +357,7 @@ def manual_job_service() -> ManualJobService:
 
 def rescrape_service() -> RescrapeService:
     return RescrapeService(
-        SqliteJobRepository(connect),
+        INFRASTRUCTURE.job_repository(connect),
         lambda url, force_refresh: scrape_job_from_url(url, force_refresh=force_refresh),
         filtering_service().refresh_job,
         now,
@@ -349,14 +365,13 @@ def rescrape_service() -> RescrapeService:
 
 
 def packet_attachment_service() -> PacketAttachmentService:
-    storage = PacketStorage(ROOT, APPLICATIONS_DIR)
-    return PacketAttachmentService(SqliteJobRepository(connect), storage.packet_relative_path, now)
+    storage = INFRASTRUCTURE.packet_storage(ROOT, APPLICATIONS_DIR)
+    return PacketAttachmentService(INFRASTRUCTURE.job_repository(connect), storage.packet_relative_path, now)
 
 
 def scoring_service() -> ScoringService:
     def score(job_id: int) -> dict[str, object]:
-        with connect() as connection:
-            return populate_codex_score(connection, job_id)
+        return codex_scoring_workflow().populate_by_id(job_id, force_refresh=False)
 
     def availability() -> str | None:
         if not gpt_scoring_enabled():
@@ -368,8 +383,15 @@ def scoring_service() -> ScoringService:
     return ScoringService(job_service().get_job, score, availability)
 
 
-def search_repository() -> SqliteSearchRepository:
-    return SqliteSearchRepository(connect)
+def search_repository():
+    return INFRASTRUCTURE.search_repository(connect)
+
+
+def console_query_service():
+    return dependency(
+        "console_query_service",
+        lambda: ConsoleQueryService(INFRASTRUCTURE.console_query_repository(connect, list_application_packets)),
+    )
 
 
 def discovery_policy() -> DiscoveryPolicy:
@@ -377,43 +399,44 @@ def discovery_policy() -> DiscoveryPolicy:
 
 
 def level_service(connection=None) -> LevelService:
-    return LevelService(SqliteLevelRepository(connect, connection), now)
+    return LevelService(INFRASTRUCTURE.level_repository(connect, connection), now)
+
+
+class _InitializationAdapter:
+    @staticmethod
+    def connection():
+        return connect()
+
+    @staticmethod
+    def initialize_schema(connection):
+        INFRASTRUCTURE.schema_initializer(connection)
+
+    @staticmethod
+    def initialize_defaults(connection, defaults):
+        INFRASTRUCTURE.read_models.initialize_defaults(connection, defaults)
+
+    @staticmethod
+    def seed_queries(connection):
+        seed_search_queries(connection)
+
+    @staticmethod
+    def remove_legacy_seeds(connection):
+        remove_hardcoded_level_equivalency_seeds(connection)
+
+    @staticmethod
+    def disable_legacy_queries(connection):
+        INFRASTRUCTURE.read_models.disable_legacy_seed_queries(connection)
+
+
+def initialization_service():
+    return InitializationService(_InitializationAdapter())
 
 
 def init_db():
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    with connect() as conn:
-        initialize_schema(conn)
-        defaults = {
-            "gpt_threshold": "40",
-            "user_threshold": "60",
-            "codex_model": DEFAULT_MODEL,
-            "last_search_at": "0",
-        }
-        for key, value in defaults.items():
-            conn.execute(
-                "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
-                (key, value),
-            )
-        seed_search_queries(conn)
-        remove_hardcoded_level_equivalency_seeds(conn)
-        conn.execute(
-            """
-            UPDATE search_queries
-            SET enabled = 0
-            WHERE seeded = 0
-              AND pipeline IS NULL
-              AND criteria IS NULL
-              AND keywords IN (
-                'Chief Architect',
-                'Distinguished Engineer',
-                'Principal Architect',
-                'Office of the CTO',
-                'Engineering Strategy',
-                'Developer Experience Principal Engineer'
-              )
-            """
-        )
+    initialization_service().initialize_database(
+        {"gpt_threshold": "40", "user_threshold": "60", "codex_model": DEFAULT_MODEL, "last_search_at": "0"}
+    )
 
     recovered_tasks = task_repository().initialize(now())
     if recovered_tasks:
@@ -453,58 +476,19 @@ def normalize_pipeline(value, fallback=""):
 
 
 def seed_search_queries(conn):
-    ts = now()
-    for query in DEFAULT_SEARCH_QUERIES:
-        existing = conn.execute(
-            """
-            SELECT id, keywords, criteria FROM search_queries
-            WHERE board = ? AND pipeline = ? AND seeded = 1
-            LIMIT 1
-            """,
-            (query["board"], query["pipeline"]),
-        ).fetchone()
-        if existing:
-            conn.execute(
-                """
-                UPDATE search_queries
-                SET criteria = ?,
-                    keywords = ?,
-                    location = COALESCE(location, ?)
-                WHERE id = ?
-                """,
-                (
-                    with_sales_role_exclusion_criteria(existing["criteria"] or query["criteria"]),
-                    with_sales_role_exclusion_keywords(existing["keywords"] or query["keywords"]),
-                    query["location"],
-                    existing["id"],
-                ),
-            )
-            continue
-        conn.execute(
-            """
-            INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria, seeded)
-            VALUES (?, ?, ?, ?, 1, ?, ?, 1)
-            """,
-            (
-                query["board"],
-                query["pipeline"],
-                query["keywords"],
-                query["location"],
-                ts,
-                query["criteria"],
-            ),
-        )
+    prepared_queries = [
+        {
+            **query,
+            "criteria": with_sales_role_exclusion_criteria(query["criteria"]),
+            "keywords": with_sales_role_exclusion_keywords(query["keywords"]),
+        }
+        for query in DEFAULT_SEARCH_QUERIES
+    ]
+    INFRASTRUCTURE.search_mutations.seed_queries(conn, prepared_queries, now())
 
 
 def remove_hardcoded_level_equivalency_seeds(conn):
-    conn.execute(
-        """
-        DELETE FROM level_equivalencies
-        WHERE normalized_company = 'atlassian'
-          AND normalized_title_pattern = 'principal engineer'
-          AND notes LIKE '%user-provided equivalency%'
-        """
-    )
+    INFRASTRUCTURE.search_mutations.remove_legacy_level_equivalency_seeds(conn)
 
 
 def lookup_level_equivalency(conn, company, title):
@@ -547,7 +531,7 @@ def parse_json_field(value, fallback):
 
 
 def settings(conn):
-    return {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM settings")}
+    return INFRASTRUCTURE.read_models.settings(conn)
 
 
 def gpt_scoring_enabled():
@@ -585,7 +569,7 @@ def full_capture_enabled():
 
 
 def task_repository():
-    return TaskRepository(DB_PATH)
+    return INFRASTRUCTURE.task_repository(DB_PATH)
 
 
 def get_background_task(task_id):
@@ -612,25 +596,23 @@ def start_background_task(operation, job_ids, worker):
     return task
 
 
+class _TaskExecutionAdapter:
+    @staticmethod
+    def job(job_id):
+        return console_query_service().job(job_id)
+
+    @staticmethod
+    def score(job_id):
+        return codex_scoring_workflow().populate_by_id(job_id, force_refresh=False)
+
+    @staticmethod
+    def generate_packet(job_id):
+        return packet_generation_service().generate(job_id)
+
+
 def process_background_task_item(claim):
-    """Worker callback kept outside HTTP handlers; invoked by ``job_search.worker``."""
-    operation, job_id = claim["operation"], claim["job_id"]
-    if operation == "scorecards":
-        with connect() as conn:
-            if not get_job(conn, job_id):
-                return "skipped", "Job not found"
-            score = populate_codex_score(conn, job_id)
-        return "complete", f"Codex score {int(score.get('total_score', 0))}"
-    if operation == "application_packets":
-        with connect() as conn:
-            job = get_job(conn, job_id)
-            if not job:
-                return "skipped", "Job not found"
-            if job.get("application_packet_path"):
-                return "skipped", "Application packet already associated"
-            packet = create_application_packet(conn, job_id)
-        return "complete", packet.get("path") or "Application packet generated"
-    return "error", f"Unsupported task operation: {operation}"
+    """Worker callback delegated to the application-layer task dispatcher."""
+    return TaskExecutionService(_TaskExecutionAdapter()).process(claim)
 
 
 def masked_config():
@@ -774,44 +756,18 @@ def parse_model_json(output_text):
         raise
 
 
-def apply_filter(conn, job_id):
-    cfg = settings(conn)
-    gpt_threshold = int(cfg.get("gpt_threshold", "40"))
-    user_threshold = int(cfg.get("user_threshold", "60"))
-    use_gpt_threshold = gpt_scoring_enabled()
-    job = conn.execute(
-        "SELECT company, title, gpt_score, user_score, downlevel FROM jobs WHERE id = ?", (job_id,)
-    ).fetchone()
-    decision = decide_job_filter(
-        row_to_dict(job),
-        gpt_threshold=gpt_threshold,
-        user_threshold=user_threshold,
-        gpt_scoring_enabled=use_gpt_threshold,
-    )
-    conn.execute("UPDATE jobs SET filtered = ?, updated_at = ? WHERE id = ?", (int(decision.filtered), now(), job_id))
-    if job and decision.filtered:
-        log_event(
-            "job_filtered",
-            job_id=job_id,
-            company=job["company"],
-            title=job["title"],
-            reasons=decision.reasons,
-            gpt_score=job["gpt_score"],
-            user_score=job["user_score"],
-            downlevel=bool(job["downlevel"]),
-            gpt_scoring_enabled=use_gpt_threshold,
-        )
+def apply_filter(_connection, job_id):
+    """Compatibility wrapper; filtering decisions live in ``FilteringService``."""
+    # Score/discovery callers may hold a write transaction. Commit its score
+    # before the repository-backed filtering use case opens its own session.
+    _connection.commit()
+    return filtering_service().refresh_job(job_id)
 
 
 def list_jobs(conn, include_filtered=False):
-    query = "SELECT * FROM jobs"
-    params = []
-    if not include_filtered:
-        query += " WHERE filtered = 0"
-    query += " ORDER BY updated_at DESC, created_at DESC"
     jobs = []
-    for row in conn.execute(query, params):
-        item = row_to_dict(row)
+    for row in INFRASTRUCTURE.read_models.jobs(conn, include_filtered):
+        item = dict(row)
         item["gpt_scorecard"] = parse_json_field(item.pop("gpt_scorecard_json"), {})
         item["user_scorecard"] = parse_json_field(item.pop("user_scorecard_json"), {})
         jobs.append(item)
@@ -819,82 +775,28 @@ def list_jobs(conn, include_filtered=False):
 
 
 def list_company_interests(conn):
-    rows = []
-    for row in conn.execute(
-        """
-        SELECT ci.*,
-               COUNT(j.id) AS tracked_job_count,
-               MAX(j.updated_at) AS latest_job_updated_at
-        FROM company_interests ci
-        LEFT JOIN jobs j ON lower(j.company) = lower(ci.company)
-        GROUP BY ci.id
-        ORDER BY
-          CASE ci.status
-            WHEN 'target' THEN 0
-            WHEN 'watching' THEN 1
-            WHEN 'active_conversation' THEN 2
-            WHEN 'paused' THEN 3
-            WHEN 'not_interested' THEN 4
-            ELSE 5
-          END,
-          COALESCE(ci.interest_score, -1) DESC,
-          ci.updated_at DESC
-        """
-    ):
-        rows.append(row_to_dict(row))
-    return rows
+    return list(INFRASTRUCTURE.read_models.company_interests(conn))
 
 
 def get_company_interest(conn, company_id):
-    row = conn.execute("SELECT * FROM company_interests WHERE id = ?", (company_id,)).fetchone()
-    if not row:
-        return None
-    company = row_to_dict(row)
-    company["jobs"] = [
-        row_to_dict(job)
-        for job in conn.execute(
-            "SELECT id, company, title, url, location, pipeline, status, gpt_score, user_score, filtered, downlevel FROM jobs WHERE lower(company) = lower(?) ORDER BY updated_at DESC",
-            (company["company"],),
-        )
-    ]
-    return company
+    return INFRASTRUCTURE.read_models.company_interest(conn, company_id)
 
 
 def get_job(conn, job_id):
-    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    if not row:
+    job = INFRASTRUCTURE.read_models.job(conn, job_id)
+    if not job:
         return None
-    job = row_to_dict(row)
     job["gpt_scorecard"] = parse_json_field(job.pop("gpt_scorecard_json"), {})
     job["user_scorecard"] = parse_json_field(job.pop("user_scorecard_json"), {})
-    job["interactions"] = [
-        row_to_dict(r)
-        for r in conn.execute(
-            "SELECT * FROM interactions WHERE job_id = ? ORDER BY occurred_on DESC, id DESC",
-            (job_id,),
-        )
-    ]
-    job["notes_list"] = [
-        row_to_dict(r)
-        for r in conn.execute(
-            "SELECT * FROM notes WHERE job_id = ? ORDER BY created_at DESC, id DESC",
-            (job_id,),
-        )
-    ]
     return job
 
 
 def list_search_queries(conn):
-    return [
-        row_to_dict(row)
-        for row in conn.execute(
-            "SELECT * FROM search_queries ORDER BY enabled DESC, seeded DESC, pipeline, board, keywords, location"
-        )
-    ]
+    return list(INFRASTRUCTURE.read_models.search_queries(conn))
 
 
 def list_search_runs(conn):
-    return [row_to_dict(row) for row in conn.execute("SELECT * FROM search_runs ORDER BY started_at DESC LIMIT 20")]
+    return list(INFRASTRUCTURE.read_models.search_runs(conn))
 
 
 def search_schedule_state(conn):
@@ -909,13 +811,9 @@ def search_schedule_state(conn):
 
 
 def list_discoveries(conn, limit=50):
-    rows = conn.execute(
-        "SELECT * FROM discovered_jobs ORDER BY created_at DESC, id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
     discoveries = []
-    for row in rows:
-        item = row_to_dict(row)
+    for row in INFRASTRUCTURE.read_models.discoveries(conn, limit):
+        item = dict(row)
         item["gpt_scorecard"] = parse_json_field(item.pop("gpt_scorecard_json"), {})
         discoveries.append(item)
     return discoveries
@@ -1031,17 +929,7 @@ def escape_html(value):
 
 def list_application_packets(conn):
     APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    associated_rows = [
-        row_to_dict(row)
-        for row in conn.execute(
-            """
-            SELECT id, company, title, application_packet_path
-            FROM jobs
-            WHERE application_packet_path IS NOT NULL
-              AND application_packet_path != ''
-            """
-        )
-    ]
+    associated_rows = INFRASTRUCTURE.read_models.application_packet_jobs(conn)
     associated_by_path = {row["application_packet_path"]: row for row in associated_rows}
     packets = []
     for path in sorted(APPLICATIONS_DIR.iterdir()):
@@ -1117,7 +1005,7 @@ def application_packet_has_model_attribution(payload, model):
 
 
 def write_application_packet_documents(packet_dir, payload):
-    return PacketDocumentWriter().write(packet_dir, payload)
+    return INFRASTRUCTURE.packet_writer().write(packet_dir, payload)
 
 
 def generate_application_packet_with_codex(job):
@@ -1209,129 +1097,68 @@ def generate_application_packet_with_codex(job):
         )
 
 
-def create_application_packet(conn, job_id):
-    job = get_job(conn, job_id)
-    if not job:
-        raise ValueError("Job not found.")
-    result = generate_application_packet_with_codex(job)
-    packet_dir = result.get("packet_dir")
-    relative = repo_relative(packet_dir)
-    conn.execute(
-        "UPDATE jobs SET application_packet_path = ?, updated_at = ? WHERE id = ?",
-        (relative, now(), job_id),
-    )
-    log_event("application_packet_generated", job_id=job_id, path=relative, generator="codex_cli")
-    return {
-        "path": relative,
-        "name": packet_dir.name,
-        "markdown_files": result.get("markdown_files", list_markdown_files(packet_dir)),
-        "codex_output": result.get("output_text", ""),
-    }
+def _bulk_task_worker(task_id, job_ids, operation, *, running_message, success_verb, error_code, component):
+    update_background_task(task_id, status="running", started_at=now(), message=running_message)
+    completed = failed = skipped = 0
+    for job_id in job_ids:
+        update_background_task(task_id, current_job_id=job_id)
+        update_background_task_item(task_id, job_id, status="running", message=running_message)
+        try:
+            status, message = process_background_task_item({"operation": operation, "job_id": job_id})
+            if status == "complete":
+                completed += 1
+            elif status == "skipped":
+                skipped += 1
+            else:
+                failed += 1
+            update_background_task_item(task_id, job_id, status=status, message=message)
+        except Exception as exc:
+            failed += 1
+            update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
+            log_event(
+                error_code.lower(),
+                error_code=error_code,
+                component=component,
+                operation=operation,
+                task_id=task_id,
+                job_id=job_id,
+                error_type=type(exc).__name__,
+                message=str(exc)[:1000],
+            )
+        finally:
+            update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
+    status = "complete" if failed == 0 else "error"
+    message = f"Complete: {completed} {success_verb}, {skipped} skipped, {failed} failed."
+    update_background_task(task_id, status=status, completed_at=now(), current_job_id=None, message=message)
+    log_event("background_task_finished", task_id=task_id, operation=operation, status=status, message=message)
 
 
 def bulk_score_worker(task_id, job_ids):
-    update_background_task(task_id, status="running", started_at=now(), message="Codex scorecard population running")
-    completed = failed = skipped = 0
-    with connect() as conn:
-        for job_id in job_ids:
-            update_background_task(task_id, current_job_id=job_id)
-            update_background_task_item(task_id, job_id, status="running", message="Scoring with Codex")
-            try:
-                job = get_job(conn, job_id)
-                if not job:
-                    skipped += 1
-                    update_background_task_item(task_id, job_id, status="skipped", message="Job not found")
-                else:
-                    score = populate_codex_score(conn, job_id)
-                    completed += 1
-                    update_background_task_item(
-                        task_id,
-                        job_id,
-                        status="complete",
-                        message=f"Codex score {int(score.get('total_score', 0))}",
-                    )
-            except Exception as exc:
-                failed += 1
-                update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
-                log_event(
-                    "bulk_codex_score_error",
-                    error_code="BULK_CODEX_SCORE_FAILED",
-                    component="business.bulk_scoring",
-                    operation="populate_codex_score",
-                    task_id=task_id,
-                    job_id=job_id,
-                    error_type=type(exc).__name__,
-                    message=str(exc)[:1000],
-                )
-            finally:
-                update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
-    status = "complete" if failed == 0 else "error"
-    message = f"Complete: {completed} scored, {skipped} skipped, {failed} failed."
-    update_background_task(task_id, status=status, completed_at=now(), current_job_id=None, message=message)
-    log_event("background_task_finished", task_id=task_id, operation="scorecards", status=status, message=message)
+    return _bulk_task_worker(
+        task_id,
+        job_ids,
+        "scorecards",
+        running_message="Scoring with Codex",
+        success_verb="scored",
+        error_code="BULK_CODEX_SCORE_FAILED",
+        component="business.bulk_scoring",
+    )
 
 
 def bulk_packet_worker(task_id, job_ids):
-    update_background_task(task_id, status="running", started_at=now(), message="Application packet generation running")
-    completed = failed = skipped = 0
-    with connect() as conn:
-        for job_id in job_ids:
-            update_background_task(task_id, current_job_id=job_id)
-            update_background_task_item(
-                task_id, job_id, status="running", message="Generating application packet with Codex"
-            )
-            try:
-                job = get_job(conn, job_id)
-                if not job:
-                    skipped += 1
-                    update_background_task_item(task_id, job_id, status="skipped", message="Job not found")
-                elif job.get("application_packet_path"):
-                    skipped += 1
-                    update_background_task_item(
-                        task_id, job_id, status="skipped", message="Application packet already associated"
-                    )
-                else:
-                    packet = create_application_packet(conn, job_id)
-                    completed += 1
-                    update_background_task_item(
-                        task_id,
-                        job_id,
-                        status="complete",
-                        message=packet.get("path") or packet.get("warning") or "Codex completed",
-                    )
-            except Exception as exc:
-                failed += 1
-                update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
-                log_event(
-                    "bulk_application_packet_error",
-                    error_code="BULK_APPLICATION_PACKET_FAILED",
-                    component="business.bulk_packets",
-                    operation="create_application_packet",
-                    task_id=task_id,
-                    job_id=job_id,
-                    error_type=type(exc).__name__,
-                    message=str(exc)[:1000],
-                )
-            finally:
-                update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
-    status = "complete" if failed == 0 else "error"
-    message = f"Complete: {completed} generated, {skipped} skipped, {failed} failed."
-    update_background_task(task_id, status=status, completed_at=now(), current_job_id=None, message=message)
-    log_event(
-        "background_task_finished", task_id=task_id, operation="application_packets", status=status, message=message
+    return _bulk_task_worker(
+        task_id,
+        job_ids,
+        "application_packets",
+        running_message="Generating application packet with Codex",
+        success_verb="generated",
+        error_code="BULK_APPLICATION_PACKET_FAILED",
+        component="business.bulk_packets",
     )
 
 
 def calibration_examples(conn):
-    rows = conn.execute(
-        """
-        SELECT company, title, pipeline, gpt_score, user_score, user_rationale, posting_text
-        FROM jobs
-        WHERE user_score IS NOT NULL
-        ORDER BY updated_at DESC
-        LIMIT 8
-        """
-    ).fetchall()
+    rows = INFRASTRUCTURE.read_models.calibration_examples(conn)
     examples = []
     for row in rows:
         examples.append(
@@ -1355,7 +1182,7 @@ def fetch_linkedin_jobs(keywords, location, force_refresh=False):
     )
     response = fetch_url("linkedin", url, force_refresh=force_refresh)
     response.raise_for_status()
-    parser = JobBoardParser(clean_text, clean_url, lambda href: source_id("linkedin", href))
+    parser = INFRASTRUCTURE.board_parser(clean_text, clean_url, lambda href: source_id("linkedin", href))
     return dedupe_results(parser.linkedin(response.text, location or ""))
 
 
@@ -1363,7 +1190,7 @@ def fetch_indeed_jobs(keywords, location, force_refresh=False):
     url = f"https://www.indeed.com/jobs?q={quote_plus(keywords)}&l={quote_plus(location or 'United States')}&fromage=1&sort=date"
     response = fetch_url("indeed", url, force_refresh=force_refresh)
     response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = INFRASTRUCTURE.html_parser(response.text, "html.parser")
     jobs = []
     for card in soup.select("[data-jk], .job_seen_beacon"):
         link = card.select_one("a[href*='/viewjob'], a.jcs-JobTitle")
@@ -1396,69 +1223,7 @@ def scrape_job_from_url(url, force_refresh=False):
     service = posting_service_from_url(cleaned_url)
     response = fetch_url(service, cleaned_url, force_refresh=force_refresh)
     response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    json_ld = extract_job_json_ld(soup)
-    page_title = clean_text(soup.title.get_text(" ")) if soup.title else ""
-    title = (
-        nested_value(json_ld, "title")
-        or selector_text(
-            soup,
-            [
-                "h1",
-                ".top-card-layout__title",
-                ".jobsearch-JobInfoHeader-title",
-                "[data-testid='jobsearch-JobInfoHeader-title']",
-            ],
-        )
-        or meta_content(soup, ["og:title", "twitter:title"])
-        or page_title
-    )
-    company = (
-        nested_value(json_ld, "hiringOrganization", "name")
-        or selector_text(
-            soup,
-            [
-                ".topcard__org-name-link",
-                ".topcard__flavor",
-                "[data-testid='inlineHeader-companyName']",
-                "[data-company-name]",
-                ".jobsearch-InlineCompanyRating-companyHeader a",
-            ],
-        )
-        or meta_content(soup, ["og:site_name"])
-    )
-    location = location_from_json_ld(json_ld) or selector_text(
-        soup,
-        [
-            ".topcard__flavor--bullet",
-            ".job-search-card__location",
-            "[data-testid='job-location']",
-            ".jobsearch-JobInfoHeader-subtitle div",
-        ],
-    )
-    description = (
-        nested_value(json_ld, "description")
-        or selector_text(
-            soup,
-            [
-                "#job-details",
-                ".show-more-less-html__markup",
-                "#jobDescriptionText",
-                "[data-testid='jobDescriptionText']",
-            ],
-        )
-        or clean_text(soup.get_text(" "))[:5000]
-    )
-    posting_text = clean_text(BeautifulSoup(description or "", "html.parser").get_text(" "))
-    return {
-        "company": clean_text(company) or "Unknown company",
-        "title": clean_text(title) or "Unknown title",
-        "location": clean_text(location),
-        "url": cleaned_url,
-        "posting_text": posting_text[:12000],
-        "source_board": service if service in ("linkedin", "indeed") else "manual",
-        "source_job_id": source_id(service, cleaned_url),
-    }
+    return INFRASTRUCTURE.posting_parser(clean_text, clean_url, source_id).parse(cleaned_url, response.text, service)
 
 
 def fallback_job_from_url(url):
@@ -1565,7 +1330,7 @@ def request_headers():
 
 
 def fetch_url(service, url, force_refresh=False):
-    gateway = CapturingHttpGateway(
+    gateway = INFRASTRUCTURE.capture_gateway(
         OUTBOUND_HTTP_CLIENT, request_headers, read_capture, write_capture, log_api_call, redact_headers
     )
     return gateway.get(service, url, force_refresh=force_refresh)
@@ -1623,7 +1388,7 @@ def dedupe_results(results):
 
 
 def fetch_jobs_for_query(query, force_refresh=False):
-    gateway = CallableBoardGateway(fetch_linkedin_jobs, fetch_indeed_jobs)
+    gateway = INFRASTRUCTURE.board_gateway(fetch_linkedin_jobs, fetch_indeed_jobs)
     try:
         return gateway.fetch(query["board"], query["keywords"], query["location"], force_refresh=force_refresh)
     except ValueError as exc:
@@ -1646,15 +1411,13 @@ def score_discovery_with_codex(conn, discovery, force_refresh=False):
 def already_seen(conn, url):
     if not url:
         return False
-    if conn.execute("SELECT 1 FROM jobs WHERE url = ? LIMIT 1", (url,)).fetchone():
-        return True
-    return False
+    return INFRASTRUCTURE.read_models.job_exists_url(conn, url)
 
 
 def already_seen_reason(conn, url):
     if not url:
         return None
-    if conn.execute("SELECT 1 FROM jobs WHERE url = ? LIMIT 1", (url,)).fetchone():
+    if INFRASTRUCTURE.read_models.job_exists_url(conn, url):
         return "already tracked in jobs"
     return None
 
@@ -1669,552 +1432,6 @@ def compensation_filter_decision(result):
 
 def sales_role_filter_decision(result):
     return discovery_policy().sales_role(result)
-
-
-def run_job_search(trigger="manual", force_refresh=False):
-    started = now()
-    log_event("search_started", trigger=trigger, force_refresh=force_refresh)
-    repository = search_repository()
-    run_id = repository.start_run(started, trigger)
-    queries = repository.enabled_queries()
-
-    found_count = 0
-    tracked_count = 0
-    rejected_count = 0
-    messages = []
-
-    def record_rejection(query, result, reason, connection):
-        repository.record_discovery(
-            {
-                "run_id": run_id,
-                "query_id": query["id"],
-                "created_at": now(),
-                "board": result.get("board"),
-                "source_job_id": result.get("source_job_id"),
-                "company": result.get("company"),
-                "title": result.get("title"),
-                "location": result.get("location"),
-                "url": result.get("url"),
-                "snippet": result.get("snippet"),
-                "gpt_score": None,
-                "gpt_rationale": None,
-                "gpt_scorecard_json": "{}",
-                "level_assessment": "",
-                "downlevel": 0,
-                "decision": "rejected",
-                "rejection_reason": reason,
-                "tracked_job_id": None,
-            },
-            connection=connection,
-        )
-
-    for query in queries:
-        try:
-            results = fetch_jobs_for_query(query, force_refresh=force_refresh)
-        except Exception as exc:
-            messages.append(f"{query['board']}:{query['keywords']}: {exc}")
-            log_event(
-                "job_search_query_failed",
-                error_code="JOB_SEARCH_QUERY_FAILED",
-                component="business.search",
-                operation="fetch_jobs_for_query",
-                query_id=query.get("id"),
-                board=query.get("board"),
-                error_type=type(exc).__name__,
-                message=str(exc)[:1000],
-            )
-            continue
-
-        repository.mark_query_run(query["id"], now())
-
-        for result in results:
-            result["pipeline"] = query.get("pipeline") or result.get("pipeline") or ""
-            result["criteria"] = query.get("criteria") or ""
-            found_count += 1
-            with connect() as conn:
-                sales_allowed, sales_reason = sales_role_filter_decision(result)
-                if not sales_allowed:
-                    rejected_count += 1
-                    log_event(
-                        "discovery_rejected",
-                        reason=sales_reason,
-                        filter="sales_role",
-                        board=result.get("board"),
-                        company=result.get("company"),
-                        title=result.get("title"),
-                        location=result.get("location"),
-                        url=result.get("url"),
-                        query_id=query["id"],
-                        run_id=run_id,
-                    )
-                    record_rejection(query, result, sales_reason, conn)
-                    continue
-                location_allowed, location_reason = location_filter_decision(result)
-                if not location_allowed:
-                    rejected_count += 1
-                    log_event(
-                        "discovery_rejected",
-                        reason=location_reason,
-                        filter="location",
-                        board=result.get("board"),
-                        company=result.get("company"),
-                        title=result.get("title"),
-                        location=result.get("location"),
-                        url=result.get("url"),
-                        query_id=query["id"],
-                        run_id=run_id,
-                    )
-                    record_rejection(query, result, location_reason, conn)
-                    continue
-                compensation_allowed, compensation_reason = compensation_filter_decision(result)
-                if not compensation_allowed:
-                    rejected_count += 1
-                    log_event(
-                        "discovery_rejected",
-                        reason=compensation_reason,
-                        filter="compensation",
-                        board=result.get("board"),
-                        company=result.get("company"),
-                        title=result.get("title"),
-                        location=result.get("location"),
-                        url=result.get("url"),
-                        query_id=query["id"],
-                        run_id=run_id,
-                    )
-                    record_rejection(query, result, compensation_reason, conn)
-                    continue
-                level_equivalency = lookup_level_equivalency(conn, result.get("company"), result.get("title"))
-                if level_equivalency:
-                    level_reason = level_assessment_from_equivalency(level_equivalency)
-                    result["cached_level_assessment"] = level_reason
-                    result["cached_downlevel"] = bool(level_equivalency["downlevel"])
-                    log_event(
-                        "level_equivalency_matched",
-                        company=result.get("company"),
-                        title=result.get("title"),
-                        oracle_level=level_equivalency["oracle_level"],
-                        oracle_title=level_equivalency["oracle_title"],
-                        downlevel=bool(level_equivalency["downlevel"]),
-                        source_url=level_equivalency.get("source_url"),
-                    )
-                seen_reason = already_seen_reason(conn, result.get("url"))
-                if seen_reason:
-                    log_event(
-                        "discovery_skipped",
-                        reason=seen_reason,
-                        board=result.get("board"),
-                        company=result.get("company"),
-                        title=result.get("title"),
-                        url=result.get("url"),
-                        query_id=query["id"],
-                        run_id=run_id,
-                    )
-                    continue
-                decision, reason, tracked_job_id, score, scorecard, level_assessment, downlevel = classify_discovery(
-                    conn, result, force_refresh=force_refresh
-                )
-                if decision != "tracked":
-                    rejected_count += 1
-                else:
-                    tracked_count += 1
-                log_event(
-                    "discovery_decision",
-                    decision=decision,
-                    reason=reason,
-                    board=result.get("board"),
-                    company=result.get("company"),
-                    title=result.get("title"),
-                    url=result.get("url"),
-                    query_id=query["id"],
-                    run_id=run_id,
-                    tracked_job_id=tracked_job_id,
-                    gpt_score=score.get("total_score") if score else None,
-                    level_assessment=level_assessment,
-                    downlevel=downlevel,
-                )
-                repository.record_discovery(
-                    {
-                        "run_id": run_id,
-                        "query_id": query["id"],
-                        "created_at": now(),
-                        "board": result.get("board"),
-                        "source_job_id": result.get("source_job_id"),
-                        "company": result.get("company"),
-                        "title": result.get("title"),
-                        "location": result.get("location"),
-                        "url": result.get("url"),
-                        "snippet": result.get("snippet"),
-                        "gpt_score": score.get("total_score") if score else None,
-                        "gpt_rationale": score.get("rationale") if score else None,
-                        "gpt_scorecard_json": json.dumps(scorecard or {}),
-                        "level_assessment": level_assessment,
-                        "downlevel": int(downlevel),
-                        "decision": decision,
-                        "rejection_reason": reason,
-                        "tracked_job_id": tracked_job_id,
-                    },
-                    connection=conn,
-                )
-        with connect() as conn:
-            try:
-                refine_search_query(conn, query["id"], force_refresh=force_refresh)
-            except CodexCliError as exc:
-                messages.append(f"{query['board']}:{query['keywords']}: {exc}")
-                log_event(
-                    "query_refinement_failed",
-                    query_id=query["id"],
-                    board=query.get("board"),
-                    keywords=query.get("keywords"),
-                    error_type=type(exc).__name__,
-                    message=str(exc),
-                )
-
-    completed_at = now()
-    message = "\n".join(messages)
-    run = repository.finish_run(
-        run_id,
-        {
-            "completed_at": completed_at,
-            "message": message,
-            "found_count": found_count,
-            "tracked_count": tracked_count,
-            "rejected_count": rejected_count,
-        },
-    )
-    log_event(
-        "search_completed",
-        trigger=trigger,
-        force_refresh=force_refresh,
-        run_id=run_id,
-        found_count=found_count,
-        tracked_count=tracked_count,
-        rejected_count=rejected_count,
-        message=message,
-    )
-    return run
-
-
-def refine_search_query(conn, query_id, force_refresh=False):
-    if not gpt_scoring_enabled():
-        log_event("query_refinement_skipped", query_id=query_id, reason="Codex scoring disabled")
-        return
-    if not codex_cli_available():
-        log_event(
-            "query_refinement_skipped",
-            query_id=query_id,
-            reason="Codex CLI unavailable",
-            codex_cli_path=codex_cli_path(),
-        )
-        return
-    query = row_to_dict(conn.execute("SELECT * FROM search_queries WHERE id = ?", (query_id,)).fetchone())
-    if not query:
-        return
-    recent = [
-        row_to_dict(row)
-        for row in conn.execute(
-            """
-            SELECT company, title, location, gpt_score, level_assessment, downlevel, decision, rejection_reason, gpt_rationale
-            FROM discovered_jobs
-            WHERE query_id = ?
-            ORDER BY created_at DESC
-            LIMIT 20
-            """,
-            (query_id,),
-        )
-    ]
-    if not recent:
-        return
-    prompt = {
-        "task": "Refine a job-board search query for Eric Peterson.",
-        "instructions": [
-            "Return JSON only.",
-            "Keep the same job board and pipeline.",
-            "Improve the keywords so the next run is more likely to find high-scoring roles for this pipeline.",
-            "Prefer query terms that imply Oracle IC6 Architect-equivalent or higher scope.",
-            "Avoid terms that produced downlevel or low-score results.",
-            "Explicitly exclude Account Executive and other sales roles.",
-            "Keep the query concise enough for LinkedIn or Indeed public search boxes.",
-            "Do not use Eric's personal LinkedIn or Indeed profile data.",
-        ],
-        "level_reference": {
-            "canonical_source": "local Oracle IC6 target definition",
-            "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
-        },
-        "pipeline": query.get("pipeline"),
-        "pipeline_criteria": query.get("criteria")
-        or PIPELINE_CRITERIA.get(query.get("pipeline"), {}).get("description", ""),
-        "current_keywords": query.get("keywords"),
-        "location": query.get("location"),
-        "recent_results": recent,
-        "expected_json_schema": {
-            "keywords": "updated search query string",
-            "location": "updated location string or current location",
-            "criteria": "updated short criteria description",
-            "refinement_notes": "what changed and why",
-        },
-    }
-    output_text = call_codex_json(codex_model(conn), prompt, "refine_search_query", force_refresh=force_refresh)
-    if not output_text:
-        return
-    try:
-        refined = parse_model_json(output_text)
-    except json.JSONDecodeError as exc:
-        log_event(
-            "query_refinement_invalid_json",
-            error_code="QUERY_REFINEMENT_INVALID_JSON",
-            component="business.search_refinement",
-            operation="parse_model_json",
-            query_id=query_id,
-            error_type=type(exc).__name__,
-        )
-        return
-    keywords = clean_text(refined.get("keywords") or query.get("keywords"))
-    location = clean_text(refined.get("location") or query.get("location") or "Remote")
-    criteria = clean_text(refined.get("criteria") or query.get("criteria") or "")
-    notes = clean_text(refined.get("refinement_notes") or "")
-    if not keywords:
-        return
-    conn.execute(
-        """
-        UPDATE search_queries
-        SET keywords = ?, location = ?, criteria = ?, refinement_notes = ?
-        WHERE id = ?
-        """,
-        (keywords, location, criteria, notes, query_id),
-    )
-
-
-def classify_discovery(conn, result, force_refresh=False):
-    if not gpt_scoring_enabled():
-        reason = "Codex scoring is disabled; discovery tracked without Codex score."
-        log_event(
-            "discovery_codex_disabled",
-            board=result.get("board"),
-            company=result.get("company"),
-            title=result.get("title"),
-            url=result.get("url"),
-            reason=reason,
-        )
-        job_id = track_discovery_without_gpt(conn, result, reason)
-        return (
-            "tracked",
-            reason,
-            job_id,
-            None,
-            {},
-            result.get("cached_level_assessment", ""),
-            bool(result.get("cached_downlevel")),
-        )
-    if not codex_cli_available():
-        reason = "Codex CLI is unavailable; discovery tracked without Codex score."
-        log_event(
-            "discovery_codex_cli_unavailable",
-            board=result.get("board"),
-            company=result.get("company"),
-            title=result.get("title"),
-            url=result.get("url"),
-            reason=reason,
-            codex_cli_path=codex_cli_path(),
-        )
-        job_id = track_discovery_without_gpt(conn, result, reason)
-        return (
-            "tracked",
-            reason,
-            job_id,
-            None,
-            {},
-            result.get("cached_level_assessment", ""),
-            bool(result.get("cached_downlevel")),
-        )
-
-    score = score_discovery_with_codex(conn, result, force_refresh=force_refresh)
-    scorecard = score.get("scorecard", {})
-    total = int(score.get("total_score", 0))
-    downlevel = bool(score.get("downlevel", False))
-    level_assessment = (
-        score.get("level_assessment", "") or result.get("cached_level_assessment", "") or UNKNOWN_LEVEL_ASSESSMENT
-    )
-    pipeline = normalize_pipeline(score.get("pipeline"), result.get("pipeline", ""))
-
-    if result.get("cached_downlevel"):
-        downlevel = True
-
-    if downlevel and total < 80:
-        log_event(
-            "discovery_downlevel_tracked",
-            reason="Downlevel relative to IC6-equivalent; tracked and hidden by default.",
-            company=result.get("company"),
-            title=result.get("title"),
-            url=result.get("url"),
-            gpt_score=total,
-            level_assessment=level_assessment,
-            downlevel=downlevel,
-        )
-
-    ts = now()
-    cur = conn.execute(
-        """
-        INSERT INTO jobs(
-            created_at, updated_at, company, title, url, location, pipeline, status, posting_text, notes,
-            gpt_score, gpt_rationale, gpt_scorecard_json, filtered, source_board, source_job_id,
-            discovered_at, level_assessment, downlevel
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
-        """,
-        (
-            ts,
-            ts,
-            result.get("company") or "Unknown company",
-            result.get("title") or "Unknown title",
-            result.get("url"),
-            result.get("location"),
-            pipeline,
-            result.get("snippet"),
-            "Auto-discovered from job search.",
-            total,
-            score.get("rationale", ""),
-            json.dumps(scorecard),
-            result.get("board"),
-            result.get("source_job_id"),
-            ts,
-            level_assessment,
-            1 if downlevel else 0,
-        ),
-    )
-    job_id = cur.lastrowid
-    apply_filter(conn, job_id)
-    return "tracked", "", job_id, score, scorecard, level_assessment, downlevel
-
-
-def track_discovery_without_gpt(conn, result, reason):
-    ts = now()
-    pipeline = result.get("pipeline", "")
-    level_assessment = result.get("cached_level_assessment", "") or UNKNOWN_LEVEL_ASSESSMENT
-    downlevel = bool(result.get("cached_downlevel"))
-    cur = conn.execute(
-        """
-        INSERT INTO jobs(
-            created_at, updated_at, company, title, url, location, pipeline, status, posting_text, notes,
-            filtered, source_board, source_job_id, discovered_at, level_assessment, downlevel
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'discovered', ?, ?, 0, ?, ?, ?, ?, ?)
-        """,
-        (
-            ts,
-            ts,
-            result.get("company") or "Unknown company",
-            result.get("title") or "Unknown title",
-            result.get("url"),
-            result.get("location"),
-            pipeline,
-            result.get("snippet"),
-            f"Auto-discovered from job search. {reason}",
-            result.get("board"),
-            result.get("source_job_id"),
-            ts,
-            level_assessment,
-            1 if downlevel else 0,
-        ),
-    )
-    job_id = cur.lastrowid
-    apply_filter(conn, job_id)
-    return job_id
-
-
-def score_with_codex_cli(conn, job, force_refresh=False):
-    if not gpt_scoring_enabled():
-        raise RuntimeError("Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it.")
-    if not codex_cli_available():
-        raise RuntimeError(
-            f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."
-        )
-
-    model = codex_model(conn)
-    prompt = {
-        "task": "Score this job for Eric Peterson's job search.",
-        "level_reference": {
-            "canonical_source": "local Oracle IC6 target definition",
-            "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
-        },
-        "instructions": [
-            "Return JSON only.",
-            "Use a 0-100 total fit score.",
-            "Score each rubric item from 0-10.",
-            "Reward cross-cutting architecture, organizational scaling, engineering effectiveness, developer experience, AI-enabled development, technical strategy, and technical decision quality.",
-            "Penalize line management, heavy operational ownership, firefighting, incremental feature ownership, narrow service ownership, and roles that only value hands-on coding.",
-            "Reject or heavily penalize Account Executive, account management, business development, quota-carrying, and other sales roles.",
-            "Use the calibration examples to adjust future scoring toward Eric's own scores.",
-            "Classify whether this role appears Oracle IC6-equivalent or higher using the local target definition: Oracle IC-6 is Architect.",
-            "Treat Principal Engineer, Architect, Senior Principal Engineer, Distinguished Engineer, Fellow, Chief Architect, CTO advisor, and equivalent strategic IC roles as potentially IC6-equivalent or higher depending on scope.",
-            "Treat ordinary software engineer, senior engineer, staff engineer with narrow feature ownership, line-management-heavy manager roles, and single-service owner roles as downlevel unless the posting clearly indicates Architect-equivalent broad cross-org technical influence.",
-            "Do not invent facts missing from the posting.",
-        ],
-        "expected_json_schema": {
-            "total_score": "integer 0-100",
-            "pipeline": f"one of: {', '.join(PIPELINES)}",
-            "scorecard": {field: "integer 0-10" for field in RUBRIC_FIELDS},
-            "level_assessment": "short phrase",
-            "downlevel": "boolean",
-            "rationale": "short paragraph",
-            "strengths": ["short bullets"],
-            "risks": ["short bullets"],
-            "recommended_next_step": "short sentence",
-        },
-        "career_context": career_context(),
-        "calibration_examples": calibration_examples(conn),
-        "job": {
-            "company": job["company"],
-            "title": job["title"],
-            "url": job["url"],
-            "location": job["location"],
-            "pipeline": job["pipeline"],
-            "posting_text": job["posting_text"],
-            "notes": job["notes"],
-        },
-    }
-    output_text = call_codex_json(model, prompt, "score_job", force_refresh=force_refresh)
-    if not output_text:
-        output_text = ""
-    if not output_text:
-        raise RuntimeError("Codex CLI response did not include text output.")
-    try:
-        parsed = parse_model_json(output_text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Codex CLI response was not valid JSON: {output_text[:1000]}") from exc
-    return parsed
-
-
-def populate_codex_score(conn, job_id, force_refresh=False):
-    job = get_job(conn, job_id)
-    if not job:
-        raise ValueError("Job not found")
-    score = score_with_codex_cli(conn, job, force_refresh=force_refresh)
-    total = int(score.get("total_score", 0))
-    scorecard = score.get("scorecard", {})
-    downlevel = bool(score.get("downlevel", False))
-    pipeline = normalize_pipeline(score.get("pipeline"), job.get("pipeline", ""))
-    conn.execute(
-        """
-        UPDATE jobs
-        SET gpt_score = ?, gpt_rationale = ?, gpt_scorecard_json = ?,
-            pipeline = COALESCE(NULLIF(?, ''), pipeline),
-            level_assessment = ?, downlevel = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        (
-            total,
-            score.get("rationale", ""),
-            json.dumps(scorecard),
-            pipeline,
-            score.get("level_assessment", ""),
-            1 if downlevel else 0,
-            now(),
-            job_id,
-        ),
-    )
-    apply_filter(conn, job_id)
-    log_event("codex_score_populated", job_id=job_id, total_score=total, downlevel=downlevel)
-    return score
 
 
 def extract_codex_reported_model(output):
@@ -2255,7 +1472,7 @@ def call_codex_json(model, prompt, operation, force_refresh=False, return_metada
         f"{json.dumps(prompt, indent=2, sort_keys=True, default=str)}\n"
     )
     try:
-        result = CodexCliGateway(ROOT).execute(cli_path, model, instruction, CODEX_CLI_TIMEOUT_SECONDS)
+        result = INFRASTRUCTURE.codex_gateway(ROOT).execute(cli_path, model, instruction, CODEX_CLI_TIMEOUT_SECONDS)
         completed = result
         output_text = result.output_text
         effective_model = result.effective_model
@@ -2296,6 +1513,293 @@ def call_codex_json(model, prompt, operation, force_refresh=False, return_metada
         write_capture("codex_cli", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})
 
 
+def score_with_codex_cli(conn, job, force_refresh=False):
+    """Invoke the transport adapter with application-owned score policy."""
+    if not gpt_scoring_enabled():
+        raise RuntimeError("Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it.")
+    if not codex_cli_available():
+        raise RuntimeError(
+            f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."
+        )
+    policy = JobScoringPolicy(
+        pipelines=PIPELINES, rubric_fields=RUBRIC_FIELDS, level_reference=ORACLE_IC6_LEVEL_REFERENCE
+    )
+    return policy.score(
+        job,
+        career_context=career_context(),
+        calibration_examples=calibration_examples(conn),
+        invoke=lambda prompt: call_codex_json(codex_model(conn), prompt, "score_job", force_refresh=force_refresh),
+    )
+
+
+class _PacketGenerationAdapter:
+    @staticmethod
+    def connection():
+        return connect()
+
+    @staticmethod
+    def job(connection, job_id):
+        return get_job(connection, job_id)
+
+    @staticmethod
+    def generate(job):
+        result = generate_application_packet_with_codex(job)
+        packet_dir = result["packet_dir"]
+        return {
+            "path": repo_relative(packet_dir),
+            "name": packet_dir.name,
+            "markdown_files": result.get("markdown_files", list_markdown_files(packet_dir)),
+            "codex_output": result.get("output_text", ""),
+        }
+
+    @staticmethod
+    def save_path(connection, job_id, path, timestamp):
+        INFRASTRUCTURE.search_mutations.save_application_packet_path(connection, job_id, path, timestamp)
+
+    @staticmethod
+    def now():
+        return now()
+
+    @staticmethod
+    def log(event, **fields):
+        log_event(event, **fields)
+
+
+def packet_generation_service():
+    return PacketGenerationService(_PacketGenerationAdapter())
+
+
+def create_application_packet(_connection, job_id):
+    """Compatibility entry point backed by the application workflow."""
+    return packet_generation_service().generate(job_id)
+
+
+class _CodexScoringAdapter:
+    @staticmethod
+    def connection():
+        return connect()
+
+    @staticmethod
+    def job(connection, job_id):
+        return get_job(connection, job_id)
+
+    @staticmethod
+    def score(connection, job, *, force_refresh):
+        return score_with_codex_cli(connection, job, force_refresh=force_refresh)
+
+    @staticmethod
+    def normalize_pipeline(value, fallback):
+        return normalize_pipeline(value, fallback)
+
+    @staticmethod
+    def save(connection, job_id, values):
+        INFRASTRUCTURE.search_mutations.save_codex_score(connection, job_id, values)
+
+    @staticmethod
+    def apply_filter(connection, job_id):
+        apply_filter(connection, job_id)
+
+    @staticmethod
+    def now():
+        return now()
+
+    @staticmethod
+    def log(event, **fields):
+        log_event(event, **fields)
+
+
+def codex_scoring_workflow():
+    return CodexScoringWorkflow(_CodexScoringAdapter())
+
+
+def populate_codex_score(conn, job_id, force_refresh=False):
+    """Compatibility entry point backed by the application workflow."""
+    return codex_scoring_workflow().populate(conn, job_id, force_refresh=force_refresh)
+
+
+class _DiscoveryAdapter:
+    @staticmethod
+    def scoring_enabled():
+        return gpt_scoring_enabled()
+
+    @staticmethod
+    def scorer_available():
+        return codex_cli_available()
+
+    @staticmethod
+    def scorer_path():
+        return codex_cli_path()
+
+    @staticmethod
+    def log(event, **fields):
+        log_event(event, **fields)
+
+    @staticmethod
+    def score(connection, result, *, force_refresh):
+        return score_discovery_with_codex(connection, result, force_refresh=force_refresh)
+
+    @staticmethod
+    def create(connection, values):
+        return INFRASTRUCTURE.search_mutations.create_discovery_job(connection, values)
+
+    @staticmethod
+    def apply_filter(connection, job_id):
+        apply_filter(connection, job_id)
+
+    @staticmethod
+    def now():
+        return now()
+
+    @staticmethod
+    def normalize_pipeline(value, fallback):
+        return normalize_pipeline(value, fallback)
+
+    @staticmethod
+    def refinement_context(connection, query_id):
+        return INFRASTRUCTURE.read_models.query_refinement_context(connection, query_id)
+
+    @staticmethod
+    def refinement_prompt(query, recent):
+        return {
+            "task": "Refine a job-board search query for Eric Peterson.",
+            "instructions": [
+                "Return JSON only.",
+                "Keep the same job board and pipeline.",
+                "Improve the keywords for high-scoring roles at IC6-equivalent or higher scope.",
+                "Avoid downlevel, low-score, Account Executive, and other sales results.",
+            ],
+            "level_reference": {
+                "canonical_source": "local Oracle IC6 target definition",
+                "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
+            },
+            "pipeline": query.get("pipeline"),
+            "pipeline_criteria": query.get("criteria")
+            or PIPELINE_CRITERIA.get(query.get("pipeline"), {}).get("description", ""),
+            "current_keywords": query.get("keywords"),
+            "location": query.get("location"),
+            "recent_results": recent,
+            "expected_json_schema": {
+                "keywords": "updated search query string",
+                "location": "updated location string or current location",
+                "criteria": "updated short criteria description",
+                "refinement_notes": "what changed and why",
+            },
+        }
+
+    @staticmethod
+    def refine(connection, prompt, *, force_refresh):
+        output = call_codex_json(codex_model(connection), prompt, "refine_search_query", force_refresh=force_refresh)
+        if not output:
+            return None
+        try:
+            return parse_model_json(output)
+        except json.JSONDecodeError as exc:
+            log_event(
+                "query_refinement_invalid_json",
+                error_code="QUERY_REFINEMENT_INVALID_JSON",
+                component="business.search_refinement",
+                operation="parse_model_json",
+                error_type=type(exc).__name__,
+            )
+            return None
+
+    @staticmethod
+    def clean_text(value):
+        return clean_text(value)
+
+    @staticmethod
+    def update_query(connection, query_id, values):
+        INFRASTRUCTURE.search_mutations.update_query(connection, query_id, values)
+
+
+def discovery_service():
+    return DiscoveryService(_DiscoveryAdapter(), UNKNOWN_LEVEL_ASSESSMENT)
+
+
+def refine_search_query(conn, query_id, force_refresh=False):
+    """Compatibility entry point backed by the application workflow."""
+    return discovery_service().refine_query(conn, query_id, force_refresh=force_refresh)
+
+
+def classify_discovery(conn, result, force_refresh=False):
+    """Compatibility entry point backed by the application workflow."""
+    return discovery_service().classify(conn, result, force_refresh=force_refresh)
+
+
+class _SearchRunAdapter:
+    """Composition-edge adapter for the framework-independent search workflow."""
+
+    @staticmethod
+    def now():
+        return now()
+
+    @staticmethod
+    def log(event, **fields):
+        log_event(event, **fields)
+
+    @staticmethod
+    def repository():
+        return search_repository()
+
+    @staticmethod
+    def connection():
+        return connect()
+
+    @staticmethod
+    def fetch(query, *, force_refresh):
+        return fetch_jobs_for_query(query, force_refresh=force_refresh)
+
+    @staticmethod
+    def reject_reason(result):
+        for name, decision in (
+            ("sales_role", sales_role_filter_decision),
+            ("location", location_filter_decision),
+            ("compensation", compensation_filter_decision),
+        ):
+            allowed, reason = decision(result)
+            if not allowed:
+                return name, reason
+        return None
+
+    @staticmethod
+    def level_assessment(connection, result):
+        equivalency = lookup_level_equivalency(connection, result.get("company"), result.get("title"))
+        if not equivalency:
+            return
+        result["cached_level_assessment"] = level_assessment_from_equivalency(equivalency)
+        result["cached_downlevel"] = bool(equivalency["downlevel"])
+        log_event(
+            "level_equivalency_matched",
+            company=result.get("company"),
+            title=result.get("title"),
+            oracle_level=equivalency["oracle_level"],
+            oracle_title=equivalency["oracle_title"],
+            downlevel=bool(equivalency["downlevel"]),
+            source_url=equivalency.get("source_url"),
+        )
+
+    @staticmethod
+    def already_seen_reason(connection, url):
+        return already_seen_reason(connection, url)
+
+    @staticmethod
+    def classify(connection, result, *, force_refresh):
+        return classify_discovery(connection, result, force_refresh=force_refresh)
+
+    @staticmethod
+    def refine(connection, query_id, *, force_refresh):
+        return refine_search_query(connection, query_id, force_refresh=force_refresh)
+
+    @staticmethod
+    def is_refinement_error(error):
+        return isinstance(error, CodexCliError)
+
+
+def run_job_search(trigger="manual", force_refresh=False):
+    """Run search through the application-layer orchestration service."""
+    return SearchRunService(_SearchRunAdapter()).run(trigger=trigger, force_refresh=force_refresh)
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -2304,34 +1808,27 @@ def index():
 @app.get("/api/state")
 def api_state():
     include_filtered = request.args.get("include_filtered") == "1"
-    with connect() as conn:
-        return jsonify(
-            {
-                "settings": settings(conn),
-                "config": masked_config(),
-                "api_log_path": str(API_LOG_PATH),
-                "event_log_path": str(APP_LOG_PATH),
-                "capture_dir": str(CAPTURE_DIR),
-                "gpt_scoring_enabled": gpt_scoring_enabled(),
-                "capture_cache_enabled": capture_cache_enabled(),
-                "jobs": list_jobs(conn, include_filtered=include_filtered),
-                "company_interests": list_company_interests(conn),
-                "search_queries": list_search_queries(conn),
-                "search_runs": list_search_runs(conn),
-                "search_schedule": search_schedule_state(conn),
-                "discoveries": list_discoveries(conn),
-                "application_packets": list_application_packets(conn),
-                "codex_tasks": list_background_tasks(),
-                "pipelines": PIPELINES,
-                "rubric_fields": RUBRIC_FIELDS,
-            }
-        )
+    state = dict(console_query_service().state(include_filtered=include_filtered))
+    state.update(
+        {
+            "config": masked_config(),
+            "api_log_path": str(API_LOG_PATH),
+            "event_log_path": str(APP_LOG_PATH),
+            "capture_dir": str(CAPTURE_DIR),
+            "gpt_scoring_enabled": gpt_scoring_enabled(),
+            "capture_cache_enabled": capture_cache_enabled(),
+            "search_schedule": {"interval_seconds": SEARCH_INTERVAL_SECONDS, "managed_by": "job_search.scheduler"},
+            "codex_tasks": list_background_tasks(),
+            "pipelines": PIPELINES,
+            "rubric_fields": RUBRIC_FIELDS,
+        }
+    )
+    return jsonify(state)
 
 
 @app.get("/api/jobs/<int:job_id>")
 def api_job(job_id):
-    with connect() as conn:
-        job = get_job(conn, job_id)
+    job = console_query_service().job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({"job": job})
@@ -2339,8 +1836,7 @@ def api_job(job_id):
 
 @app.get("/api/application-packets")
 def api_application_packets():
-    with connect() as conn:
-        return jsonify({"application_packets": list_application_packets(conn)})
+    return jsonify({"application_packets": console_query_service().packets()})
 
 
 def clean_job_ids(payload):
@@ -2412,20 +1908,19 @@ def api_bulk_generate_application_packets():
 
 @app.post("/api/jobs/<int:job_id>/application-packet/generate")
 def api_generate_application_packet(job_id):
-    with connect() as conn:
-        job = get_job(conn, job_id)
-        if not job:
-            return jsonify({"error": "Job not found"}), 404
-        if job.get("application_packet_path"):
-            return jsonify({"error": "This job already has an associated application packet."}), 409
-        packet = create_application_packet(conn, job_id)
-        return jsonify(
-            {
-                "packet": packet,
-                "job": get_job(conn, job_id),
-                "application_packets": list_application_packets(conn),
-            }
-        ), 201
+    job = console_query_service().job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if job.get("application_packet_path"):
+        return jsonify({"error": "This job already has an associated application packet."}), 409
+    packet = create_application_packet(None, job_id)
+    return jsonify(
+        {
+            "packet": packet,
+            "job": console_query_service().job(job_id),
+            "application_packets": console_query_service().packets(),
+        }
+    ), 201
 
 
 @app.post("/api/jobs/<int:job_id>/application-packet/attach")
@@ -2449,13 +1944,7 @@ def api_attach_application_packet(job_id):
     if result is None:
         return jsonify({"error": "Job not found"}), 404
     log_event("application_packet_attached", job_id=job_id, path=result["path"])
-    with connect() as conn:
-        return jsonify(
-            {
-                "job": result["job"],
-                "application_packets": list_application_packets(conn),
-            }
-        )
+    return jsonify({"job": result["job"], "application_packets": console_query_service().packets()})
 
 
 @app.get("/api/jobs/<int:job_id>/application-packet/content")
@@ -2463,35 +1952,34 @@ def api_application_packet_content(job_id):
     filename = request.args.get("file", "")
     if not filename.endswith(".md") or "/" in filename or "\\" in filename:
         return jsonify({"error": "Select a Markdown file in the associated packet."}), 400
-    with connect() as conn:
-        job = get_job(conn, job_id)
-        if not job:
-            return jsonify({"error": "Job not found"}), 404
-        if not job.get("application_packet_path"):
-            return jsonify({"error": "Job does not have an associated application packet."}), 404
-        try:
-            packet_dir = application_packet_abs_path(job["application_packet_path"])
-        except ValueError as exc:
-            log_event(
-                "packet_content_path_rejected",
-                error_code="PACKET_CONTENT_PATH_REJECTED",
-                component="presentation.packets",
-                operation="content",
-                job_id=job_id,
-                error_type=type(exc).__name__,
-            )
-            return jsonify({"error": str(exc)}), 404
-        file_path = (packet_dir / filename).resolve()
-        if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
-            return jsonify({"error": "Markdown file not found in associated packet."}), 404
-        return jsonify(
-            {
-                "path": repo_relative(packet_dir),
-                "file": filename,
-                "content": file_path.read_text(encoding="utf-8"),
-                "markdown_files": list_markdown_files(packet_dir),
-            }
+    job = console_query_service().job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    if not job.get("application_packet_path"):
+        return jsonify({"error": "Job does not have an associated application packet."}), 404
+    try:
+        packet_dir = application_packet_abs_path(job["application_packet_path"])
+    except ValueError as exc:
+        log_event(
+            "packet_content_path_rejected",
+            error_code="PACKET_CONTENT_PATH_REJECTED",
+            component="presentation.packets",
+            operation="content",
+            job_id=job_id,
+            error_type=type(exc).__name__,
         )
+        return jsonify({"error": str(exc)}), 404
+    file_path = (packet_dir / filename).resolve()
+    if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
+        return jsonify({"error": "Markdown file not found in associated packet."}), 404
+    return jsonify(
+        {
+            "path": repo_relative(packet_dir),
+            "file": filename,
+            "content": file_path.read_text(encoding="utf-8"),
+            "markdown_files": list_markdown_files(packet_dir),
+        }
+    )
 
 
 @app.get("/api/jobs/<int:job_id>/application-packet/render")
@@ -2499,8 +1987,8 @@ def api_application_packet_render(job_id):
     filename = request.args.get("file", "")
     if not filename.endswith(".md") or "/" in filename or "\\" in filename:
         return Response("Select a Markdown file in the associated packet.", status=400, mimetype="text/plain")
-    with connect() as conn:
-        job = get_job(conn, job_id)
+    with nullcontext():
+        job = console_query_service().job(job_id)
         if not job:
             return Response("Job not found.", status=404, mimetype="text/plain")
         if not job.get("application_packet_path"):
@@ -2618,20 +2106,17 @@ def api_delete_job(job_id):
     payload = request_json_object()
     if payload.get("confirm") != "DELETE":
         return jsonify({"error": "Type DELETE to confirm job deletion."}), 400
-    with connect() as conn:
-        job = get_job(conn, job_id)
+    job = console_query_service().job(job_id)
     if not job:
         return jsonify({"error": "Job not found"}), 404
     job_service().delete_job(job_id)
     log_event("manual_job_deleted", job_id=job_id, company=job["company"], title=job["title"], url=job["url"])
-    with connect() as conn:
-        return jsonify({"deleted_job_id": job_id, "jobs": list_jobs(conn, include_filtered=True)})
+    return jsonify({"deleted_job_id": job_id, "jobs": console_query_service().jobs(include_filtered=True)})
 
 
 @app.get("/api/companies/<int:company_id>")
 def api_company_interest(company_id):
-    with connect() as conn:
-        company = get_company_interest(conn, company_id)
+    company = console_query_service().company(company_id)
     if not company:
         return jsonify({"error": "Company interest not found"}), 404
     return jsonify({"company": company})
@@ -2664,45 +2149,41 @@ def api_create_company_interest():
             "contacts": contacts,
         }
     )
-    with connect() as conn:
-        return jsonify(
-            {"company": get_company_interest(conn, company_id), "companies": list_company_interests(conn)}
-        ), 201
+    return jsonify(
+        {"company": console_query_service().company(company_id), "companies": console_query_service().companies()}
+    ), 201
 
 
 @app.post("/api/companies/<int:company_id>")
 def api_update_company_interest(company_id):
     payload = require_json_object(request.get_json(silent=True) or {})
-    with connect() as conn:
-        existing = get_company_interest(conn, company_id)
-        if not existing:
-            return jsonify({"error": "Company interest not found"}), 404
-        company_name = (
-            optional_text(payload.get("company", existing["company"]), "company", max_length=300) or existing["company"]
-        )
-        interest_score = payload.get("interest_score")
-        if interest_score not in (None, ""):
-            interest_score = integer(interest_score, "interest_score", minimum=0, maximum=100)
-        status = choice(payload.get("status", existing["status"]), "status", COMPANY_STATUSES, required=True)
-        rationale = optional_text(payload.get("rationale", ""), "rationale", max_length=20_000)
-        notes = optional_text(payload.get("notes", ""), "notes", max_length=20_000)
-        next_step = optional_text(payload.get("next_step", ""), "next_step", max_length=2_000)
-        contacts = optional_text(payload.get("contacts", ""), "contacts", max_length=10_000)
-        company_service().update(
-            company_id,
-            {
-                "company": company_name,
-                "normalized_company": normalize_lookup_text(company_name),
-                "status": status,
-                "interest_score": interest_score if interest_score != "" else None,
-                "rationale": rationale,
-                "notes": notes,
-                "next_step": next_step,
-                "contacts": contacts,
-                "updated_at": now(),
-            },
-        )
-        return jsonify({"company": get_company_interest(conn, company_id), "companies": list_company_interests(conn)})
+    existing = console_query_service().company(company_id)
+    if not existing:
+        return jsonify({"error": "Company interest not found"}), 404
+    company_name = (
+        optional_text(payload.get("company", existing["company"]), "company", max_length=300) or existing["company"]
+    )
+    interest_score = payload.get("interest_score")
+    if interest_score not in (None, ""):
+        interest_score = integer(interest_score, "interest_score", minimum=0, maximum=100)
+    status = choice(payload.get("status", existing["status"]), "status", COMPANY_STATUSES, required=True)
+    company_service().update(
+        company_id,
+        {
+            "company": company_name,
+            "normalized_company": normalize_lookup_text(company_name),
+            "status": status,
+            "interest_score": interest_score if interest_score != "" else None,
+            "rationale": optional_text(payload.get("rationale", ""), "rationale", max_length=20_000),
+            "notes": optional_text(payload.get("notes", ""), "notes", max_length=20_000),
+            "next_step": optional_text(payload.get("next_step", ""), "next_step", max_length=2_000),
+            "contacts": optional_text(payload.get("contacts", ""), "contacts", max_length=10_000),
+            "updated_at": now(),
+        },
+    )
+    return jsonify(
+        {"company": console_query_service().company(company_id), "companies": console_query_service().companies()}
+    )
 
 
 @app.post("/api/jobs")
@@ -2745,15 +2226,10 @@ def api_run_search():
     payload = require_json_object(request.get_json(silent=True) or {})
     force_refresh = boolean(payload.get("force_refresh"), "force_refresh", default=False)
     run = run_job_search(trigger="manual", force_refresh=force_refresh)
-    with connect() as conn:
-        return jsonify(
-            {
-                "run": run,
-                "jobs": list_jobs(conn, include_filtered=True),
-                "search_runs": list_search_runs(conn),
-                "discoveries": list_discoveries(conn),
-            }
-        )
+    state = console_query_service().state(include_filtered=True)
+    return jsonify(
+        {"run": run, "jobs": state["jobs"], "search_runs": state["search_runs"], "discoveries": state["discoveries"]}
+    )
 
 
 @app.post("/api/search/queries")
@@ -2776,8 +2252,7 @@ def api_create_search_query():
             "criteria": optional_text(payload.get("criteria", ""), "criteria", max_length=10_000),
         }
     )
-    with connect() as conn:
-        return jsonify({"search_queries": list_search_queries(conn)}), 201
+    return jsonify({"search_queries": console_query_service().queries()}), 201
 
 
 @app.post("/api/search/queries/<int:query_id>")
@@ -2799,8 +2274,7 @@ def api_update_search_query(query_id):
             "enabled": (1 if boolean(payload["enabled"], "enabled") else 0) if "enabled" in payload else None,
         },
     )
-    with connect() as conn:
-        return jsonify({"search_queries": list_search_queries(conn)})
+    return jsonify({"search_queries": console_query_service().queries()})
 
 
 @app.post("/api/config")
@@ -2831,18 +2305,17 @@ def api_update_config():
         os.environ[key] = value
     if "CODEX_MODEL" in updates:
         settings_service().save({"codex_model": updates["CODEX_MODEL"]})
-    with connect() as conn:
-        return jsonify(
-            {
-                "config": masked_config(),
-                "settings": settings(conn),
-                "api_log_path": str(API_LOG_PATH),
-                "event_log_path": str(APP_LOG_PATH),
-                "capture_dir": str(CAPTURE_DIR),
-                "gpt_scoring_enabled": gpt_scoring_enabled(),
-                "capture_cache_enabled": capture_cache_enabled(),
-            }
-        )
+    return jsonify(
+        {
+            "config": masked_config(),
+            "settings": console_query_service().settings(),
+            "api_log_path": str(API_LOG_PATH),
+            "event_log_path": str(APP_LOG_PATH),
+            "capture_dir": str(CAPTURE_DIR),
+            "gpt_scoring_enabled": gpt_scoring_enabled(),
+            "capture_cache_enabled": capture_cache_enabled(),
+        }
+    )
 
 
 @app.post("/api/admin/purge-jobs")
@@ -2852,14 +2325,8 @@ def api_purge_jobs():
         return jsonify({"error": "Type PURGE to confirm tracked job deletion."}), 400
     before = job_service().purge_jobs()
     log_event("admin_purge_jobs", deleted_jobs=before)
-    with connect() as conn:
-        return jsonify(
-            {
-                "deleted_jobs": before,
-                "jobs": list_jobs(conn, include_filtered=True),
-                "discoveries": list_discoveries(conn),
-            }
-        )
+    state = console_query_service().state(include_filtered=True)
+    return jsonify({"deleted_jobs": before, "jobs": state["jobs"], "discoveries": state["discoveries"]})
 
 
 @app.post("/api/jobs/<int:job_id>/score-gpt")
@@ -2885,8 +2352,7 @@ def api_score_user(job_id):
     if not job_service().save_user_score(job_id, total, json.dumps(scorecard), rationale, now()):
         return jsonify({"error": "Job not found"}), 404
     filtering_service().refresh_job(job_id)
-    with connect() as conn:
-        return jsonify({"job": get_job(conn, job_id)})
+    return jsonify({"job": console_query_service().job(job_id)})
 
 
 @app.post("/api/jobs/<int:job_id>/interactions")
@@ -2903,8 +2369,7 @@ def api_add_interaction(job_id):
     }
     if not job_service().add_interaction(job_id, values, now()):
         return jsonify({"error": "Job not found"}), 404
-    with connect() as conn:
-        return jsonify({"job": get_job(conn, job_id)}), 201
+    return jsonify({"job": console_query_service().job(job_id)}), 201
 
 
 @app.post("/api/jobs/<int:job_id>/notes")
@@ -2916,8 +2381,7 @@ def api_add_note(job_id):
     service = job_service()
     if not service.add_note(job_id, note, now()):
         return jsonify({"error": "Job not found"}), 404
-    with connect() as conn:
-        return jsonify({"job": get_job(conn, job_id)}), 201
+    return jsonify({"job": console_query_service().job(job_id)}), 201
 
 
 @app.post("/api/jobs/<int:job_id>/status")
@@ -2927,8 +2391,7 @@ def api_update_status(job_id):
     service = job_service()
     if not service.update_status(job_id, status, now()):
         return jsonify({"error": "Job not found"}), 404
-    with connect() as conn:
-        return jsonify({"job": get_job(conn, job_id)})
+    return jsonify({"job": console_query_service().job(job_id)})
 
 
 @app.post("/api/settings")
@@ -2943,8 +2406,9 @@ def api_update_settings():
         validated["codex_model"] = optional_text(payload["codex_model"], "codex_model", max_length=200)
     settings_service().save(validated)
     filtering_service().refresh_all()
-    with connect() as conn:
-        return jsonify({"settings": settings(conn), "jobs": list_jobs(conn, include_filtered=True)})
+    return jsonify(
+        {"settings": console_query_service().settings(), "jobs": console_query_service().jobs(include_filtered=True)}
+    )
 
 
 @app.errorhandler(Exception)
@@ -2985,45 +2449,8 @@ def api_error(exc):
     return jsonify(mapped.body), mapped.status_code
 
 
-def scheduler_loop():
-    while True:
-        try:
-            with connect() as conn:
-                cfg = settings(conn)
-                last_search_at = int(cfg.get("last_search_at", "0") or 0)
-                if last_search_at == 0:
-                    conn.execute(
-                        "INSERT INTO settings(key, value) VALUES ('last_search_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                        (str(now()),),
-                    )
-                    last_search_at = now()
-            if now() - last_search_at >= SEARCH_INTERVAL_SECONDS:
-                run_job_search(trigger="scheduled", force_refresh=True)
-        except Exception as exc:
-            log_event(
-                "scheduled_search_failed",
-                error_code="SCHEDULED_SEARCH_FAILED",
-                component="business.scheduler",
-                operation="scheduler_loop",
-                error_type=type(exc).__name__,
-                message=str(exc)[:1000],
-            )
-            with connect() as conn:
-                conn.execute(
-                    "INSERT INTO search_runs(started_at, completed_at, trigger, status, message) VALUES (?, ?, 'scheduled', 'error', ?)",
-                    (now(), now(), str(exc)),
-                )
-        time.sleep(15 * 60)
-
-
-def start_scheduler():
-    # Scheduling belongs to a separately managed process; web startup never runs it.
-    return None
-
-
 def main():
     init_db()
-    start_scheduler()
     print(f"Job Search Console running at http://{HOST}:{PORT}")
     print(f"Database: {DB_PATH}")
     app.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)

@@ -236,7 +236,7 @@ closure criteria.
 
 ### P0 — architecture and durable execution
 
-- [ ] **REOPEN: finish the three-tier migration instead of relocating the
+- [x] **REOPEN: finish the three-tier migration instead of relocating the
   monolith.** `app.py` is now thin, but
   `job_search/presentation/legacy.py` remains a roughly 3,000-line mixed-tier
   module. It imports concrete data-access classes and BeautifulSoup, creates

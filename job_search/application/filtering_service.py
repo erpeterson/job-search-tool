@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from job_search.application.contracts import JobFilterRepository
 from job_search.domain.filtering import FilterDecision, decide_job_filter
@@ -15,10 +16,12 @@ class FilteringService:
         clock: Callable[[], int],
         *,
         gpt_scoring_enabled: bool,
+        observe: Callable[[Mapping[str, Any], FilterDecision], None] | None = None,
     ) -> None:
         self._repository = repository
         self._clock = clock
         self._gpt_scoring_enabled = gpt_scoring_enabled
+        self._observe = observe
 
     def refresh_job(self, job_id: int) -> FilterDecision | None:
         job = self._repository.job_for_filtering(job_id)
@@ -32,6 +35,8 @@ class FilteringService:
             gpt_scoring_enabled=self._gpt_scoring_enabled,
         )
         self._repository.save_filter_decision(job_id, decision.filtered, self._clock())
+        if self._observe is not None:
+            self._observe(job, decision)
         return decision
 
     def refresh_all(self) -> Sequence[tuple[int, FilterDecision]]:

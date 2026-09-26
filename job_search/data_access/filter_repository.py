@@ -18,7 +18,7 @@ class SqliteJobFilterRepository:
     def job_for_filtering(self, job_id: int) -> Mapping[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT company, title, gpt_score, user_score, downlevel FROM jobs WHERE id = ?", (job_id,)
+                "SELECT id, company, title, gpt_score, user_score, downlevel FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
         return dict(row) if row else None
 

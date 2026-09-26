@@ -368,26 +368,26 @@ class ApplicationWorkflowTests(unittest.TestCase):
         originals = (
             workflow_app.update_background_task,
             workflow_app.update_background_task_item,
-            workflow_app.populate_codex_score,
+            workflow_app.process_background_task_item,
         )
         task_updates = []
         item_updates = []
         workflow_app.update_background_task = lambda *args, **kwargs: task_updates.append((args, kwargs))
         workflow_app.update_background_task_item = lambda *args, **kwargs: item_updates.append((args, kwargs))
 
-        def fake_score(_connection, current_id):
-            if current_id == job_id:
-                return {"total_score": 90}
-            raise AssertionError("missing jobs should be skipped before scoring")
+        def fake_process(claim):
+            if claim["job_id"] == job_id:
+                return "complete", "Codex score 90"
+            return "skipped", "Job not found"
 
-        workflow_app.populate_codex_score = fake_score
+        workflow_app.process_background_task_item = fake_process
         try:
             workflow_app.bulk_score_worker("score-task", [job_id, 99999])
         finally:
             (
                 workflow_app.update_background_task,
                 workflow_app.update_background_task_item,
-                workflow_app.populate_codex_score,
+                workflow_app.process_background_task_item,
             ) = originals
 
         self.assertTrue(any(update[1].get("status") == "complete" for update in item_updates))
@@ -405,26 +405,28 @@ class ApplicationWorkflowTests(unittest.TestCase):
         originals = (
             workflow_app.update_background_task,
             workflow_app.update_background_task_item,
-            workflow_app.create_application_packet,
+            workflow_app.process_background_task_item,
         )
         task_updates = []
         item_updates = []
         workflow_app.update_background_task = lambda *args, **kwargs: task_updates.append((args, kwargs))
         workflow_app.update_background_task_item = lambda *args, **kwargs: item_updates.append((args, kwargs))
 
-        def fake_packet(_connection, current_id):
-            if current_id == failed_id:
+        def fake_process(claim):
+            if claim["job_id"] == failed_id:
                 raise RuntimeError("draft failed")
-            return {"path": "applications/complete"}
+            if claim["job_id"] in {skipped_id, 99999}:
+                return "skipped", "Not eligible"
+            return "complete", "applications/complete"
 
-        workflow_app.create_application_packet = fake_packet
+        workflow_app.process_background_task_item = fake_process
         try:
             workflow_app.bulk_packet_worker("packet-task", [complete_id, skipped_id, failed_id, 99999])
         finally:
             (
                 workflow_app.update_background_task,
                 workflow_app.update_background_task_item,
-                workflow_app.create_application_packet,
+                workflow_app.process_background_task_item,
             ) = originals
 
         statuses = {update[1].get("status") for update in item_updates}
@@ -442,12 +444,25 @@ class ApplicationWorkflowTests(unittest.TestCase):
         originals = (
             workflow_app.run_job_search,
             workflow_app.gpt_scoring_enabled,
-            workflow_app.populate_codex_score,
+            workflow_app.scoring_service,
             workflow_app.create_application_packet,
         )
         workflow_app.run_job_search = lambda **_kwargs: {"status": "complete", "found_count": 0}
         workflow_app.gpt_scoring_enabled = lambda: True
-        workflow_app.populate_codex_score = lambda *_args, **_kwargs: {"total_score": 89}
+
+        class FakeScoringService:
+            def score(self, current_job_id):
+                return type(
+                    "ScoreResult",
+                    (),
+                    {
+                        "state": "scored",
+                        "job": workflow_app.job_service().get_job(current_job_id),
+                        "raw_score": {"total_score": 89},
+                    },
+                )()
+
+        workflow_app.scoring_service = lambda: FakeScoringService()
         workflow_app.create_application_packet = lambda *_args, **_kwargs: {
             "path": "applications/generated",
             "name": "generated",
@@ -461,7 +476,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             (
                 workflow_app.run_job_search,
                 workflow_app.gpt_scoring_enabled,
-                workflow_app.populate_codex_score,
+                workflow_app.scoring_service,
                 workflow_app.create_application_packet,
             ) = originals
 
