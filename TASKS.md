@@ -255,7 +255,7 @@ closure criteria.
   registration/composition; and AST-based architecture tests enforce these
   boundaries across every presentation module rather than a source slice.
 
-- [ ] **REOPEN: make durable-task leases safe for long-running work and make
+- [x] **REOPEN: make durable-task leases safe for long-running work and make
   worker/scheduler CLIs operationally compliant.** The managed worker now
   claims tasks, but `process_one()` has no lease heartbeat/renewal. A Codex or
   packet operation exceeding the 300-second default lease can be claimed by a

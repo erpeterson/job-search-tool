@@ -227,3 +227,14 @@ class TaskRepository:
                 ),
             )
         return True
+
+    def renew_claim(self, task_id: str, job_id: int, worker_id: str, timestamp: int, lease_seconds: int) -> bool:
+        """Extend a live lease only for its current owner."""
+        with self._connection() as connection:
+            updated = connection.execute(
+                """UPDATE background_task_items SET lease_expires_at = ?, updated_at = ?
+                WHERE task_id = ? AND job_id = ? AND status = 'running' AND lease_owner = ?
+                AND lease_expires_at > ?""",
+                (timestamp + lease_seconds, timestamp, task_id, job_id, worker_id, timestamp),
+            ).rowcount
+        return bool(updated)

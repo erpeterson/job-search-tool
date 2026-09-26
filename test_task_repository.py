@@ -59,6 +59,16 @@ class TaskRepositoryTests(unittest.TestCase):
         self.assertEqual(task["status"], "complete")
         self.assertEqual(task["completed"], 1)
 
+    def test_renewed_lease_cannot_be_claimed_after_its_original_expiry(self):
+        self.repository.create("task-5", "scorecards", [12], 10)
+        self.repository.claim_next_item("worker-a", 20, 30)
+
+        renewed = self.repository.renew_claim("task-5", 12, "worker-a", 45, 30)
+        second_claim = self.repository.claim_next_item("worker-b", 51, 30)
+
+        self.assertTrue(renewed, "The active worker must be able to renew before expiry.")
+        self.assertIsNone(second_claim, "A renewed lease must prevent a second worker claim after initial expiry.")
+
 
 if __name__ == "__main__":
     unittest.main()

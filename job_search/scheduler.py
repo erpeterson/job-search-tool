@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import socket
+import sys
 import time
 from pathlib import Path
 
@@ -12,6 +13,17 @@ from job_search.data_access.scheduler_repository import SchedulerLeaseRepository
 
 
 def main() -> int:
+    try:
+        return _main()
+    except Exception as exc:
+        print(
+            f'ERROR {{"error_code":"SCHEDULER_FATAL_FAILURE","component":"scheduler","operation":"main","cause":"{type(exc).__name__}"}}',
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _main() -> int:
     parser = argparse.ArgumentParser(description="Run the job-search scheduler outside the web process.")
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--lease-seconds", type=int, default=900)
