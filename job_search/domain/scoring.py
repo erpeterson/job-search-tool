@@ -6,6 +6,7 @@ import textwrap
 from job_search.domain.clock import now
 from job_search.domain.errors import DependencyUnavailableError, ExternalServiceError, NotFoundError
 from job_search.domain.job_filter import apply_job_filters
+from job_search.domain.model_output import validate_score_payload
 from job_search.domain.rules import ORACLE_IC6_LEVEL_REFERENCE, PIPELINES, RUBRIC_FIELDS
 from job_search.domain.text import normalize_pipeline
 from job_search.observability import log_event, operation, record_exception
@@ -134,12 +135,13 @@ class ScoringService:
         if not result.output_text:
             raise ExternalServiceError("Codex CLI response did not include text output.", "codex_score_empty")
         try:
-            return self._parse_json(result.output_text)
+            parsed = self._parse_json(result.output_text)
         except json.JSONDecodeError as exc:
             record_exception(
                 "codex_score_invalid_json", "domain.scoring", "score", exc, response_excerpt=result.output_text[:500]
             )
             raise ExternalServiceError("Codex CLI response was not valid JSON.", "codex_score_invalid_json") from exc
+        return validate_score_payload(parsed)
 
     def populate_score(self, job_id, force_refresh=False):
         """Score a tracked job and persist the result, re-applying visibility filters."""
@@ -150,16 +152,16 @@ class ScoringService:
                     raise NotFoundError("Job not found", "score_job_not_found")
                 examples, model = self.scoring_inputs(uow)
             score = self.score(job, examples, model, force_refresh=force_refresh)
-            total = score_total(score)
-            downlevel = bool(score.get("downlevel", False))
+            total = score["total_score"]
+            downlevel = score["downlevel"]
             with self._db.unit_of_work() as uow:
                 uow.jobs.update_codex_score(
                     job_id,
                     total,
-                    score.get("rationale", ""),
-                    score.get("scorecard", {}),
-                    normalize_pipeline(score.get("pipeline"), job.get("pipeline") or ""),
-                    score.get("level_assessment", ""),
+                    score["rationale"],
+                    score["scorecard"],
+                    normalize_pipeline(score["pipeline"], job.get("pipeline") or ""),
+                    score["level_assessment"],
                     downlevel,
                     now(),
                 )
