@@ -12,6 +12,7 @@ from job_search.domain.errors import (
     ConflictError,
     DependencyUnavailableError,
     ExternalServiceError,
+    ForbiddenError,
     NotFoundError,
     ValidationError,
 )
@@ -26,10 +27,12 @@ from job_search.observability import (
 from job_search.web.routes import bp
 
 REQUEST_ID_HEADER = "X-Request-ID"
+STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 STATUS_BY_ERROR = (
     (ValidationError, 400),
+    (ForbiddenError, 403),
     (NotFoundError, 404),
     (ConflictError, 409),
     (DependencyUnavailableError, 409),
@@ -44,10 +47,23 @@ def status_for(exc):
     return 500
 
 
+def check_request_origin(allowed_hosts):
+    """Reject unexpected Host headers (DNS rebinding) and cross-origin state changes."""
+    host = request.host.lower()
+    if host not in allowed_hosts:
+        raise ForbiddenError("Request host is not allowed.", "request_host_not_allowed")
+    origin = request.headers.get("Origin")
+    if request.method in STATE_CHANGING_METHODS and origin is not None:
+        allowed_origins = {f"{scheme}://{entry}" for entry in allowed_hosts for scheme in ("http", "https")}
+        if origin.lower() not in allowed_origins:
+            raise ForbiddenError("Cross-origin requests are not allowed.", "request_origin_not_allowed")
+
+
 def create_app(container):
     app = Flask(__name__)
     app.extensions["job_search"] = container
     app.register_blueprint(bp)
+    allowed_hosts = frozenset(container.config.allowed_hosts)
 
     @app.before_request
     def bind_request_id():
@@ -55,6 +71,7 @@ def create_app(container):
         request_id = supplied if _REQUEST_ID_PATTERN.match(supplied) else new_correlation_id()
         g.correlation_token = bind_correlation_id(request_id)
         g.request_started = time.monotonic()
+        check_request_origin(allowed_hosts)
 
     @app.after_request
     def log_request(response):
