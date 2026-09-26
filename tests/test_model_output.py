@@ -53,12 +53,9 @@ class TestValidateScorePayload:
 
 class TestValidateRefinementPayload:
     def test_missing_fields_become_empty(self):
-        assert validate_refinement_payload({"keywords": " a b "}) == {
-            "keywords": "a b",
-            "location": "",
-            "criteria": "",
-            "refinement_notes": "",
-        }
+        result = validate_refinement_payload({"keywords": " a b "})
+        expected = {"keywords": "a b", "location": "", "criteria": "", "refinement_notes": ""}
+        assert result == expected, f"keywords are trimmed and absent fields become empty strings; got {result}"
 
     @pytest.mark.parametrize(
         ("payload", "code"),

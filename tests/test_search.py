@@ -58,16 +58,21 @@ def test_run_filters_rejections_and_tracks_without_codex(client, container, http
     body = run_search(client)
 
     run = body["run"]
-    assert (run["found_count"], run["tracked_count"], run["rejected_count"]) == (5, 2, 3)
+    assert (run["found_count"], run["tracked_count"], run["rejected_count"]) == (5, 2, 3), (
+        "expected the result to be (5, 2, 3)"
+    )
     decisions = {d["company"]: (d["decision"], d["rejection_reason"] or "") for d in body["discoveries"]}
-    assert decisions["SalesCo"][0] == "rejected" and "Sales role" in decisions["SalesCo"][1]
-    assert "Location" in decisions["EuroCo"][1]
-    assert "compensation" in decisions["CheapCo"][1]
+    assert decisions["SalesCo"][0] == "rejected", f"expected 'rejected', got {decisions['SalesCo'][0]!r}"
+    assert "Sales role" in decisions["SalesCo"][1], f"expected 'Sales role' in {decisions['SalesCo'][1]!r}"
+    assert "Location" in decisions["EuroCo"][1], f"expected 'Location' in {decisions['EuroCo'][1]!r}"
+    assert "compensation" in decisions["CheapCo"][1], f"expected 'compensation' in {decisions['CheapCo'][1]!r}"
     jobs = {job["company"]: job for job in body["jobs"]}
     assert jobs["Acme"]["url"] == "https://www.linkedin.com/jobs/view/1", "tracking suffix stripped"
     assert jobs["BigCo"]["downlevel"] == 1, "cached title taxonomy marks senior SWE as downlevel"
     assert jobs["BigCo"]["filtered"] == 1, "downlevel discoveries are hidden by default"
-    assert "Codex scoring is disabled" in jobs["Acme"]["notes"]
+    assert "Codex scoring is disabled" in jobs["Acme"]["notes"], (
+        f"expected 'Codex scoring is disabled' in {jobs['Acme']['notes']!r}"
+    )
 
 
 def test_rerun_skips_already_tracked_and_replays_capture(client, container, http):
@@ -85,7 +90,7 @@ def test_board_failure_is_reported_and_run_completes(client, container, http):
     enable_only(container, "indeed", "Wildcards")
     http.route("indeed.com", error=requests.ConnectionError("connection reset"))
     run = run_search(client)["run"]
-    assert run["status"] == "complete"
+    assert run["status"] == "complete", f"expected 'complete', got {run['status']!r}"
     assert "search_board_fetch_failed" in run["message"], run["message"]
     assert "connection reset" not in run["message"], "raw exception text must not be persisted"
 
@@ -99,12 +104,16 @@ def test_scored_discovery_and_query_refinement(client, container, http, codex_ru
     body = run_search(client)
 
     job = body["jobs"][0]
-    assert (job["gpt_score"], job["pipeline"], job["level_assessment"]) == (85, "Executive IC", "IC6-equivalent")
-    assert body["discoveries"][0]["gpt_score"] == 85
+    assert (job["gpt_score"], job["pipeline"], job["level_assessment"]) == (85, "Executive IC", "IC6-equivalent"), (
+        "expected the result to be (85, 'Executive IC', 'IC6-equivalent')"
+    )
+    assert body["discoveries"][0]["gpt_score"] == 85, f"expected 85, got {body['discoveries'][0]['gpt_score']!r}"
     queries = client.get("/api/state").get_json()["search_queries"]
     refined = next(q for q in queries if q["enabled"])
-    assert refined["keywords"] == "Office of the CTO architect"
-    assert refined["refinement_notes"] == "narrowed"
+    assert refined["keywords"] == "Office of the CTO architect", (
+        f"expected 'Office of the CTO architect', got {refined['keywords']!r}"
+    )
+    assert refined["refinement_notes"] == "narrowed", f"expected 'narrowed', got {refined['refinement_notes']!r}"
 
 
 def test_refinement_failure_is_reported_not_fatal(client, container, http, codex_runner, enable_scoring):
@@ -114,7 +123,7 @@ def test_refinement_failure_is_reported_not_fatal(client, container, http, codex
     codex_runner.respond("", returncode=2)
 
     run = run_search(client)["run"]
-    assert run["tracked_count"] == 1
+    assert run["tracked_count"] == 1, f"expected 1, got {run['tracked_count']!r}"
     assert "query refinement failed (codex_cli_nonzero_exit)" in run["message"], run["message"]
 
 
@@ -137,18 +146,22 @@ def test_search_query_crud(client):
         data=json.dumps({"board": "indeed", "keywords": "Chief Architect", "pipeline": "Wildcards"}),
         content_type="application/json",
     )
-    assert created.status_code == 201
+    assert created.status_code == 201, (
+        f"expected HTTP 201, got {created.status_code}: {created.get_data(as_text=True)[:200]}"
+    )
     query = next(q for q in created.get_json()["search_queries"] if q["keywords"] == "Chief Architect")
     toggled = client.post(
         f"/api/search/queries/{query['id']}", data=json.dumps({"enabled": False}), content_type="application/json"
     ).get_json()["search_queries"]
-    assert next(q for q in toggled if q["id"] == query["id"])["enabled"] == 0
+    assert next(q for q in toggled if q["id"] == query["id"])["enabled"] == 0, "expected next(...)[...] to be 0"
     bad = client.post(
         "/api/search/queries", data=json.dumps({"board": "monster", "keywords": "x"}), content_type="application/json"
     )
-    assert bad.status_code == 400
+    assert bad.status_code == 400, f"expected HTTP 400, got {bad.status_code}: {bad.get_data(as_text=True)[:200]}"
     missing = client.post("/api/search/queries/9999", data="{}", content_type="application/json")
-    assert missing.status_code == 404
+    assert missing.status_code == 404, (
+        f"expected HTTP 404, got {missing.status_code}: {missing.get_data(as_text=True)[:200]}"
+    )
 
 
 def test_seeding_is_idempotent(container):
@@ -161,10 +174,9 @@ def test_level_equivalency_cache_is_populated_without_network(container):
 
     with container.db.unit_of_work() as uow:
         assert uow.levels.count() == 0, "no level equivalencies are seeded"
-        assert (
-            lookup_level_equivalency(uow.levels, "Atlassian", "Principal Engineer", container.profile.target_level)
-            is None
-        )
+        target = container.profile.target_level
+        ambiguous = lookup_level_equivalency(uow.levels, "Atlassian", "Principal Engineer", target)
+        assert ambiguous is None, f"an ambiguous title should stay unknown; got {ambiguous}"
         first = lookup_level_equivalency(
             uow.levels, "ExampleCo", "Senior Software Engineer", container.profile.target_level
         )
@@ -172,7 +184,9 @@ def test_level_equivalency_cache_is_populated_without_network(container):
             uow.levels, "ExampleCo", "Senior Software Engineer II", container.profile.target_level
         )
         assert uow.levels.count() == 1, "ambiguous titles are not cached; matching prefixes reuse the cache"
-    assert first["oracle_level"] == second["oracle_level"] == "BELOW_IC6"
+    assert first["oracle_level"] == second["oracle_level"] == "BELOW_IC6", (
+        "expected first['oracle_level'] == second['oracle_level'] == 'BELOW_IC6'"
+    )
 
 
 class TestScheduler:
@@ -181,8 +195,8 @@ class TestScheduler:
         scheduler = SearchScheduler(container.db, type("S", (), {"run": lambda *a, **k: calls.append(k)})(), 60, True)
         scheduler.tick()
         assert calls == [], "the first tick only records a baseline"
-        assert scheduler.state()["last_search_at"] > 0
-        assert scheduler.state()["next_run_at"] is not None
+        assert scheduler.state()["last_search_at"] > 0, "expected scheduler.state()['last_search_at'] to be > 0"
+        assert scheduler.state()["next_run_at"] is not None, "expected scheduler.state()['next_run_at'] to be not None"
 
     def test_due_tick_runs_forced_search(self, container):
         calls = []
@@ -190,7 +204,7 @@ class TestScheduler:
             uow.settings.set("last_search_at", 1)
         scheduler = SearchScheduler(container.db, type("S", (), {"run": lambda *a, **k: calls.append(k)})(), 60, True)
         scheduler.tick()
-        assert calls == [{"trigger": "scheduled", "force_refresh": True}]
+        assert calls == [{"trigger": "scheduled", "force_refresh": True}], f"calls did not match; got {calls!r}"
 
     def test_failed_tick_is_recorded_without_extra_run_rows(self, container):
         from job_search.observability import METRICS
@@ -207,15 +221,19 @@ class TestScheduler:
         assert container.search.list_runs() == [], "the scheduler no longer inserts its own error rows"
 
     def test_disabled_scheduler_does_not_start(self, container):
-        assert container.scheduler.start() is None
-        assert container.scheduler.state()["next_run_at"] is None
+        assert container.scheduler.start() is None, "expected container.scheduler.start() to be None"
+        assert container.scheduler.state()["next_run_at"] is None, (
+            "expected container.scheduler.state()['next_run_at'] to be None"
+        )
 
 
 def test_insert_job_helper_marks_existing_urls(container):
     insert_job(container, url="https://www.linkedin.com/jobs/view/1")
     with container.db.unit_of_work() as uow:
-        assert uow.jobs.find_id_by_url("https://www.linkedin.com/jobs/view/1") is not None
-        assert uow.jobs.find_id_by_url("") is None
+        assert uow.jobs.find_id_by_url("https://www.linkedin.com/jobs/view/1") is not None, (
+            "expected uow.jobs.find_id_by_url(...) to be not None"
+        )
+        assert uow.jobs.find_id_by_url("") is None, "expected uow.jobs.find_id_by_url('') to be None"
 
 
 def test_scoring_failure_for_one_result_does_not_abort_run(client, container, http, codex_runner, enable_scoring):
@@ -235,7 +253,10 @@ def test_scoring_failure_for_one_result_does_not_abort_run(client, container, ht
     assert (run["status"], run["tracked_count"]) == ("complete", 2), f"run should complete and track both: {run}"
     scores = {job["company"]: job["gpt_score"] for job in body["jobs"]}
     assert scores == {"Acme": None, "Beta": 85}, f"failed result is tracked unscored, other scored: {scores}"
-    assert "search_result_scoring_failed" not in run["message"] and "codex_cli_nonzero_exit" in run["message"]
+    assert "search_result_scoring_failed" not in run["message"], (
+        f"expected 'search_result_scoring_failed' not in {run['message']!r}"
+    )
+    assert "codex_cli_nonzero_exit" in run["message"], f"expected 'codex_cli_nonzero_exit' in {run['message']!r}"
     assert METRICS.snapshot()["blame.search_result_scoring_failed"] == before + 1, "failure must be recorded"
 
 
