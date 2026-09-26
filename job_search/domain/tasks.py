@@ -92,10 +92,38 @@ class BackgroundTaskRegistry:
         with self._lock:
             self._evict_finished()
             self._tasks[task_id] = task
-        thread = self._thread_factory(target=worker, args=(task_id, job_ids), daemon=True)
-        thread.start()
         log_event("background_task_started", task_id=task_id, operation=operation_name, job_ids=job_ids)
+        thread = self._thread_factory(target=self._guarded, args=(worker, task_id, job_ids), daemon=True)
+        thread.start()
         return _snapshot(task)
+
+    def _guarded(self, worker, task_id, job_ids):
+        """Thread entry point: a crash outside per-item handling still ends the task in ``error``."""
+        try:
+            worker(task_id, job_ids)
+        except Exception as exc:
+            record_exception(
+                "background_task_crashed",
+                "domain.tasks",
+                "run_worker",
+                exc,
+                recovery="Marked the task as error so the UI stops polling a dead task.",
+                task_id=task_id,
+            )
+            self._mark_crashed(task_id)
+
+    def _mark_crashed(self, task_id):
+        # Writes the dict directly: the regular update path may be what failed.
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task:
+                task.update(
+                    status="error",
+                    current_job_id=None,
+                    completed_at=now(),
+                    updated_at=now(),
+                    message="Task stopped unexpectedly (background_task_crashed); see logs for details.",
+                )
 
 
 class BulkOperations:

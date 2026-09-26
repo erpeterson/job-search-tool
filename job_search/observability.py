@@ -165,6 +165,24 @@ def operation(name, component, **fields):
     log_event(f"{name}_succeeded", component=component, elapsed_ms=int((time.monotonic() - started) * 1000), **fields)
 
 
+def install_thread_excepthook():
+    """Route uncaught exceptions in any thread to structured telemetry instead of bare stderr."""
+
+    def hook(args):
+        if issubclass(args.exc_type, SystemExit):
+            return
+        record_exception(
+            "thread_unhandled_exception",
+            "threading",
+            getattr(args.thread, "name", "unknown"),
+            args.exc_value or args.exc_type(),
+            recovery="The thread ended; see traceback.",
+        )
+
+    threading.excepthook = hook
+    return hook
+
+
 class _BelowLevelFilter(logging.Filter):
     def __init__(self, level):
         super().__init__()

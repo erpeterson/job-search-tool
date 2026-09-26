@@ -17,6 +17,7 @@ from job_search.domain.errors import ConfigurationError
 from job_search.observability import (
     configure_console_logging,
     configure_file_logging,
+    install_thread_excepthook,
     log_event,
     record_exception,
 )
@@ -51,6 +52,7 @@ def run(args, environ, serve, out, app_dir):
     if args.port:
         environ["JOB_SEARCH_PORT"] = args.port
     config = AppConfig.from_env(environ, app_dir=app_dir)
+    install_thread_excepthook()
     configure_file_logging(config.event_log_path, config.api_log_path, config.log_max_bytes, config.log_backup_count)
     container = build_container(config, environ=environ)
     container.bootstrap()

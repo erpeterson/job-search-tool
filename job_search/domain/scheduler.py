@@ -50,7 +50,16 @@ class SearchScheduler:
 
     def _loop(self):
         while not self._stop.is_set():
-            self.tick()
+            try:
+                self.tick()
+            except Exception as exc:
+                record_exception(
+                    "scheduler_loop_crashed",
+                    "domain.scheduler",
+                    "loop",
+                    exc,
+                    recovery="Keeping the scheduler thread alive; retrying on the next poll.",
+                )
             self._stop.wait(self._poll_seconds)
 
     def start(self):
