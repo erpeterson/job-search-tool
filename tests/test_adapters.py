@@ -257,3 +257,8 @@ class TestMarkdown:
     def test_unterminated_code_and_list_are_closed(self):
         assert markdown_to_html("- a\n```\ncode").endswith("<pre><code>code</code></pre>")
         assert markdown_to_html("- a").endswith("</ul>")
+
+
+def test_job_insert_rejects_unknown_columns(container):
+    with container.db.unit_of_work() as uow, pytest.raises(ValueError, match="Unknown jobs columns"):
+        uow.jobs.insert({"company": "A", "title": "B", "created_at": 1, "updated_at": 1, "id) VALUES (1); --": 1})

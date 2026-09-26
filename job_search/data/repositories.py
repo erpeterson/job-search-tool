@@ -5,6 +5,34 @@ import logging
 
 from job_search.observability import record_exception
 
+JOB_COLUMNS = frozenset(
+    {
+        "created_at",
+        "updated_at",
+        "company",
+        "title",
+        "url",
+        "location",
+        "pipeline",
+        "status",
+        "posting_text",
+        "notes",
+        "gpt_score",
+        "gpt_rationale",
+        "gpt_scorecard_json",
+        "user_score",
+        "user_scorecard_json",
+        "user_rationale",
+        "filtered",
+        "source_board",
+        "source_job_id",
+        "discovered_at",
+        "level_assessment",
+        "downlevel",
+        "application_packet_path",
+    }
+)
+
 
 def _row_to_dict(row):
     return dict(row) if row else None
@@ -80,10 +108,13 @@ class JobRepository:
 
     def insert(self, fields):
         columns = list(fields)
+        unknown = set(columns) - JOB_COLUMNS
+        if unknown:
+            raise ValueError(f"Unknown jobs columns: {sorted(unknown)}")
         placeholders = ", ".join("?" for _ in columns)
-        # Column names come from service code, never from request input.
         cur = self._conn.execute(
-            f"INSERT INTO jobs({', '.join(columns)}) VALUES ({placeholders})",
+            # Column names are checked against JOB_COLUMNS above; values are bound parameters.
+            f"INSERT INTO jobs({', '.join(columns)}) VALUES ({placeholders})",  # noqa: S608 - allowlisted columns
             [fields[column] for column in columns],
         )
         return cur.lastrowid
