@@ -52,7 +52,7 @@ P3 = hygiene or completeness.
 | T-33 | Resolve the disabled scheduler | Code standards | P3 | Open |
 | T-34 | Fix accessibility gaps in the web UI | Accessibility | P2 | Done |
 | T-35 | Extract frontend script and remove inline handlers | Security / Frontend | P3 | Open |
-| T-36 | Add assertion messages to bare test asserts | Tests | P2 | Open |
+| T-36 | Add assertion messages to bare test asserts | Tests | P2 | Done |
 | T-37 | Cover untested boundary and failure paths | Tests | P3 | Open |
 | T-38 | Document the HTTP API and fix README inaccuracies | Documentation | P3 | Open |
 

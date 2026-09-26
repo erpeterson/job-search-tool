@@ -20,7 +20,9 @@ def raw_profile():
 
 
 def test_example_profile_loads(profile):
-    assert profile.pipeline_names == ["Executive IC", "Office of the CTO", "Adjacent industries", "Wildcards"]
+    assert profile.pipeline_names == ["Executive IC", "Office of the CTO", "Adjacent industries", "Wildcards"], (
+        f"profile.pipeline_names did not match; got {profile.pipeline_names!r}"
+    )
     assert len(profile.default_search_queries(("linkedin", "indeed"))) == 8, "four pipelines x two boards"
 
 

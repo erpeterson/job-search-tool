@@ -65,7 +65,9 @@ def test_prune_with_yes_deletes_only_old_captures(workspace):
 def test_prune_rejects_invalid_age(workspace, capsys):
     code, _ = prune(workspace / "job-search-tool", "--older-than", "0", "--yes")
     assert code == cli.EXIT_CONFIG_ERROR, f"an age below 1 day must be rejected, got {code}"
-    assert "--older-than must be at least 1 day" in capsys.readouterr().err
+    assert "--older-than must be at least 1 day" in capsys.readouterr().err, (
+        "expected '--older-than must be at least 1 day' in capsys.readouterr().err"
+    )
 
 
 def test_rotated_logs_are_archived_not_deleted(tmp_path):

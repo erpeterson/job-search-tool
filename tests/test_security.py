@@ -67,7 +67,9 @@ class TestAllowedHostsConfig:
 class TestBindSafety:
     @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "127.0.0.2"])
     def test_loopback_hosts_are_accepted(self, tmp_path, host):
-        assert AppConfig.from_env({"JOB_SEARCH_HOST": host}, app_dir=tmp_path).host == host
+        assert AppConfig.from_env({"JOB_SEARCH_HOST": host}, app_dir=tmp_path).host == host, (
+            "expected AppConfig.from_env(...).host to be host"
+        )
 
     def test_remote_bind_requires_opt_in(self, tmp_path):
         with pytest.raises(ConfigurationError) as info:
@@ -198,19 +200,25 @@ class TestSsrfGuards:
     def test_redirect_to_loopback_is_refused(self, http_client):
         client, fake_http, _ = http_client
         fake_http.route("public.example", status_code=302, headers={"Location": "http://127.0.0.1:5050/api/state"})
-        assert self.error_code(client, "https://public.example/job") == "http_redirect_blocked"
+        assert self.error_code(client, "https://public.example/job") == "http_redirect_blocked", (
+            "expected self.error_code(...) to be 'http_redirect_blocked'"
+        )
         assert fake_http.calls == ["https://public.example/job"], "the loopback target must never be requested"
 
     def test_hostname_resolving_to_private_address_is_refused(self, http_client):
         client, fake_http, resolver = http_client
         resolver.addresses["internal.example"] = ["10.0.0.1"]
-        assert self.error_code(client, "http://internal.example/") == "http_host_resolves_private"
+        assert self.error_code(client, "http://internal.example/") == "http_host_resolves_private", (
+            "expected self.error_code(...) to be 'http_host_resolves_private'"
+        )
         assert fake_http.calls == [], "no request is made to a private address"
 
     def test_oversized_body_is_rejected(self, http_client):
         client, fake_http, _ = http_client
         fake_http.route("big.example", text="x" * 1000)
-        assert self.error_code(client, "https://big.example/") == "http_response_too_large"
+        assert self.error_code(client, "https://big.example/") == "http_response_too_large", (
+            "expected self.error_code(client, 'https://big.example/') to be 'http_response_too_large'"
+        )
 
     def test_safe_redirect_is_followed(self, http_client):
         client, fake_http, _ = http_client
@@ -223,17 +231,23 @@ class TestSsrfGuards:
     def test_redirect_loops_are_capped(self, http_client):
         client, fake_http, _ = http_client
         fake_http.route("loop.example", status_code=302, headers={"Location": "https://loop.example/again"})
-        assert self.error_code(client, "https://loop.example/") == "http_too_many_redirects"
+        assert self.error_code(client, "https://loop.example/") == "http_too_many_redirects", (
+            "expected self.error_code(client, 'https://loop.example/') to be 'http_too_many_redirects'"
+        )
 
     def test_non_http_scheme_and_unresolvable_host(self, http_client):
         client, _, resolver = http_client
-        assert self.error_code(client, "file:///etc/passwd") == "http_url_invalid_scheme"
+        assert self.error_code(client, "file:///etc/passwd") == "http_url_invalid_scheme", (
+            "expected self.error_code(client, 'file:///etc/passwd') to be 'http_url_invalid_scheme'"
+        )
 
         def fail(host, port):
             raise OSError("nodename nor servname provided")
 
         client._resolve = fail
-        assert self.error_code(client, "https://nowhere.invalid/") == "http_host_unresolvable"
+        assert self.error_code(client, "https://nowhere.invalid/") == "http_host_unresolvable", (
+            "expected self.error_code(...) to be 'http_host_unresolvable'"
+        )
 
 
 class TestBoardUrlSanitizing:

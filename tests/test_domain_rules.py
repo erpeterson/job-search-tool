@@ -30,14 +30,18 @@ class TestText:
         assert clean_url(" https://x.com/job?trk=abc ") == "https://x.com/job", "tracking suffix should be removed"
 
     def test_normalize_lookup_text_collapses_punctuation(self):
-        assert normalize_lookup_text("Sr. Principal—Engineer!") == "sr principal engineer"
+        assert normalize_lookup_text("Sr. Principal—Engineer!") == "sr principal engineer", (
+            "expected normalize_lookup_text('Sr. Principal—Engineer!') to be 'sr principal engineer'"
+        )
 
     @pytest.mark.parametrize(
         ("existing", "addition", "expected"),
         [("", "new", "new"), ("old", "", "old"), ("old  text", "new", "old text new")],
     )
     def test_append_note_text(self, existing, addition, expected):
-        assert append_note_text(existing, addition) == expected
+        assert append_note_text(existing, addition) == expected, (
+            "expected append_note_text(existing, addition) to be expected"
+        )
 
     def test_dedupe_results_keeps_first_by_url_then_source_id(self):
         results = [{"url": "a"}, {"url": "a"}, {"source_job_id": "s"}, {"source_job_id": "s"}, {}]
@@ -83,14 +87,20 @@ class TestDiscoveryFilters:
         assert location_filter_decision(result, profile)[0] is allowed, f"unexpected decision for {result}"
 
     def test_compensation_annualizes_hourly_and_monthly(self):
-        assert extract_annual_compensation_values("$100/hour") == [208000]
-        assert extract_annual_compensation_values("$15,000 per month") == [180000]
-        assert extract_annual_compensation_values("$150k - $190k") == [150000, 190000]
+        assert extract_annual_compensation_values("$100/hour") == [208000], (
+            "expected extract_annual_compensation_values('$100/hour') to be [208000]"
+        )
+        assert extract_annual_compensation_values("$15,000 per month") == [180000], (
+            "expected extract_annual_compensation_values(...) to be [180000]"
+        )
+        assert extract_annual_compensation_values("$150k - $190k") == [150000, 190000], (
+            "expected extract_annual_compensation_values(...) to be [150000, 190000]"
+        )
 
     def test_compensation_rejects_explicit_low_pay(self, profile):
         allowed, reason = compensation_filter_decision({"snippet": "Pay: $150,000 - $180,000 per year"}, profile)
         assert not allowed, "a range entirely below $200k should be rejected"
-        assert "$180,000" in reason
+        assert "$180,000" in reason, f"expected '$180,000' in {reason!r}"
 
     def test_compensation_allows_missing_or_high_pay(self, profile):
         assert compensation_filter_decision({"snippet": "Great benefits"}, profile)[0], "missing pay is allowed"
@@ -103,7 +113,9 @@ class TestDiscoveryFilters:
     def test_first_rejection_stops_at_first_failing_filter(self, profile):
         result = {"title": "Account Executive", "location": "Paris, France"}
         assert first_rejection(result, profile)[0] == "sales_role", "sales filter runs before location"
-        assert first_rejection({"title": "Architect", "location": "Seattle"}, profile) is None
+        assert first_rejection({"title": "Architect", "location": "Seattle"}, profile) is None, (
+            "expected first_rejection(...) to be None"
+        )
 
 
 class TestJobFilter:
@@ -111,19 +123,26 @@ class TestJobFilter:
         return {"downlevel": 0, "gpt_score": None, "user_score": None, **overrides}
 
     def test_downlevel_is_always_filtered(self):
-        assert filter_decision(self.job(downlevel=1), 40, 60, False)[0]
+        assert filter_decision(self.job(downlevel=1), 40, 60, False)[0], (
+            "expected filter_decision(self.job(downlevel=1), 40, 60, False)[0]"
+        )
 
     def test_gpt_threshold_only_applies_when_enabled(self):
         low = self.job(gpt_score=10)
         assert not filter_decision(low, 40, 60, False)[0], "disabled Codex scoring must not filter"
-        assert filter_decision(low, 40, 60, True)[0]
+        assert filter_decision(low, 40, 60, True)[0], "expected filter_decision(low, 40, 60, True)[0]"
 
     def test_user_threshold(self):
         filtered, reasons = filter_decision(self.job(user_score=50), 40, 60, False)
-        assert filtered and "user_score 50 below threshold 60" in reasons
+        assert filtered, "expected filtered"
+        assert "user_score 50 below threshold 60" in reasons, (
+            f"expected 'user_score 50 below threshold 60' in {reasons!r}"
+        )
 
     def test_thresholds_fall_back_to_defaults_for_bad_values(self):
-        assert thresholds({"gpt_threshold": "abc", "user_threshold": "70"}) == (40, 70)
+        assert thresholds({"gpt_threshold": "abc", "user_threshold": "70"}) == (40, 70), (
+            "expected thresholds(...) to be (40, 70)"
+        )
 
 
 class TestLevels:
@@ -154,8 +173,12 @@ class TestLevels:
             },
             profile.target_level,
         )
-        assert text == "Co Staff Engineer L6 maps to Oracle BELOW_IC6 Below per cached level calibration."
-        assert level_assessment_from_equivalency(None, profile.target_level) == ""
+        assert text == "Co Staff Engineer L6 maps to Oracle BELOW_IC6 Below per cached level calibration.", (
+            f"expected 'Co Staff Engineer L6 maps to Oracl...', got {text!r}"
+        )
+        assert level_assessment_from_equivalency(None, profile.target_level) == "", (
+            "expected level_assessment_from_equivalency(...) to be ''"
+        )
 
 
 class TestScoringAndPacketRules:
@@ -163,7 +186,9 @@ class TestScoringAndPacketRules:
         ("value", "expected"), [(85, 85), ("72", 72), (88.9, 88), ("n/a", 0), (None, 0), (True, 0)]
     )
     def test_score_total(self, value, expected):
-        assert score_total({"total_score": value}) == expected
+        assert score_total({"total_score": value}) == expected, (
+            "expected score_total({'total_score': value}) to be expected"
+        )
 
     def test_packet_payload_requires_all_markdown(self):
         with pytest.raises(ExternalServiceError, match="resume_markdown"):
@@ -172,8 +197,12 @@ class TestScoringAndPacketRules:
             validate_packet_payload(["not", "an", "object"])
 
     def test_model_attribution(self):
-        assert has_model_attribution({"a": "made by m1", "b": "m1"}, "m1")
-        assert not has_model_attribution({"a": "made by m1", "b": "none"}, "m1")
+        assert has_model_attribution({"a": "made by m1", "b": "m1"}, "m1"), (
+            "expected has_model_attribution({'a': 'made by m1', 'b': 'm1'}, 'm1')"
+        )
+        assert not has_model_attribution({"a": "made by m1", "b": "none"}, "m1"), (
+            "expected not has_model_attribution({'a': 'made by m1', 'b': 'none'}, 'm1')"
+        )
 
     def test_packet_slug_is_filesystem_safe(self):
         from datetime import datetime
@@ -182,4 +211,6 @@ class TestScoringAndPacketRules:
             {"company": "Acme, Inc.", "title": "Chief Architect / AI", "source_job_id": "linkedin:ABC"},
             today=datetime(2026, 9, 1),
         )
-        assert slug == "2026-09-acme-inc-chief-architect-ai-linkedin-abc"
+        assert slug == "2026-09-acme-inc-chief-architect-ai-linkedin-abc", (
+            f"expected '2026-09-acme-inc-chief-architect-a...', got {slug!r}"
+        )

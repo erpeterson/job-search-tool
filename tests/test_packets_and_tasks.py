@@ -38,20 +38,19 @@ class TestPacketGeneration:
         assert task["status"] == "complete", f"generation should succeed: {task}"
         packet = task["result"]["packet"]
         packet_dir = workspace / packet["path"]
-        assert sorted(p.name for p in packet_dir.iterdir()) == [
-            "Cover-Letter.docx",
-            "Cover-Letter.md",
-            "Job-Brief.docx",
-            "Job-Brief.md",
-            "Resume.docx",
-            "Resume.md",
-        ]
+        files = sorted(p.name for p in packet_dir.iterdir())
+        expected = [f"{name}.{ext}" for name in ("Cover-Letter", "Job-Brief", "Resume") for ext in ("docx", "md")]
+        assert files == expected, f"each Markdown document should have a DOCX twin; got {files}"
         job = client.get(f"/api/jobs/{job_id}").get_json()["job"]
         assert job["application_packet_path"] == packet["path"], "the packet is associated with the job"
         prompt = codex_runner.calls[0]["input"]
         assert "Use evidence only." in prompt, "packet rules from the Career Manual are included"
-        assert "--sandbox" in codex_runner.calls[0]["command"]
-        assert not any(p.name.startswith(".packet-staging") for p in (workspace / "applications").iterdir())
+        assert "--sandbox" in codex_runner.calls[0]["command"], (
+            f"expected '--sandbox' in {codex_runner.calls[0]['command']!r}"
+        )
+        assert not any(p.name.startswith(".packet-staging") for p in (workspace / "applications").iterdir()), (
+            "expected not any((p.name.startswith('.packet-staging') for p in (workspace / 'applicat..."
+        )
 
     def test_retries_once_to_add_exact_model_attribution(self, client, container, codex_runner):
         job_id = insert_job(container)
@@ -59,7 +58,9 @@ class TestPacketGeneration:
         codex_runner.respond(packet_response(), model=MODEL)
         task = generate(client, job_id)
         assert task["status"] == "complete", f"the retry should succeed: {task}"
-        assert "codex_generation_metadata" in codex_runner.calls[1]["input"]
+        assert "codex_generation_metadata" in codex_runner.calls[1]["input"], (
+            f"expected 'codex_generation_metadata' in {codex_runner.calls[1]['input']!r}"
+        )
         assert "-m" in codex_runner.calls[1]["command"], "retry pins the model reported by the first call"
 
     def test_fails_when_attribution_still_missing(self, client, container, codex_runner, workspace):
@@ -101,15 +102,26 @@ class TestPacketGeneration:
         assert list((workspace / "applications").glob("*")) == [], "no partial packet is published"
 
     def test_generate_preconditions(self, client, container, environ):
-        assert post(client, "/api/jobs/999/application-packet/generate").status_code == 404
+        assert post(client, "/api/jobs/999/application-packet/generate").status_code == 404, (
+            "expected post(...).status_code to be 404"
+        )
         no_url = insert_job(container, url=None)
-        assert post(client, f"/api/jobs/{no_url}/application-packet/generate").status_code == 400
+        assert post(client, f"/api/jobs/{no_url}/application-packet/generate").status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
         attached = insert_job(container, url="https://example.com/2", application_packet_path="applications/x")
-        assert post(client, f"/api/jobs/{attached}/application-packet/generate").status_code == 409
+        assert post(client, f"/api/jobs/{attached}/application-packet/generate").status_code == 409, (
+            "expected post(...).status_code to be 409"
+        )
         container.runtime.update({"CODEX_CLI_PATH": "/nonexistent/codex"})
         fresh = insert_job(container, url="https://example.com/3")
         response = post(client, f"/api/jobs/{fresh}/application-packet/generate")
-        assert response.status_code == 409 and "unavailable" in response.get_json()["error"]
+        assert response.status_code == 409, (
+            f"expected HTTP 409, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert "unavailable" in response.get_json()["error"], (
+            f"expected 'unavailable' in {response.get_json()['error']!r}"
+        )
 
 
 class TestPacketFiles:
@@ -123,37 +135,60 @@ class TestPacketFiles:
         job_id = insert_job(container)
         path = self.make_packet(workspace)
         listed = client.get("/api/application-packets").get_json()["application_packets"]
-        assert listed[0]["unassociated"] is True
+        assert listed[0]["unassociated"] is True, f"expected True, got {listed[0]['unassociated']!r}"
 
         attached = post(client, f"/api/jobs/{job_id}/application-packet/attach", {"path": path}).get_json()
-        assert attached["job"]["application_packet_path"] == path
-        assert attached["application_packets"][0]["associated_job"]["id"] == job_id
+        assert attached["job"]["application_packet_path"] == path, (
+            f"expected path, got {attached['job']['application_packet_path']!r}"
+        )
+        assert attached["application_packets"][0]["associated_job"]["id"] == job_id, (
+            "expected attached['application_packets'][0][...][...] to be job_id"
+        )
 
         content = client.get(f"/api/jobs/{job_id}/application-packet/content?file=Resume.md").get_json()
-        assert content["content"].startswith("# Resume")
-        assert content["markdown_files"] == ["Resume.md"]
+        assert content["content"].startswith("# Resume"), "expected content['content'].startswith('# Resume')"
+        assert content["markdown_files"] == ["Resume.md"], f"expected ['Resume.md'], got {content['markdown_files']!r}"
 
         rendered = client.get(f"/api/jobs/{job_id}/application-packet/render?file=Resume.md")
         html = rendered.get_data(as_text=True)
-        assert rendered.status_code == 200 and "<h1>Resume</h1>" in html
+        assert rendered.status_code == 200, (
+            f"expected HTTP 200, got {rendered.status_code}: {rendered.get_data(as_text=True)[:200]}"
+        )
+        assert "<h1>Resume</h1>" in html, f"expected '<h1>Resume</h1>' in {html!r}"
         assert "<script>" not in html, "packet Markdown is escaped"
 
     def test_attach_rejects_paths_outside_applications(self, client, container, workspace):
         job_id = insert_job(container)
         response = post(client, f"/api/jobs/{job_id}/application-packet/attach", {"path": "../../etc"})
-        assert response.status_code == 400
-        assert post(client, f"/api/jobs/{job_id}/application-packet/attach", {"path": ""}).status_code == 400
-        assert post(client, "/api/jobs/999/application-packet/attach", {"path": "x"}).status_code == 404
+        assert response.status_code == 400, (
+            f"expected HTTP 400, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert post(client, f"/api/jobs/{job_id}/application-packet/attach", {"path": ""}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert post(client, "/api/jobs/999/application-packet/attach", {"path": "x"}).status_code == 404, (
+            "expected post(...).status_code to be 404"
+        )
 
     def test_read_rejects_traversal_and_missing_files(self, client, container, workspace):
         path = self.make_packet(workspace)
         job_id = insert_job(container, application_packet_path=path)
-        assert client.get(f"/api/jobs/{job_id}/application-packet/content?file=../x.md").status_code == 400
-        assert client.get(f"/api/jobs/{job_id}/application-packet/render?file=notes.txt").status_code == 400
-        assert client.get(f"/api/jobs/{job_id}/application-packet/content?file=Nope.md").status_code == 404
+        assert client.get(f"/api/jobs/{job_id}/application-packet/content?file=../x.md").status_code == 400, (
+            "expected client.get(...).status_code to be 400"
+        )
+        assert client.get(f"/api/jobs/{job_id}/application-packet/render?file=notes.txt").status_code == 400, (
+            "expected client.get(...).status_code to be 400"
+        )
+        assert client.get(f"/api/jobs/{job_id}/application-packet/content?file=Nope.md").status_code == 404, (
+            "expected client.get(...).status_code to be 404"
+        )
         unattached = insert_job(container, url="https://example.com/9")
-        assert client.get(f"/api/jobs/{unattached}/application-packet/content?file=Resume.md").status_code == 404
-        assert client.get("/api/jobs/999/application-packet/content?file=Resume.md").status_code == 404
+        assert client.get(f"/api/jobs/{unattached}/application-packet/content?file=Resume.md").status_code == 404, (
+            "expected client.get(...).status_code to be 404"
+        )
+        assert client.get("/api/jobs/999/application-packet/content?file=Resume.md").status_code == 404, (
+            "expected client.get(...).status_code to be 404"
+        )
 
 
 class TestBulkTasks:
@@ -166,14 +201,20 @@ class TestBulkTasks:
         response = post(client, "/api/jobs/bulk/score-gpt", {"job_ids": [good, str(bad), good, 999]})
 
         task = response.get_json()["task"]
-        assert response.status_code == 202
+        assert response.status_code == 202, (
+            f"expected HTTP 202, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
         task = client.get(f"/api/codex-tasks/{task['id']}").get_json()["task"]
-        assert (task["status"], task["completed"], task["failed"], task["skipped"]) == ("error", 1, 1, 1)
+        assert (task["status"], task["completed"], task["failed"], task["skipped"]) == ("error", 1, 1, 1), (
+            "expected the result to be ('error', 1, 1, 1)"
+        )
         messages = {item["job_id"]: item["message"] for item in task["items"]}
-        assert messages[good] == "Codex score 85"
-        assert "exited with code 1" in messages[bad]
-        assert messages[999] == "Job not found"
-        assert client.get("/api/codex-tasks").get_json()["tasks"][0]["id"] == task["id"]
+        assert messages[good] == "Codex score 85", f"expected 'Codex score 85', got {messages[good]!r}"
+        assert "exited with code 1" in messages[bad], f"expected 'exited with code 1' in {messages[bad]!r}"
+        assert messages[999] == "Job not found", f"expected 'Job not found', got {messages[999]!r}"
+        assert client.get("/api/codex-tasks").get_json()["tasks"][0]["id"] == task["id"], (
+            "expected client.get(...).get_json(...)[...][...][...] to be task['id']"
+        )
 
     def test_bulk_packets_skip_already_associated(self, client, container, codex_runner):
         attached = insert_job(container, application_packet_path="applications/x")
@@ -181,16 +222,28 @@ class TestBulkTasks:
         codex_runner.respond(packet_response())
         task = post(client, "/api/jobs/bulk/application-packets/generate", {"job_ids": [attached, fresh]}).get_json()
         task = client.get(f"/api/codex-tasks/{task['task']['id']}").get_json()["task"]
-        assert (task["status"], task["completed"], task["skipped"]) == ("complete", 1, 1)
+        assert (task["status"], task["completed"], task["skipped"]) == ("complete", 1, 1), (
+            "expected the result to be ('complete', 1, 1)"
+        )
 
     def test_bulk_validation(self, client, enable_scoring):
-        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": []}).status_code == 400
-        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": "1"}).status_code == 400
-        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": ["x"]}).status_code == 400
-        assert client.get("/api/codex-tasks/unknown").status_code == 404
+        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": []}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": "1"}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": ["x"]}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert client.get("/api/codex-tasks/unknown").status_code == 404, (
+            "expected client.get(...).status_code to be 404"
+        )
 
     def test_bulk_scoring_requires_enabled_scoring(self, client):
-        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": [1]}).status_code == 409
+        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": [1]}).status_code == 409, (
+            "expected post(...).status_code to be 409"
+        )
 
     def test_unexpected_item_error_is_generic(self, container, monkeypatch, enable_scoring):
         job_id = insert_job(container)
@@ -201,8 +254,8 @@ class TestBulkTasks:
         monkeypatch.setattr(container.scoring, "populate_score", crash)
         task = container.bulk.start_scoring([job_id])
         item = container.tasks.get(task["id"])["items"][0]
-        assert item["status"] == "error"
-        assert "internal detail" not in item["message"]
+        assert item["status"] == "error", f"expected 'error', got {item['status']!r}"
+        assert "internal detail" not in item["message"], f"expected 'internal detail' not in {item['message']!r}"
 
     def test_registry_evicts_oldest_finished_tasks(self):
         from conftest import ImmediateThread
@@ -217,7 +270,8 @@ class TestBulkTasks:
         ids = [registry.start("op", [1], finish)["id"] for _ in range(4)]
         remaining = {task["id"] for task in registry.list()}
         assert ids[-1] in remaining and len(remaining) <= 3, "finished tasks beyond the cap are evicted"
-        assert registry.update("missing") is None and registry.update_item("missing", 1) is None
+        assert registry.update("missing") is None, "expected registry.update('missing') to be None"
+        assert registry.update_item("missing", 1) is None, "expected registry.update_item('missing', 1) to be None"
 
 
 class TestBackgroundCrashHandling:
