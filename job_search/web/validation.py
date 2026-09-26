@@ -1,11 +1,14 @@
 """Request payload parsing and validation for the HTTP API."""
 
+import json
+import logging
 import re
 
 from flask import request
 
-from job_search.domain.errors import ValidationError
+from job_search.domain.errors import UnsupportedMediaTypeError, ValidationError
 from job_search.domain.rules import COMPANY_STATUSES, JOB_STATUSES, PIPELINES, RUBRIC_FIELDS, SEARCH_BOARDS
+from job_search.observability import record_exception
 
 SHORT_TEXT = 500
 LONG_TEXT = 20_000
@@ -13,10 +16,33 @@ POSTING_TEXT = 200_000
 _INT_PATTERN = re.compile(r"^-?\d+(\.0+)?$")
 
 
+def require_json_content_type():
+    """Reject non-empty bodies that are not JSON, so HTML forms cannot trigger API actions."""
+    has_body = bool(request.content_length or request.get_data(cache=True))
+    if has_body and not request.is_json:
+        raise UnsupportedMediaTypeError(
+            "Request body must be sent as application/json.", "request_body_unsupported_media_type"
+        )
+
+
 def json_body():
-    payload = request.get_json(silent=True)
-    if payload is None:
+    """Parse the JSON object body. Only an empty body is treated as ``{}``."""
+    require_json_content_type()
+    raw = request.get_data(cache=True)
+    if not raw:
         return {}
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        record_exception(
+            "request_body_json_decode_failed",
+            "web.validation",
+            "json_body",
+            exc,
+            level=logging.INFO,
+            recovery="Rejected with HTTP 400.",
+        )
+        raise ValidationError("Request body is not valid JSON.", "request_body_malformed_json") from exc
     if not isinstance(payload, dict):
         raise ValidationError("Request body must be a JSON object.", "request_body_not_object")
     return payload

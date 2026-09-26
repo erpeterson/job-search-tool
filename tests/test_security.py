@@ -134,3 +134,38 @@ class TestCodexCliPathUpdates:
         response = self.post_config(client, path)
         assert response.status_code == 200, f"valid codex path should be saved: {response.get_json()}"
         assert f"CODEX_CLI_PATH={path}" in container.config.env_path.read_text(), ".env should record the path"
+
+
+class TestRequestBodies:
+    def test_malformed_json_is_400(self, client):
+        before = blame("request_body_malformed_json")
+        response = client.post("/api/search/run", data="{not json", content_type="application/json")
+        assert response.status_code == 400, f"malformed JSON must be rejected, got {response.status_code}"
+        assert response.get_json()["error"] == "Request body is not valid JSON.", response.get_json()
+        assert blame("request_body_malformed_json") == before + 1, "rejection must be recorded"
+
+    def test_text_plain_body_is_415_even_when_route_ignores_body(self, client, container):
+        from conftest import insert_job
+
+        job_id = insert_job(container)
+        response = client.post(f"/api/jobs/{job_id}/score-gpt", data="{}", content_type="text/plain")
+        assert response.status_code == 415, f"text/plain form posts must be rejected, got {response.status_code}"
+        response = client.post(
+            "/api/search/run", data="force_refresh=1", content_type="application/x-www-form-urlencoded"
+        )
+        assert response.status_code == 415, f"form posts must be rejected, got {response.status_code}"
+
+    def test_empty_body_is_treated_as_empty_object(self, client):
+        response = client.post("/api/settings")
+        assert response.status_code == 200, f"an empty body is allowed: {response.get_json()}"
+
+    def test_oversized_body_is_413(self, client, container):
+        body = json.dumps({"note": "x" * (container.config.max_request_bytes + 1)})
+        response = client.post("/api/jobs/1/notes", data=body, content_type="application/json")
+        assert response.status_code == 413, f"oversized body must be rejected, got {response.status_code}"
+
+    def test_max_request_bytes_is_configurable(self, tmp_path):
+        config = AppConfig.from_env({"JOB_SEARCH_MAX_REQUEST_BYTES": "2048"}, app_dir=tmp_path)
+        assert config.max_request_bytes == 2048, config.max_request_bytes
+        with pytest.raises(ConfigurationError):
+            AppConfig.from_env({"JOB_SEARCH_MAX_REQUEST_BYTES": "10"}, app_dir=tmp_path)
