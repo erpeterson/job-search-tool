@@ -3,6 +3,7 @@
 import json
 import logging
 
+from job_search.domain.text import normalize_lookup_text
 from job_search.observability import record_exception
 
 JOB_COLUMNS = frozenset(
@@ -30,8 +31,15 @@ JOB_COLUMNS = frozenset(
         "level_assessment",
         "downlevel",
         "application_packet_path",
+        "normalized_company",
     }
 )
+
+
+def _chunks(values, size=500):
+    """Split values so IN (...) lists stay under SQLite's bound-parameter limit."""
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
 def _row_to_dict(row):
@@ -100,6 +108,18 @@ class JobRepository:
         query += " ORDER BY updated_at DESC, created_at DESC"
         return [_job_from_row(row) for row in self._conn.execute(query)]
 
+    def existing_urls(self, urls):
+        """Return the subset of ``urls`` already tracked, using one query per 500 URLs."""
+        found = set()
+        for chunk in _chunks(sorted({url for url in urls if url})):
+            placeholders = ", ".join("?" for _ in chunk)
+            found.update(
+                row["url"]
+                # Only "?" placeholders are interpolated; values are bound parameters.
+                for row in self._conn.execute(f"SELECT url FROM jobs WHERE url IN ({placeholders})", chunk)  # noqa: S608 - placeholders only
+            )
+        return found
+
     def find_id_by_url(self, url):
         if not url:
             return None
@@ -107,6 +127,8 @@ class JobRepository:
         return row["id"] if row else None
 
     def insert(self, fields):
+        if "company" in fields:
+            fields = {**fields, "normalized_company": normalize_lookup_text(fields["company"])}
         columns = list(fields)
         unknown = set(columns) - JOB_COLUMNS
         if unknown:
@@ -123,13 +145,14 @@ class JobRepository:
         self._conn.execute(
             """
             UPDATE jobs
-            SET company = ?, title = ?, location = ?, posting_text = ?,
+            SET company = ?, normalized_company = ?, title = ?, location = ?, posting_text = ?,
                 source_board = ?, source_job_id = ?, discovered_at = COALESCE(discovered_at, ?),
                 notes = ?, updated_at = ?
             WHERE id = ?
             """,
             (
                 fields["company"],
+                normalize_lookup_text(fields["company"]),
                 fields["title"],
                 fields["location"],
                 fields["posting_text"],
@@ -258,7 +281,7 @@ class CompanyRepository:
                        COUNT(j.id) AS tracked_job_count,
                        MAX(j.updated_at) AS latest_job_updated_at
                 FROM company_interests ci
-                LEFT JOIN jobs j ON lower(j.company) = lower(ci.company)
+                LEFT JOIN jobs j ON j.normalized_company = ci.normalized_company
                 GROUP BY ci.id
                 ORDER BY
                   CASE ci.status
@@ -285,9 +308,9 @@ class CompanyRepository:
             for job in self._conn.execute(
                 """
                 SELECT id, company, title, url, location, pipeline, status, gpt_score, user_score, filtered, downlevel
-                FROM jobs WHERE lower(company) = lower(?) ORDER BY updated_at DESC
+                FROM jobs WHERE normalized_company = ? ORDER BY updated_at DESC
                 """,
-                (company["company"],),
+                (company["normalized_company"],),
             )
         ]
         return company
@@ -584,6 +607,21 @@ class LevelEquivalencyRepository:
                 (normalized_company,),
             )
         ]
+
+    def for_companies(self, normalized_companies):
+        """Return ``{normalized_company: rows}`` for many companies in one query, rows longest pattern first."""
+        companies = sorted(normalized_companies)
+        grouped = {company: [] for company in companies}
+        for chunk in _chunks(companies):
+            placeholders = ", ".join("?" for _ in chunk)
+            for row in self._conn.execute(
+                # Only "?" placeholders are interpolated; values are bound parameters.
+                f"SELECT * FROM level_equivalencies WHERE normalized_company IN ({placeholders}) "  # noqa: S608 - placeholders only
+                "ORDER BY normalized_company, LENGTH(normalized_title_pattern) DESC",
+                chunk,
+            ):
+                grouped[row["normalized_company"]].append(_row_to_dict(row))
+        return grouped
 
     def upsert(self, fields, ts):
         self._conn.execute(

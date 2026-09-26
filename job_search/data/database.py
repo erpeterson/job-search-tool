@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 
 from job_search.data.repositories import UnitOfWork
+from job_search.domain.text import normalize_lookup_text
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -152,12 +153,14 @@ _ADDED_COLUMNS = (
     ("search_queries", "refinement_notes", "TEXT"),
     ("search_queries", "seeded", "INTEGER NOT NULL DEFAULT 0"),
     ("discovered_jobs", "query_id", "INTEGER"),
+    ("jobs", "normalized_company", "TEXT"),
 )
 
 _INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url) WHERE url IS NOT NULL AND url != ''",
     "CREATE INDEX IF NOT EXISTS idx_level_equivalencies_company ON level_equivalencies(normalized_company)",
     "CREATE INDEX IF NOT EXISTS idx_company_interests_status ON company_interests(status)",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_normalized_company ON jobs(normalized_company)",
 )
 
 _DATA_MIGRATIONS = (
@@ -226,3 +229,11 @@ class Database:
                 conn.execute(statement)
             for statement in _DATA_MIGRATIONS:
                 conn.execute(statement)
+            # Backfill in Python: the normalization regex has no SQLite equivalent.
+            conn.executemany(
+                "UPDATE jobs SET normalized_company = ? WHERE id = ?",
+                [
+                    (normalize_lookup_text(row["company"]), row["id"])
+                    for row in conn.execute("SELECT id, company FROM jobs WHERE normalized_company IS NULL")
+                ],
+            )

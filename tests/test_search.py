@@ -248,10 +248,60 @@ def test_unexpected_run_failure_marks_run_as_error(container, http, monkeypatch)
     def explode(*_args, **_kwargs):
         raise RuntimeError("database vanished")
 
-    monkeypatch.setattr(container.search, "_process_result", explode)
+    monkeypatch.setattr(container.search, "_track_result", explode)
     with pytest.raises(RuntimeError):
         container.search.run()
     run = container.search.list_runs()[0]
     assert run["status"] == "error", f"a failed run must not stay running: {run}"
     assert "database vanished" not in run["message"], "internal details stay in logs"
     assert run["completed_at"] is not None, "failed runs get a completion time"
+
+
+def test_calibration_query_runs_once_per_search_run(client, container, http, codex_runner, enable_scoring, monkeypatch):
+    enable_only(container, "linkedin", "Office of the CTO")
+    cards = "".join(linkedin_card(f"Chief Architect {n}", f"Co{n}", "Seattle", 300 + n) for n in range(3))
+    http.route("linkedin.com/jobs-guest", f"<ul>{cards}</ul>")
+    for _ in range(3):
+        codex_runner.respond(SCORE_RESPONSE)
+    codex_runner.respond({"keywords": "kept"})
+    statements = []
+    original_connect = container.db._connect
+
+    def counting_connect():
+        conn = original_connect()
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(container.db, "_connect", counting_connect)
+    run = run_search(client)["run"]
+
+    assert run["tracked_count"] == 3, f"all three results should be tracked: {run}"
+    calibration = [s for s in statements if "WHERE user_score IS NOT NULL" in s]
+    assert len(calibration) == 1, f"calibration examples must load once per run, not per result: {len(calibration)}"
+    url_checks = [s for s in statements if "FROM jobs WHERE url" in s]
+    assert len(url_checks) == 1, f"tracked-URL checks must be batched per query: {url_checks}"
+
+
+def test_company_list_join_uses_normalized_company_index(container):
+    with container.db.unit_of_work() as uow:
+        plan = uow.connection.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT ci.*, COUNT(j.id) FROM company_interests ci
+            LEFT JOIN jobs j ON j.normalized_company = ci.normalized_company
+            GROUP BY ci.id
+            """
+        ).fetchall()
+    details = " ".join(row["detail"] for row in plan)
+    assert "idx_jobs_normalized_company" in details, f"the company join should use the new index: {details}"
+
+
+def test_normalized_company_is_backfilled_for_existing_rows(container):
+    with container.db.unit_of_work() as uow:
+        uow.connection.execute(
+            "INSERT INTO jobs(created_at, updated_at, company, title) VALUES (1, 1, 'Acme, Inc.', 'Architect')"
+        )
+    container.db.create_schema()
+    with container.db.unit_of_work() as uow:
+        value = uow.connection.execute("SELECT normalized_company FROM jobs").fetchone()[0]
+    assert value == "acme inc", f"rows written before the migration must be backfilled: {value!r}"
