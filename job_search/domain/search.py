@@ -7,7 +7,7 @@ from job_search.domain.clock import now
 from job_search.domain.discovery_filters import first_rejection
 from job_search.domain.errors import AppError, NotFoundError, public_error_code
 from job_search.domain.job_filter import apply_job_filters
-from job_search.domain.levels import level_assessment_from_equivalency, lookup_level_equivalency
+from job_search.domain.levels import LevelCalibrationCache, level_assessment_from_equivalency
 from job_search.domain.model_output import validate_refinement_payload
 from job_search.domain.rules import SEARCH_BOARDS, UNKNOWN_LEVEL_ASSESSMENT
 from job_search.domain.scoring import level_reference, score_total
@@ -128,6 +128,8 @@ class SearchService:
         with self._db.unit_of_work() as uow:
             run_id = uow.search.start_run(trigger, now())
             queries = uow.search.list_enabled_queries()
+            # Calibration examples and the model are read once per run, not per result.
+            scoring_inputs = self._scoring.scoring_inputs(uow)
         counts = {"found": 0, "tracked": 0, "rejected": 0}
         messages = []
         with (
@@ -136,7 +138,7 @@ class SearchService:
         ):
             try:
                 for query in queries:
-                    self._run_query(run_id, query, force_refresh, counts, messages)
+                    self._run_query(run_id, query, force_refresh, counts, messages, scoring_inputs)
             except Exception as exc:
                 record_exception(
                     "search_run_aborted",
@@ -174,7 +176,7 @@ class SearchService:
             )
         return run
 
-    def _run_query(self, run_id, query, force_refresh, counts, messages):
+    def _run_query(self, run_id, query, force_refresh, counts, messages, scoring_inputs):
         label = f"{query['board']}:{query['keywords']}"
         try:
             results = self._boards.search(query["board"], query["keywords"], query["location"], force_refresh)
@@ -194,15 +196,16 @@ class SearchService:
                 f"{label}: board fetch failed ({public_error_code(exc, 'search_board_fetch_failed')}); see logs."
             )
             return
-        with self._db.unit_of_work() as uow:
-            uow.search.set_query_last_run(query["id"], now())
         for result in results:
             result["pipeline"] = query.get("pipeline") or result.get("pipeline") or ""
             result["criteria"] = query.get("criteria") or ""
-            counts["found"] += 1
-            outcome = self._process_result(run_id, query["id"], result, force_refresh, messages)
-            if outcome in counts:
-                counts[outcome] += 1
+        counts["found"] += len(results)
+        with self._db.unit_of_work() as uow:
+            uow.search.set_query_last_run(query["id"], now())
+            candidates = self._screen_results(uow, run_id, query["id"], results, counts)
+        for result in candidates:
+            outcome = self._track_result(run_id, query["id"], result, force_refresh, messages, scoring_inputs)
+            counts[outcome] += 1
         try:
             self.refine_query(query["id"], force_refresh=force_refresh)
         except AppError as exc:
@@ -220,53 +223,62 @@ class SearchService:
             )
             messages.append(f"{label}: query refinement failed ({exc.error_code}); see logs.")
 
-    def _process_result(self, run_id, query_id, result, force_refresh, messages):
-        """Filter, deduplicate, score, and track one discovered result. Returns the count bucket."""
-        rejection = first_rejection(result, self._profile)
-        if rejection:
-            filter_name, reason = rejection
-            log_event(
-                "discovery_rejected",
-                reason=reason,
-                filter=filter_name,
-                query_id=query_id,
-                run_id=run_id,
-                **_result_fields(result),
-            )
-            with self._db.unit_of_work() as uow:
+    def _screen_results(self, uow, run_id, query_id, results, counts):
+        """Filter, level-calibrate, and deduplicate a query's results in one unit of work.
+
+        Rejections are recorded here. Returns the results that still need scoring and tracking.
+        URL checks and cached level calibrations each load with one batched query.
+        """
+        tracked_urls = uow.jobs.existing_urls(result.get("url") for result in results)
+        levels = LevelCalibrationCache(
+            uow.levels, self._profile.target_level, [result.get("company") for result in results]
+        )
+        candidates = []
+        for result in results:
+            rejection = first_rejection(result, self._profile)
+            if rejection:
+                filter_name, reason = rejection
+                log_event(
+                    "discovery_rejected",
+                    reason=reason,
+                    filter=filter_name,
+                    query_id=query_id,
+                    run_id=run_id,
+                    **_result_fields(result),
+                )
                 uow.discoveries.insert(_discovery_record(run_id, query_id, result, "rejected", rejection_reason=reason))
-            return "rejected"
+                counts["rejected"] += 1
+                continue
+            equivalency = levels.lookup(result.get("company"), result.get("title"))
+            if equivalency:
+                result["cached_level_assessment"] = level_assessment_from_equivalency(
+                    equivalency, self._profile.target_level
+                )
+                result["cached_downlevel"] = bool(equivalency["downlevel"])
+                log_event(
+                    "level_equivalency_matched",
+                    company=result.get("company"),
+                    title=result.get("title"),
+                    oracle_level=equivalency["oracle_level"],
+                    oracle_title=equivalency["oracle_title"],
+                    downlevel=bool(equivalency["downlevel"]),
+                    source_url=equivalency.get("source_url"),
+                )
+            if result.get("url") in tracked_urls:
+                log_event(
+                    "discovery_skipped",
+                    reason="already tracked in jobs",
+                    query_id=query_id,
+                    run_id=run_id,
+                    **_result_fields(result),
+                )
+                continue
+            candidates.append(result)
+        return candidates
 
-        with self._db.unit_of_work() as uow:
-            equivalency = lookup_level_equivalency(
-                uow.levels, result.get("company"), result.get("title"), self._profile.target_level
-            )
-            already_tracked = uow.jobs.find_id_by_url(result.get("url")) is not None
-            examples, model = self._scoring.scoring_inputs(uow)
-        if equivalency:
-            result["cached_level_assessment"] = level_assessment_from_equivalency(
-                equivalency, self._profile.target_level
-            )
-            result["cached_downlevel"] = bool(equivalency["downlevel"])
-            log_event(
-                "level_equivalency_matched",
-                company=result.get("company"),
-                title=result.get("title"),
-                oracle_level=equivalency["oracle_level"],
-                oracle_title=equivalency["oracle_title"],
-                downlevel=bool(equivalency["downlevel"]),
-                source_url=equivalency.get("source_url"),
-            )
-        if already_tracked:
-            log_event(
-                "discovery_skipped",
-                reason="already tracked in jobs",
-                query_id=query_id,
-                run_id=run_id,
-                **_result_fields(result),
-            )
-            return "skipped"
-
+    def _track_result(self, run_id, query_id, result, force_refresh, messages, scoring_inputs):
+        """Score (outside any transaction) and track one screened result. Returns the count bucket."""
+        examples, model = scoring_inputs
         score = None
         unavailable = self._scoring.unavailable_reason()
         if not unavailable:

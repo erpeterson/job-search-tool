@@ -45,7 +45,7 @@ P3 = hygiene or completeness.
 | T-26 | Validate Codex model output against a schema | Validation | P1 | Done |
 | T-27 | Move long-running work out of request handlers | Performance | P2 | Done |
 | T-28 | Cap concurrent background tasks | Performance | P2 | Done |
-| T-29 | Refactor N+1 queries into batched queries and index the company join | Performance | P2 | Open |
+| T-29 | Refactor N+1 queries into batched queries and index the company join | Performance | P2 | Done |
 | T-30 | Bound API response sizes | Performance | P3 | Open |
 | T-31 | Define lifecycle and retention for generated data | Data handling | P2 | Open |
 | T-32 | Write `.env` atomically | Data handling | P3 | Open |

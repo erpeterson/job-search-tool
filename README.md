@@ -381,7 +381,8 @@ Discovery rule:
 - Codex scoring includes recent user-scored examples as calibration context, so the model can adapt to Eric's preferences over time.
 - Thresholds are editable in the UI and persisted in SQLite.
 - The tracked jobs table includes fine-grained table filters for pipeline, source, filtered/downlevel visibility, text search, and included statuses. By default it hides filtered/downlevel rows plus terminal `rejected` and `declined` statuses.
-- Company interest is tracked independently from individual roles. Company records can store interest status, interest score, rationale, contacts, notes, and next step while still showing matching tracked jobs for context.
+- Company interest is tracked independently from individual roles. Jobs are matched to a company by normalized name (case and
+  punctuation ignored, so "Acme, Inc." matches "Acme Inc"). Company records can store interest status, interest score, rationale, contacts, notes, and next step while still showing matching tracked jobs for context.
 - The Configuration panel includes an advanced `Purge tracked jobs` command for user-acceptance testing. It requires typing `PURGE`, deletes tracked jobs and their CRM notes/interactions, and preserves searches, settings, logs, captures, and discovery history.
 
 ## Current Scope
