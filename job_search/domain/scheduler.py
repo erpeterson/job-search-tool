@@ -45,10 +45,8 @@ class SearchScheduler:
                 "domain.scheduler",
                 "tick",
                 exc,
-                recovery="Recorded as a failed search run; the scheduler retries on the next poll.",
+                recovery="The search run marks itself as error; the scheduler retries on the next poll.",
             )
-            with self._db.unit_of_work() as uow:
-                uow.search.record_failed_run("scheduled", "Scheduled search failed; see logs for details.", now())
 
     def _loop(self):
         while not self._stop.is_set():

@@ -181,17 +181,19 @@ class TestScheduler:
         scheduler.tick()
         assert calls == [{"trigger": "scheduled", "force_refresh": True}]
 
-    def test_failed_tick_records_error_run(self, container):
+    def test_failed_tick_is_recorded_without_extra_run_rows(self, container):
+        from job_search.observability import METRICS
+
         def fail(**_kwargs):
             raise RuntimeError("board down")
 
         with container.db.unit_of_work() as uow:
             uow.settings.set("last_search_at", 1)
         scheduler = SearchScheduler(container.db, type("S", (), {"run": staticmethod(fail)})(), 60, True)
+        before = METRICS.snapshot().get("blame.scheduled_search_failed", 0)
         scheduler.tick()
-        runs = container.search.list_runs()
-        assert runs[0]["status"] == "error"
-        assert "board down" not in runs[0]["message"], "details stay in logs"
+        assert METRICS.snapshot()["blame.scheduled_search_failed"] == before + 1, "tick failure must be recorded"
+        assert container.search.list_runs() == [], "the scheduler no longer inserts its own error rows"
 
     def test_disabled_scheduler_does_not_start(self, container):
         assert container.scheduler.start() is None
@@ -203,3 +205,42 @@ def test_insert_job_helper_marks_existing_urls(container):
     with container.db.unit_of_work() as uow:
         assert uow.jobs.find_id_by_url("https://www.linkedin.com/jobs/view/1") is not None
         assert uow.jobs.find_id_by_url("") is None
+
+
+def test_scoring_failure_for_one_result_does_not_abort_run(client, container, http, codex_runner, enable_scoring):
+    from job_search.observability import METRICS
+
+    enable_only(container, "linkedin", "Office of the CTO")
+    cards = linkedin_card("Chief Architect", "Acme", "Seattle", 21) + linkedin_card("Fellow", "Beta", "Seattle", 22)
+    http.route("linkedin.com/jobs-guest", "<ul>" + cards + "</ul>")
+    codex_runner.respond("", returncode=1)  # first result: Codex fails
+    codex_runner.respond(SCORE_RESPONSE)  # second result: scored
+    codex_runner.respond({"keywords": "kept"})  # refinement
+    before = METRICS.snapshot().get("blame.search_result_scoring_failed", 0)
+
+    body = run_search(client)
+
+    run = body["run"]
+    assert (run["status"], run["tracked_count"]) == ("complete", 2), f"run should complete and track both: {run}"
+    scores = {job["company"]: job["gpt_score"] for job in body["jobs"]}
+    assert scores == {"Acme": None, "Beta": 85}, f"failed result is tracked unscored, other scored: {scores}"
+    assert "search_result_scoring_failed" not in run["message"] and "codex_cli_nonzero_exit" in run["message"]
+    assert METRICS.snapshot()["blame.search_result_scoring_failed"] == before + 1, "failure must be recorded"
+
+
+def test_unexpected_run_failure_marks_run_as_error(container, http, monkeypatch):
+    import pytest
+
+    enable_only(container, "linkedin", "Executive IC")
+    http.route("linkedin.com/jobs-guest", LINKEDIN_RESULTS)
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("database vanished")
+
+    monkeypatch.setattr(container.search, "_process_result", explode)
+    with pytest.raises(RuntimeError):
+        container.search.run()
+    run = container.search.list_runs()[0]
+    assert run["status"] == "error", f"a failed run must not stay running: {run}"
+    assert "database vanished" not in run["message"], "internal details stay in logs"
+    assert run["completed_at"] is not None, "failed runs get a completion time"
