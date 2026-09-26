@@ -83,7 +83,8 @@ def test_board_failure_is_reported_and_run_completes(client, container, http):
     http.route("indeed.com", error=requests.ConnectionError("connection reset"))
     run = run_search(client)["run"]
     assert run["status"] == "complete"
-    assert "connection reset" in run["message"]
+    assert "search_board_fetch_failed" in run["message"], run["message"]
+    assert "connection reset" not in run["message"], "raw exception text must not be persisted"
 
 
 def test_scored_discovery_and_query_refinement(client, container, http, codex_runner, enable_scoring):
@@ -111,7 +112,7 @@ def test_refinement_failure_is_reported_not_fatal(client, container, http, codex
 
     run = run_search(client)["run"]
     assert run["tracked_count"] == 1
-    assert "exited with code 2" in run["message"]
+    assert "query refinement failed (codex_cli_nonzero_exit)" in run["message"], run["message"]
 
 
 def test_refinement_ignores_invalid_json(container, http, codex_runner, enable_scoring):

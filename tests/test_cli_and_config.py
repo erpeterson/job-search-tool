@@ -152,3 +152,16 @@ class TestObservability:
             log_event("tagged")
         assert current_correlation_id() is None
         assert json.loads(out.getvalue().splitlines()[-1])["correlation_id"] == "run-7"
+
+
+def test_record_exception_logs_detail_but_message_stays_generic():
+    from job_search.domain.errors import ExternalServiceError
+    from job_search.observability import record_exception
+
+    out = io.StringIO()
+    configure_console_logging(verbose=True, stdout=out, stderr=out)
+    exc = ExternalServiceError("Something failed; see logs.", "unit_detail_test", detail="stderr: /private/path")
+    record_exception("unit_detail_test", "tests", "detail", exc, level=logging.WARNING)
+    line = json.loads(out.getvalue().splitlines()[-1])
+    assert line["detail"] == "stderr: /private/path", f"detail must be logged: {line}"
+    assert "/private/path" not in exc.message, "the user-facing message stays generic"

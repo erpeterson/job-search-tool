@@ -236,8 +236,10 @@ class TestFileStores:
             which=lambda _name: "/usr/bin/pandoc",
             runner=lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="bad input"),
         )
-        with pytest.raises(ExternalServiceError, match="bad input"):
+        with pytest.raises(ExternalServiceError) as info:
             failing.to_docx(tmp_path / "a.md", tmp_path / "a.docx")
+        assert "bad input" not in info.value.message, "Pandoc stderr must not reach the client message"
+        assert info.value.detail == "bad input", "stderr is kept in detail for the logs"
 
 
 class TestMarkdown:

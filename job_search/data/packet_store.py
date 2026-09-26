@@ -29,8 +29,11 @@ class PandocConverter:
             check=False,
         )
         if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()[:1000]
-            raise ExternalServiceError(f"Pandoc failed for {source_path.name}: {detail}", "pandoc_conversion_failed")
+            raise ExternalServiceError(
+                f"Pandoc conversion failed for {source_path.name}; see logs for details.",
+                "pandoc_conversion_failed",
+                detail=(completed.stderr or completed.stdout or "").strip()[:2000],
+            )
 
 
 class PacketStore:

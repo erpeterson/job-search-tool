@@ -65,7 +65,9 @@ class TestCreateJob:
         body = response.get_json()
         assert response.status_code == 201
         assert body["job"]["company"] == "example.com"
-        assert "403" in body["scrape_error"]
+        assert "manual_job_scrape_failed" in body["scrape_error"], body["scrape_error"]
+        assert "403 Error" not in body["scrape_error"], "raw exception text must not be returned"
+        assert "403 Error" not in body["job"]["notes"], "raw exception text must not be saved in notes"
 
     def test_codex_failure_is_reported_not_fatal(self, client, http, codex_runner, enable_scoring):
         http.route("example.com", POSTING_HTML)
