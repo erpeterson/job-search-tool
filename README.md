@@ -150,6 +150,20 @@ deadline of `JOB_SEARCH_HTTP_TIMEOUT_SECONDS x 6` (initial request plus up to 5
 redirects; 180 seconds by default), after which it fails with
 `http_fetch_deadline_exceeded`.
 
+## Accessibility
+
+- Every form control has an associated label; the typed DELETE/PURGE
+  confirmations use a labelled `<dialog>` instead of `prompt()`.
+- Errors appear in a dismissible `role="alert"` region instead of `alert()`.
+- Scores show a text label (strong, borderline, weak) beside the colour.
+- The active page button carries `aria-current="page"`; table rows open through a
+  real button in the name cell, and the selected row is marked `aria-current`.
+
+Verified 2026-09-26 with axe-core (WCAG 2.0/2.1 A and AA rules, via Playwright
+and Chrome) on the jobs page, jobs page with detail, companies page, queries
+page, confirmation dialog, and error region: 0 violations. Keyboard-only runs
+opened a job, switched pages, and completed a typed DELETE confirmation.
+
 ## Data
 
 All generated data is local and owned by the user running the app. Nothing
