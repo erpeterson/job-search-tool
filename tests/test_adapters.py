@@ -326,3 +326,30 @@ class TestMarkdown:
 def test_job_insert_rejects_unknown_columns(container):
     with container.db.unit_of_work() as uow, pytest.raises(ValueError, match="Unknown jobs columns"):
         uow.jobs.insert({"company": "A", "title": "B", "created_at": 1, "updated_at": 1, "id) VALUES (1); --": 1})
+
+
+def test_env_file_write_failure_leaves_original_intact(tmp_path, monkeypatch):
+    path = tmp_path / ".env"
+    path.write_text("A=1\n", encoding="utf-8")
+
+    def fail_replace(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("job_search.data.env_file.os.replace", fail_replace)
+    with pytest.raises(OSError):
+        EnvFile(path).update({"A": "2"})
+    assert path.read_text() == "A=1\n", "a failed write must not truncate or change .env"
+    leftovers = [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+    assert not leftovers, f"temporary files must be cleaned up: {leftovers}"
+
+
+def test_env_file_concurrent_updates_keep_every_key(tmp_path):
+    import threading
+
+    env = EnvFile(tmp_path / ".env")
+    threads = [threading.Thread(target=env.update, args=({f"K{n}": str(n)},)) for n in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert env.read() == {f"K{n}": str(n) for n in range(20)}, "serialized updates must not lose keys"
