@@ -1,10 +1,14 @@
-"""HTTP GET client with capture/replay and API call logging."""
+"""HTTP GET client with SSRF guards, capture/replay, and API call logging."""
 
+import ipaddress
 import logging
+import socket
 import time
+from urllib.parse import urljoin, urlparse
 
 import requests
 
+from job_search.domain.errors import AppError, ExternalServiceError, ValidationError
 from job_search.observability import log_api_call, record_exception
 
 REQUEST_HEADERS = {
@@ -15,44 +19,136 @@ REQUEST_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+MAX_REDIRECTS = 5
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+_CHUNK_BYTES = 64 * 1024
 
 
-class CapturedResponse:
-    """A replayed response exposing the subset of ``requests.Response`` used by callers."""
+class UnsafeUrlError(ValidationError):
+    """A URL targets a non-public address or uses a disallowed scheme."""
 
-    def __init__(self, payload):
-        self.status_code = payload.get("status_code")
-        self.headers = payload.get("headers") or {}
-        self.text = payload.get("text") or ""
-        self.ok = self.status_code is not None and 200 <= int(self.status_code) < 400
+
+class HttpResponse:
+    """A fully read, size-bounded response exposing the subset of ``requests.Response`` callers use."""
+
+    def __init__(self, status_code, headers, text, replayed=False):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.text = text or ""
+        self.ok = status_code is not None and 200 <= int(status_code) < 400
+        self._replayed = replayed
+
+    @classmethod
+    def from_capture(cls, payload):
+        return cls(payload.get("status_code"), payload.get("headers"), payload.get("text"), replayed=True)
 
     def raise_for_status(self):
         if not self.ok:
-            raise requests.HTTPError(f"{self.status_code} Error replayed from capture")
+            suffix = " replayed from capture" if self._replayed else ""
+            raise requests.HTTPError(f"{self.status_code} Error{suffix}")
+
+
+def _resolve_all(host, port):
+    return [info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
 
 
 class HttpClient:
-    def __init__(self, captures, get=requests.get, timeout_seconds=30):
+    def __init__(
+        self,
+        captures,
+        get=requests.get,
+        timeout_seconds=30,
+        resolve=_resolve_all,
+        max_response_bytes=DEFAULT_MAX_RESPONSE_BYTES,
+    ):
         self._captures = captures
         self._get = get
         self._timeout_seconds = timeout_seconds
+        self._resolve = resolve
+        self._max_response_bytes = max_response_bytes
+
+    def check_url(self, url):
+        """Require http(s) and a host whose every resolved address is public.
+
+        The check runs before each request and redirect hop. It narrows but does not
+        eliminate DNS-rebinding races between resolution and connection.
+        """
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise UnsafeUrlError("URL must be an absolute http(s) URL.", "http_url_invalid_scheme")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            addresses = self._resolve(parsed.hostname, port)
+        except (OSError, UnicodeError) as exc:
+            record_exception(
+                "http_host_resolution_failed",
+                "data.http_client",
+                "check_url",
+                exc,
+                level=logging.WARNING,
+                host=parsed.hostname,
+            )
+            raise ExternalServiceError(
+                f"Could not resolve host {parsed.hostname!r}.", "http_host_unresolvable"
+            ) from exc
+        if not addresses or not all(ipaddress.ip_address(address.split("%")[0]).is_global for address in addresses):
+            raise UnsafeUrlError(
+                "URL resolves to a private, loopback, or reserved address.", "http_host_resolves_private"
+            )
+
+    def _read_limited(self, response):
+        chunks = []
+        size = 0
+        for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
+            size += len(chunk)
+            if size > self._max_response_bytes:
+                response.close()
+                raise ExternalServiceError(
+                    f"Response exceeded {self._max_response_bytes} bytes.", "http_response_too_large"
+                )
+            chunks.append(chunk)
+        body = b"".join(chunks)
+        return body.decode(response.encoding or "utf-8", errors="replace")
+
+    def _get_following_redirects(self, url):
+        self.check_url(url)
+        current = url
+        for _ in range(MAX_REDIRECTS + 1):
+            response = self._get(
+                current, headers=REQUEST_HEADERS, timeout=self._timeout_seconds, allow_redirects=False, stream=True
+            )
+            location = response.headers.get("Location")
+            if response.status_code in REDIRECT_STATUSES and location:
+                response.close()
+                current = urljoin(current, location)
+                try:
+                    self.check_url(current)
+                except UnsafeUrlError as exc:
+                    raise UnsafeUrlError(
+                        "Redirect target resolves to a private, loopback, or reserved address.",
+                        "http_redirect_blocked",
+                    ) from exc
+                continue
+            return HttpResponse(response.status_code, dict(response.headers), self._read_limited(response))
+        raise ExternalServiceError(f"More than {MAX_REDIRECTS} redirects.", "http_too_many_redirects")
 
     def fetch(self, service, url, force_refresh=False):
         request_payload = {"method": "GET", "url": url, "headers": REQUEST_HEADERS}
         cached = self._captures.read(service, "http_get", request_payload, force_refresh=force_refresh)
         if cached:
-            return CapturedResponse(cached["response"])
+            return HttpResponse.from_capture(cached["response"])
 
         started = time.monotonic()
         response = None
         error = None
         try:
-            response = self._get(url, headers=REQUEST_HEADERS, timeout=self._timeout_seconds)
+            response = self._get_following_redirects(url)
             return response
-        except requests.RequestException as exc:
+        except (requests.RequestException, AppError) as exc:
             error = exc
             record_exception(
-                "http_get_request_failed",
+                getattr(exc, "error_code", "http_get_request_failed"),
                 "data.http_client",
                 "fetch",
                 exc,

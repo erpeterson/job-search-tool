@@ -49,11 +49,21 @@ class FakeCodexRunner:
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, text=""):
+    def __init__(self, status_code=200, text="", headers=None):
         self.status_code = status_code
         self.text = text
-        self.headers = {"Content-Type": "text/html"}
+        self.headers = {"Content-Type": "text/html", **(headers or {})}
         self.ok = 200 <= status_code < 400
+        self.encoding = "utf-8"
+        self.closed = False
+
+    def iter_content(self, chunk_size=1):
+        data = self.text.encode("utf-8")
+        for start in range(0, len(data), chunk_size):
+            yield data[start : start + chunk_size]
+
+    def close(self):
+        self.closed = True
 
     def raise_for_status(self):
         if not self.ok:
@@ -69,17 +79,35 @@ class FakeHttp:
         self.routes = []
         self.calls = []
 
-    def route(self, url_part, text="", status_code=200, error=None):
-        self.routes.append((url_part, text, status_code, error))
+    def route(self, url_part, text="", status_code=200, error=None, headers=None):
+        self.routes.append((url_part, text, status_code, error, headers))
 
-    def __call__(self, url, headers=None, timeout=None):
+    def __call__(self, url, headers=None, timeout=None, allow_redirects=True, stream=False):
+        assert allow_redirects is False, "redirects must be followed manually so each hop is validated"
         self.calls.append(url)
-        for url_part, text, status_code, error in self.routes:
+        for url_part, text, status_code, error, response_headers in self.routes:
             if url_part in url:
                 if error is not None:
                     raise error
-                return FakeResponse(status_code, text)
+                return FakeResponse(status_code, text, response_headers)
         raise AssertionError(f"Unexpected HTTP GET: {url}")
+
+
+PUBLIC_TEST_IP = "93.184.216.34"
+
+
+class FakeResolver:
+    """Stands in for DNS: hosts resolve to a public address unless mapped otherwise."""
+
+    def __init__(self):
+        self.addresses = {"localhost": ["127.0.0.1"]}
+
+    def __call__(self, host, port):
+        if host in self.addresses:
+            return self.addresses[host]
+        if all(char.isdigit() or char == "." for char in host):
+            return [host]
+        return [PUBLIC_TEST_IP]
 
 
 class FakePandoc:
@@ -144,6 +172,11 @@ def http():
 
 
 @pytest.fixture
+def resolver():
+    return FakeResolver()
+
+
+@pytest.fixture
 def pandoc():
     return FakePandoc()
 
@@ -154,7 +187,7 @@ def config(workspace, environ):
 
 
 @pytest.fixture
-def container(config, environ, http, codex_runner, pandoc):
+def container(config, environ, http, codex_runner, pandoc, resolver):
     built = build_container(
         config,
         environ=environ,
@@ -162,6 +195,7 @@ def container(config, environ, http, codex_runner, pandoc):
         codex_runner=codex_runner,
         pandoc=pandoc,
         thread_factory=ImmediateThread,
+        resolve_host=resolver,
     )
     built.bootstrap()
     return built

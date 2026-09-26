@@ -83,6 +83,7 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
 | `JOB_SEARCH_ALLOW_REMOTE` | `0` | Set `1` to allow a non-loopback `JOB_SEARCH_HOST`. The API has no authentication, so only do this on a trusted network. |
 | `JOB_SEARCH_MAX_REQUEST_BYTES` | `1048576` | Largest accepted request body; larger requests get `413`. |
+| `JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES` | `5242880` | Largest job-board or posting response the app reads; larger responses fail with `http_response_too_large`. |
 | `JOB_SEARCH_DEBUG` | `0` | Flask debug mode. Refused with a non-loopback host because the debugger allows remote code execution. |
 
 Invalid values stop startup with exit code `2` and a message naming the variable.
@@ -108,6 +109,10 @@ single-user use only. It refuses to bind to a non-loopback address unless
 - `Codex CLI is unavailable`: set `CODEX_CLI_PATH` in the Configuration panel.
 - `Pandoc is required`: install Pandoc (`brew install pandoc`).
 - Job-board `403`s: see `logs/api.log`; retry later or add the job by URL.
+- Outbound fetches (job boards and posting URLs) only go to public addresses:
+  every hostname is resolved and each redirect hop (at most 5) is re-checked.
+  A posting URL that resolves or redirects to a private, loopback, or reserved
+  address fails with `http_host_resolves_private` or `http_redirect_blocked`.
 
 Codex-backed features require a locally installed and authenticated Codex CLI.
 This includes application packet generation and optional Codex scoring.

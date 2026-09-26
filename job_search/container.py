@@ -43,7 +43,9 @@ class Container:
         self.search.seed_default_queries()
 
 
-def build_container(config, environ=None, http_get=None, codex_runner=None, pandoc=None, thread_factory=None):
+def build_container(
+    config, environ=None, http_get=None, codex_runner=None, pandoc=None, thread_factory=None, resolve_host=None
+):
     """Build the service graph.
 
     ``environ`` backs runtime settings (defaults to ``os.environ``). The other
@@ -54,7 +56,12 @@ def build_container(config, environ=None, http_get=None, codex_runner=None, pand
     )
     db = Database(config.db_path)
     captures = CaptureStore(config.capture_dir, runtime.capture_cache_enabled)
-    http = HttpClient(captures, get=http_get) if http_get else HttpClient(captures)
+    http_kwargs = {"max_response_bytes": config.http_max_response_bytes}
+    if http_get:
+        http_kwargs["get"] = http_get
+    if resolve_host:
+        http_kwargs["resolve"] = resolve_host
+    http = HttpClient(captures, **http_kwargs)
     boards = JobBoardClient(http)
     codex_kwargs = {"runner": codex_runner} if codex_runner else {}
     codex = CodexClient(runtime, captures, config.workspace_root, config.codex_cli_timeout_seconds, **codex_kwargs)
