@@ -8,8 +8,8 @@ import pytest
 
 from job_search import cli
 from job_search.config import AppConfig, RuntimeSettings
-from job_search.data.env_file import EnvFile
 from job_search.domain.errors import ConfigurationError, ValidationError
+from job_search.domain.runtime_policy import RuntimeSettingsPolicy
 from job_search.observability import (
     METRICS,
     configure_console_logging,
@@ -48,15 +48,18 @@ class TestConfig:
 
     def test_runtime_settings(self, tmp_path):
         environ = {"CODEX_MODEL": "", "CODEX_CLI_PATH": "a-very-long-path"}
-        runtime = RuntimeSettings(EnvFile(tmp_path / ".env"), "codex", "startup-model", environ=environ)
+        runtime = RuntimeSettings(environ, "codex", "startup-model")
         assert runtime.codex_model() == "startup-model"
         assert runtime.codex_model(" stored ") == "stored"
         assert runtime.masked()["CODEX_CLI_PATH"]["masked"] == "a-ve...path"
         assert runtime.masked()["CODEX_MODEL"] == {"configured": False, "masked": ""}
         assert runtime.codex_cli_available() is False
-        assert RuntimeSettings.validate_updates({"CODEX_MODEL": None, "CODEX_CLI_PATH": ""}) == {"CODEX_MODEL": ""}
+        assert RuntimeSettingsPolicy.validate({"CODEX_MODEL": None, "CODEX_CLI_PATH": ""}) == {"CODEX_MODEL": ""}
         with pytest.raises(ValidationError):
-            RuntimeSettings.validate_updates({"CODEX_MODEL": "x" * 2000})
+            RuntimeSettingsPolicy.validate({"CODEX_MODEL": "x" * 2000})
+        runtime.update({"CODEX_MODEL": "new", "UNRELATED": "ignored"})
+        assert runtime.codex_model() == "new", "updates apply in memory"
+        assert environ == {"CODEX_MODEL": "", "CODEX_CLI_PATH": "a-very-long-path"}, "the seed mapping is not mutated"
 
 
 class TestCli:
@@ -165,3 +168,11 @@ def test_record_exception_logs_detail_but_message_stays_generic():
     line = json.loads(out.getvalue().splitlines()[-1])
     assert line["detail"] == "stderr: /private/path", f"detail must be logged: {line}"
     assert "/private/path" not in exc.message, "the user-facing message stays generic"
+
+
+def test_cli_does_not_mutate_the_environment(workspace):
+    app_dir = workspace / "job-search-tool"
+    (app_dir / ".env").write_text("JOB_SEARCH_PORT=6001\n", encoding="utf-8")
+    environ = {"CODEX_MODEL": "m"}
+    cli.main(["--host", "localhost"], environ=environ, serve=lambda *a: None, out=io.StringIO(), app_dir=app_dir)
+    assert environ == {"CODEX_MODEL": "m"}, f".env values and CLI args must not be written into environ: {environ}"

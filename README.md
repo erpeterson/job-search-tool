@@ -150,8 +150,9 @@ model; blank uses your Codex CLI default.
 Data is stored locally in `job-search-tool/job_search.sqlite3`.
 
 Codex CLI path and model can also be updated from the app's Configuration panel.
-Saved values are written to `job-search-tool/.env`, applied to the running
-process, and displayed only in masked form.
+Saved values are written (quoted) to `job-search-tool/.env`, applied in memory to
+the running app without modifying the process environment, and displayed only in
+masked form.
 
 Codex invocations default to a 270-second timeout. Override this when needed by
 setting `CODEX_CLI_TIMEOUT_SECONDS` in `job-search-tool/.env`.

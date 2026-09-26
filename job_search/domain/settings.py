@@ -6,9 +6,10 @@ from job_search.observability import traced
 
 
 class SettingsService:
-    def __init__(self, db, runtime, default_codex_model=""):
+    def __init__(self, db, runtime, env_file, default_codex_model=""):
         self._db = db
         self._runtime = runtime
+        self._env_file = env_file
         self._default_codex_model = default_codex_model
 
     def seed_defaults(self):
@@ -30,10 +31,11 @@ class SettingsService:
 
     @traced("runtime_config_update", "domain.settings")
     def update_runtime_config(self, updates):
-        """Persist runtime config to ``.env`` and the process; mirror the model into settings."""
+        """Persist validated runtime config to ``.env``, apply it in memory, and mirror the model setting."""
         if not updates:
             return None
-        self._runtime.apply(updates)
+        self._env_file.update(updates)
+        self._runtime.update(updates)
         with self._db.unit_of_work() as uow:
             if "CODEX_MODEL" in updates:
                 uow.settings.set("codex_model", updates["CODEX_MODEL"])

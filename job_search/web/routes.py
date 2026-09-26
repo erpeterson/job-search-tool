@@ -5,6 +5,7 @@ from flask import Blueprint, current_app, jsonify, render_template, request, sen
 from job_search.domain.errors import NotFoundError
 from job_search.domain.packets import validate_markdown_filename
 from job_search.domain.rules import JOB_STATUSES, PIPELINES, RUBRIC_FIELDS
+from job_search.domain.runtime_policy import RuntimeSettingsPolicy
 from job_search.observability import METRICS
 from job_search.web import validation as v
 from job_search.web.markdown import markdown_to_html
@@ -285,7 +286,7 @@ def api_update_settings():
 @bp.post("/api/config")
 def api_update_config():
     c = services()
-    updates = c.runtime.validate_updates(v.json_body())
+    updates = RuntimeSettingsPolicy.validate(v.json_body())
     settings = c.settings.update_runtime_config(updates)
     payload = _config_payload(c)
     if settings is not None:

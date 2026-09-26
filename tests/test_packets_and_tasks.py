@@ -96,7 +96,7 @@ class TestPacketGeneration:
         assert post(client, f"/api/jobs/{no_url}/application-packet/generate").status_code == 400
         attached = insert_job(container, url="https://example.com/2", application_packet_path="applications/x")
         assert post(client, f"/api/jobs/{attached}/application-packet/generate").status_code == 409
-        environ["CODEX_CLI_PATH"] = "/nonexistent/codex"
+        container.runtime.update({"CODEX_CLI_PATH": "/nonexistent/codex"})
         fresh = insert_job(container, url="https://example.com/3")
         response = post(client, f"/api/jobs/{fresh}/application-packet/generate")
         assert response.status_code == 409 and "unavailable" in response.get_json()["error"]
@@ -300,7 +300,7 @@ def test_pandoc_failure_response_omits_stderr(config, environ, http, codex_runne
 
 
 def test_codex_unavailable_message_omits_cli_path(client, container, environ):
-    environ["CODEX_CLI_PATH"] = "/secret/location/codex"
+    container.runtime.update({"CODEX_CLI_PATH": "/secret/location/codex"})
     job_id = insert_job(container)
     body = post(client, f"/api/jobs/{job_id}/application-packet/generate").get_json()
     assert "/secret/location" not in body["error"], f"the CLI path must not be returned: {body}"
