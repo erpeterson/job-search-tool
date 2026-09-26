@@ -9,12 +9,13 @@ This compatibility export preserves the existing CLI and test entry point.
 
 import sys
 
+from job_search.config import StartupConfigurationError
+from job_search.security import StartupSecurityError
+
 try:
     from job_search.presentation.legacy import *  # noqa: F403
-except Exception as exc:  # Startup must not expose a traceback for invalid untrusted configuration.
-    if exc.__class__.__name__ not in {"StartupConfigurationError", "SecurityConfigurationError"}:
-        raise
-    print(f"ERROR STARTUP_CONFIGURATION_FAILED: {exc}", file=sys.stderr)
+except (StartupConfigurationError, StartupSecurityError) as exc:
+    print(f'ERROR {{"error_code":"STARTUP_CONFIGURATION_FAILED","cause":"{exc}"}}', file=sys.stderr)
     raise SystemExit(2) from None
 
 

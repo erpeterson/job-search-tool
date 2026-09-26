@@ -13,7 +13,8 @@ class FakeJobs:
 
 class JobServiceTests(unittest.TestCase):
     def test_presents_repository_records_without_storage_dependency(self):
-        service = JobService(FakeJobs())
+        events = []
+        service = JobService(FakeJobs(), observe=lambda **event: events.append(event))
 
         jobs = service.list_jobs()
         job = service.get_job(9)
@@ -21,6 +22,8 @@ class JobServiceTests(unittest.TestCase):
         self.assertEqual(jobs[0]["gpt_scorecard"], {"scope": 8})
         self.assertEqual(jobs[0]["user_scorecard"], {})
         self.assertEqual(job["gpt_scorecard"], {})
+        self.assertEqual(events[0]["error_code"], "JOB_SCORECARD_PARSE_RECOVERED")
+        self.assertEqual(events[0]["record_id"], 9)
 
 
 if __name__ == "__main__":

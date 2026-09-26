@@ -275,7 +275,7 @@ closure criteria.
 
 ### P1 — observability and startup handling
 
-- [ ] **REOPEN: actually catch both startup configuration and startup security
+- [x] **REOPEN: actually catch both startup configuration and startup security
   failures, and observe remaining swallowed parsing failures.** The root
   wrapper checks for a non-existent `SecurityConfigurationError`, while the
   policy raises `StartupSecurityError`; running

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from job_search.application.contracts import JobRepository
 
 
 class JobService:
-    def __init__(self, repository: JobRepository) -> None:
+    def __init__(self, repository: JobRepository, observe: Callable[..., None] | None = None) -> None:
         self._repository = repository
+        self._observe = observe or (lambda **_fields: None)
 
     def list_jobs(self, *, include_filtered: bool = False) -> Sequence[Mapping[str, Any]]:
         return [self._present(job) for job in self._repository.list_jobs(include_filtered=include_filtered)]
@@ -53,13 +54,21 @@ class JobService:
     def create_job(self, values: Mapping[str, Any]) -> int | None:
         return self._repository.create_job(values)
 
-    @staticmethod
-    def _present(job: Mapping[str, Any]) -> dict[str, Any]:
+    def _present(self, job: Mapping[str, Any]) -> dict[str, Any]:
         result = dict(job)
         for field in ("gpt_scorecard_json", "user_scorecard_json"):
             raw = result.pop(field, "")
             try:
                 result[field.removesuffix("_json")] = json.loads(raw) if raw else {}
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                self._observe(
+                    event="job_scorecard_parse_recovered",
+                    error_code="JOB_SCORECARD_PARSE_RECOVERED",
+                    component="application.job_service",
+                    operation="present_scorecard",
+                    record_id=result.get("id"),
+                    field=field,
+                    cause=type(exc).__name__,
+                )
                 result[field.removesuffix("_json")] = {}
         return result

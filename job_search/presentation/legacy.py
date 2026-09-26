@@ -272,7 +272,7 @@ def dependency(name, fallback):
 
 def job_service() -> JobService:
     """Compose the framework-independent job use case for a request."""
-    return dependency("job_service", lambda: JobService(SqliteJobRepository(connect)))
+    return dependency("job_service", lambda: JobService(SqliteJobRepository(connect), observe=log_event))
 
 
 def company_service() -> CompanyService:
