@@ -19,7 +19,7 @@ P3 = hygiene or completeness.
 | --- | --- | --- | --- | --- |
 | T-1 | Validate `Host` and `Origin` headers | Security | P1 | Done |
 | T-2 | Refuse unsafe bind and debug combinations | Security | P1 | Done |
-| T-3 | Restrict `CODEX_CLI_PATH` updates from the web UI | Security | P1 | Open |
+| T-3 | Restrict `CODEX_CLI_PATH` updates from the web UI | Security | P1 | Done |
 | T-4 | Reject malformed or non-JSON request bodies; cap request size | Security / Validation | P1 | Open |
 | T-5 | Close SSRF gaps in the HTTP client | Security | P1 | Open |
 | T-6 | Sanitize board-sourced URLs before rendering them as links | Security | P1 | Open |

@@ -71,7 +71,7 @@ Values are read from the environment and `job-search-tool/.env`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `CODEX_CLI_PATH` | `codex` on `PATH` | Editable in the UI. |
+| `CODEX_CLI_PATH` | `codex` on `PATH` | Editable in the UI, but only as `codex` (found on `PATH`) or an absolute path to an executable named `codex`, because the value is run as a subprocess. Other values are rejected with `400`. |
 | `CODEX_MODEL` | blank (Codex default) | Editable in the UI. |
 | `CODEX_CLI_TIMEOUT_SECONDS` | `270` | Per Codex invocation. |
 | `JOB_SEARCH_ENABLE_GPT_SCORING` | `0` | `1` enables Codex scoring. Editable in the UI. |
