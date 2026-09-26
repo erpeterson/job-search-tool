@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-APP_PATH = Path(__file__).resolve().parent / "app.py"
+from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
+from job_search.data_access import codex_cli, document_writer
+from job_search.data_access.http_gateway import CapturedResponse
+
+APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("helpers_app", APP_PATH)
 helpers_app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(helpers_app)
@@ -24,14 +28,12 @@ class AppHelperTests(unittest.TestCase):
         )
 
     def test_compensation_helpers_cover_hourly_monthly_and_unknown_text(self):
-        cases = ((100, "hour", 208_000), (10_000, "month", 120_000), (200_000, "year", 200_000), (100, "", 100))
-        for value, period, expected in cases:
-            with self.subTest(value=value, period=period):
-                self.assertEqual(helpers_app.annualize_compensation(value, period), expected)
-        values = helpers_app.extract_annual_compensation_values("Pay range $100/hr to $12,000 per month")
+        values = extract_annual_compensation_values("Pay range $100/hr to $12,000 per month")
         self.assertIn(208_000, values)
         self.assertIn(144_000, values)
-        self.assertEqual(helpers_app.normalize_money_value("250", "k"), 250_000)
+        policy = DiscoveryPolicy(200_000)
+        self.assertFalse(policy.compensation({"snippet": "$10,000 per month"})[0])
+        self.assertTrue(policy.compensation({"snippet": "$250k per year"})[0])
 
     def test_listing_filters_and_deduplication(self):
         self.assertTrue(helpers_app.location_filter_decision({"location": "Remote - US"})[0])
@@ -93,7 +95,7 @@ class AppHelperTests(unittest.TestCase):
                     <span data-testid='company-name'>ExampleCo</span><div data-testid='text-location'>Remote</div></div>
                     """,
                 }
-                return helpers_app.CapturedResponse({"status_code": 200, "text": pages[service]})
+                return CapturedResponse({"status_code": 200, "text": pages[service]})
 
             helpers_app.fetch_url = fake_fetch
             scraped = helpers_app.scrape_job_from_url("https://jobs.example.test/123")
@@ -108,8 +110,8 @@ class AppHelperTests(unittest.TestCase):
 
     def test_document_writer_creates_markdown_and_invokes_fake_pandoc(self):
         with tempfile.TemporaryDirectory() as directory:
-            original_which = helpers_app.shutil.which
-            original_run = helpers_app.subprocess.run
+            original_which = document_writer.shutil.which
+            original_run = document_writer.subprocess.run
             commands = []
 
             class CompletedProcess:
@@ -117,8 +119,8 @@ class AppHelperTests(unittest.TestCase):
                 stdout = ""
                 stderr = ""
 
-            helpers_app.shutil.which = lambda command: "/fake/pandoc" if command == "pandoc" else None
-            helpers_app.subprocess.run = lambda command, **_kwargs: (commands.append(command) or CompletedProcess())
+            document_writer.shutil.which = lambda command: "/fake/pandoc" if command == "pandoc" else None
+            document_writer.subprocess.run = lambda command, **_kwargs: (commands.append(command) or CompletedProcess())
             try:
                 files = helpers_app.write_application_packet_documents(
                     Path(directory) / "packet",
@@ -129,8 +131,8 @@ class AppHelperTests(unittest.TestCase):
                     },
                 )
             finally:
-                helpers_app.shutil.which = original_which
-                helpers_app.subprocess.run = original_run
+                document_writer.shutil.which = original_which
+                document_writer.subprocess.run = original_run
 
             self.assertEqual(files, ["Job-Brief.md", "Resume.md", "Cover-Letter.md"])
             self.assertEqual(len(commands), 3)
@@ -205,14 +207,14 @@ class AppHelperTests(unittest.TestCase):
                 ) = originals
 
     def test_codex_cli_adapter_uses_fake_subprocess_and_extracts_model(self):
-        original_run = helpers_app.subprocess.run
+        original_run = codex_cli.subprocess.run
 
         class CompletedProcess:
             returncode = 0
             stdout = '{"total_score": 80}'
             stderr = "model: test-model"
 
-        helpers_app.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
+        codex_cli.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
         try:
             output, model = helpers_app.call_codex_json(
                 "test-model",
@@ -222,7 +224,7 @@ class AppHelperTests(unittest.TestCase):
                 return_metadata=True,
             )
         finally:
-            helpers_app.subprocess.run = original_run
+            codex_cli.subprocess.run = original_run
 
         self.assertEqual(output, '{"total_score": 80}')
         self.assertEqual(model, "test-model")

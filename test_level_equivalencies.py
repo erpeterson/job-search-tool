@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-APP_PATH = Path(__file__).resolve().parent / "app.py"
+APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("job_search_app", APP_PATH)
 job_search_app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(job_search_app)

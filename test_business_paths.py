@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-APP_PATH = Path(__file__).resolve().parent / "app.py"
+from job_search.data_access import codex_cli
+
+APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("business_paths_app", APP_PATH)
 app_module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(app_module)
@@ -81,7 +83,7 @@ class BusinessPathTests(unittest.TestCase):
         app_events = []
         originals = (
             app_module.OUTBOUND_HTTP_CLIENT,
-            app_module.subprocess.run,
+            codex_cli.subprocess.run,
             app_module.api_logger.info,
             app_module.event_logger.info,
         )
@@ -103,7 +105,7 @@ class BusinessPathTests(unittest.TestCase):
             stderr = f"model: test-model {sentinels['stderr']}"
 
         app_module.OUTBOUND_HTTP_CLIENT = HttpClient()
-        app_module.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
+        codex_cli.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
         app_module.api_logger.info = api_events.append
         app_module.event_logger.info = app_events.append
         environment = {"JOB_SEARCH_USE_CAPTURE_CACHE": "1", "JOB_SEARCH_ENABLE_FULL_CAPTURE": "0"}
@@ -117,7 +119,7 @@ class BusinessPathTests(unittest.TestCase):
         finally:
             (
                 app_module.OUTBOUND_HTTP_CLIENT,
-                app_module.subprocess.run,
+                codex_cli.subprocess.run,
                 app_module.api_logger.info,
                 app_module.event_logger.info,
             ) = originals

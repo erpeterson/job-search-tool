@@ -173,7 +173,7 @@ complete every acceptance criterion listed with it.
 
 ### P0 — required architecture and operational behavior
 
-- [ ] **REOPEN: complete the three-tier migration and measure the whole
+- [x] **REOPEN: complete the three-tier migration and measure the whole
   application.** `app.py` is still approximately 5,162 lines and continues to
   contain Flask handlers and inline UI, domain workflows, SQLite SQL,
   filesystem access, HTTP scraping, subprocess execution, capture storage, and
