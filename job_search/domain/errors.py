@@ -22,6 +22,10 @@ class NotFoundError(AppError):
     """A requested entity does not exist."""
 
 
+class ForbiddenError(AppError):
+    """The request is not allowed from its origin or host."""
+
+
 class ConflictError(AppError):
     """The request conflicts with current state."""
 

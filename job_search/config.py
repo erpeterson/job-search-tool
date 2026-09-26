@@ -45,6 +45,26 @@ def _int_env(environ, key, default, minimum, maximum):
     return value
 
 
+_HOST_ENTRY_PATTERN = re.compile(r"^[a-z0-9.\-\[\]:]{1,262}$")
+
+
+def _allowed_hosts(environ, host, port):
+    """Host header values the web app accepts, guarding against DNS rebinding."""
+    raw = environ.get("JOB_SEARCH_ALLOWED_HOSTS", "").strip()
+    if not raw:
+        defaults = [f"127.0.0.1:{port}", f"localhost:{port}", f"{host.lower()}:{port}"]
+        return tuple(dict.fromkeys(defaults))
+    entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
+    invalid = [entry for entry in entries if not _HOST_ENTRY_PATTERN.match(entry)]
+    if not entries or invalid:
+        raise ConfigurationError(
+            "JOB_SEARCH_ALLOWED_HOSTS must be a comma-separated list of host[:port] values; "
+            f"invalid entries: {invalid or [raw]}.",
+            "config_invalid_allowed_hosts",
+        )
+    return tuple(entries)
+
+
 @dataclass(frozen=True)
 class AppConfig:
     app_dir: Path
@@ -69,6 +89,7 @@ class AppConfig:
     codex_cli_timeout_seconds: int
     default_codex_model: str
     default_codex_cli_path: str
+    allowed_hosts: tuple
 
     @classmethod
     def from_env(cls, environ=None, app_dir=None):
@@ -79,6 +100,7 @@ class AppConfig:
         host = environ.get("JOB_SEARCH_HOST", "127.0.0.1").strip()
         if not host:
             raise ConfigurationError("JOB_SEARCH_HOST must not be empty.", "config_empty_host")
+        port = _int_env(environ, "JOB_SEARCH_PORT", 5050, 1, 65535)
         return cls(
             app_dir=app_dir,
             workspace_root=workspace_root,
@@ -93,7 +115,7 @@ class AppConfig:
             master_resume_path=workspace_root / "resume" / "Master-Resume.md",
             applications_dir=workspace_root / "applications",
             host=host,
-            port=_int_env(environ, "JOB_SEARCH_PORT", 5050, 1, 65535),
+            port=port,
             debug=environ.get("JOB_SEARCH_DEBUG", "0") == "1",
             autorun=SCHEDULER_SUPPORTED and environ.get("JOB_SEARCH_AUTORUN", "1") != "0",
             search_interval_seconds=_int_env(environ, "JOB_SEARCH_INTERVAL_SECONDS", 24 * 60 * 60, 60, 365 * 86400),
@@ -102,6 +124,7 @@ class AppConfig:
             codex_cli_timeout_seconds=_int_env(environ, "CODEX_CLI_TIMEOUT_SECONDS", 270, 1, 24 * 3600),
             default_codex_model=environ.get("CODEX_MODEL", ""),
             default_codex_cli_path=environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex",
+            allowed_hosts=_allowed_hosts(environ, host, port),
         )
 
 
