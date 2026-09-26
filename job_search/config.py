@@ -5,6 +5,8 @@ subset of settings the UI can change while the app runs; those remain backed by
 ``os.environ`` (so child processes inherit them) and are persisted to ``.env``.
 """
 
+import ipaddress
+import logging
 import os
 import re
 import shutil
@@ -12,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from job_search.domain.errors import ConfigurationError, ValidationError
+from job_search.observability import record_exception
 
 DEFAULT_APP_DIR = Path(__file__).resolve().parent.parent
 
@@ -43,6 +46,43 @@ def _int_env(environ, key, default, minimum, maximum):
             f"{key} must be between {minimum} and {maximum}; got {value}.", "config_integer_out_of_range"
         )
     return value
+
+
+def is_loopback_host(host):
+    host = host.strip("[]").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError as exc:
+        record_exception(
+            "config_host_not_ip_literal",
+            "config",
+            "is_loopback_host",
+            exc,
+            level=logging.DEBUG,
+            recovery="Hostnames other than localhost are treated as non-loopback.",
+            host=host,
+        )
+        return False
+
+
+def _check_bind_safety(environ, host, debug):
+    """The API is unauthenticated and debug mode enables remote code execution, so bind locally by default."""
+    if is_loopback_host(host):
+        return
+    if debug:
+        raise ConfigurationError(
+            f"JOB_SEARCH_DEBUG=1 is not allowed with non-loopback JOB_SEARCH_HOST={host!r}; "
+            "the Werkzeug debugger allows remote code execution.",
+            "config_debug_on_remote_host",
+        )
+    if environ.get("JOB_SEARCH_ALLOW_REMOTE", "0") != "1":
+        raise ConfigurationError(
+            f"JOB_SEARCH_HOST={host!r} exposes the unauthenticated API to the network. "
+            "Use 127.0.0.1, or set JOB_SEARCH_ALLOW_REMOTE=1 to accept the risk.",
+            "config_remote_bind_not_allowed",
+        )
 
 
 _HOST_ENTRY_PATTERN = re.compile(r"^[a-z0-9.\-\[\]:]{1,262}$")
@@ -101,6 +141,8 @@ class AppConfig:
         if not host:
             raise ConfigurationError("JOB_SEARCH_HOST must not be empty.", "config_empty_host")
         port = _int_env(environ, "JOB_SEARCH_PORT", 5050, 1, 65535)
+        debug = environ.get("JOB_SEARCH_DEBUG", "0") == "1"
+        _check_bind_safety(environ, host, debug)
         return cls(
             app_dir=app_dir,
             workspace_root=workspace_root,
@@ -116,7 +158,7 @@ class AppConfig:
             applications_dir=workspace_root / "applications",
             host=host,
             port=port,
-            debug=environ.get("JOB_SEARCH_DEBUG", "0") == "1",
+            debug=debug,
             autorun=SCHEDULER_SUPPORTED and environ.get("JOB_SEARCH_AUTORUN", "1") != "0",
             search_interval_seconds=_int_env(environ, "JOB_SEARCH_INTERVAL_SECONDS", 24 * 60 * 60, 60, 365 * 86400),
             log_max_bytes=_int_env(environ, "JOB_SEARCH_LOG_MAX_BYTES", 1024 * 1024, 1024, 1024**3),
