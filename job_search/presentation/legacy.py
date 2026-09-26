@@ -10,15 +10,12 @@ import textwrap
 import time
 import uuid
 from contextlib import nullcontext
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import quote_plus, urljoin, urlparse
 
 from dotenv import load_dotenv
 from flask import (
-    Flask,
+    Blueprint,
     Response,
     current_app,
     g,
@@ -30,27 +27,43 @@ from flask import (
 )
 from werkzeug.exceptions import HTTPException
 
-from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
 from job_search.application.company_service import CompanyService
-from job_search.application.console_query_service import ConsoleQueryService
 from job_search.application.discovery_policy import DiscoveryPolicy
-from job_search.application.discovery_service import DiscoveryService
 from job_search.application.filtering_service import FilteringService
-from job_search.application.initialization_service import InitializationService
 from job_search.application.job_scoring_policy import JobScoringPolicy
 from job_search.application.job_service import JobService
 from job_search.application.level_service import LevelService, normalize_lookup_text
 from job_search.application.manual_job_service import ManualJobService
-from job_search.application.packet_attachment_service import PacketAttachmentService
-from job_search.application.packet_generation_service import PacketGenerationService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
-from job_search.application.search_run_service import SearchRunService
 from job_search.application.settings_service import SettingsService
-from job_search.application.task_execution_service import TaskExecutionService
+from job_search.composition import background_task_service as compose_background_task_service
+from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
+from job_search.composition import company_service as compose_company_service
+from job_search.composition import console_query_service as compose_console_query_service
 from job_search.composition import database_session, infrastructure
+from job_search.composition import discovery_service as compose_discovery_service
+from job_search.composition import filtering_service as compose_filtering_service
+from job_search.composition import initialization_service as compose_initialization_service
+from job_search.composition import job_service as compose_job_service
+from job_search.composition import level_service as compose_level_service
+from job_search.composition import packet_attachment_service as compose_packet_attachment_service
+from job_search.composition import packet_content_service as compose_packet_content_service
+from job_search.composition import packet_document_writer as compose_packet_document_writer
+from job_search.composition import packet_generation_service as compose_packet_generation_service
+from job_search.composition import rescrape_service as compose_rescrape_service
+from job_search.composition import search_query_service as compose_search_query_service
+from job_search.composition import search_repository as compose_search_repository
+from job_search.composition import search_run_service as compose_search_run_service
+from job_search.composition import settings_service as compose_settings_service
+from job_search.composition import task_execution_service as compose_task_execution_service
 from job_search.config import load_runtime_settings
+from job_search.data_access.capture_store import CaptureStore
+from job_search.data_access.environment_file import update_environment_file
+from job_search.data_access.job_board_client import JobBoardClient
+from job_search.data_access.model_output_parser import parse_model_json
+from job_search.data_access.telemetry import StructuredTelemetry, configure_json_file_logging
 from job_search.errors import ClientInputError, translate_exception
 from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security, trusted_proxy_peer
@@ -99,23 +112,7 @@ CONFIG_KEYS = [
 ]
 
 
-@dataclass
-class PresentationDependencies:
-    """Injected application-service factories for HTTP delivery tests and startup."""
-
-    services: dict[str, object] = field(default_factory=dict)
-
-
-def create_app(test_config=None, dependencies=None):
-    """Create the HTTP application and attach explicitly supplied service factories."""
-    flask_app = Flask(__name__)
-    if test_config:
-        flask_app.config.update(test_config)
-    flask_app.extensions["job_search.dependencies"] = dependencies or PresentationDependencies()
-    return flask_app
-
-
-app = create_app()
+routes = Blueprint("job_search", __name__)
 REQUEST_SECURITY = load_request_security(os.environ)
 api_logger = logging.getLogger("job_search.api")
 api_logger.setLevel(logging.INFO)
@@ -125,7 +122,7 @@ event_logger.setLevel(logging.INFO)
 event_logger.propagate = False
 
 
-@app.before_request
+@routes.before_request
 def enforce_request_security():
     """Protect all external bindings before any route can mutate local state."""
     g.correlation_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
@@ -144,7 +141,7 @@ def enforce_request_security():
     return None
 
 
-@app.before_request
+@routes.before_request
 def assign_request_correlation_id():
     # The security hook initializes this first so rejected requests are traced.
     return None
@@ -158,17 +155,9 @@ class CodexCliError(RuntimeError):
         super().__init__(f"Codex CLI {operation}{suffix}. See logs and captures for details.")
 
 
-def configure_logging():
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    for logger, path in ((api_logger, API_LOG_PATH), (event_logger, APP_LOG_PATH)):
-        if logger.handlers:
-            continue
-        handler = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(handler)
-
-
-configure_logging()
+configure_json_file_logging(
+    {api_logger: API_LOG_PATH, event_logger: APP_LOG_PATH}, max_bytes=LOG_MAX_BYTES, backup_count=LOG_BACKUP_COUNT
+)
 
 RUBRIC_FIELDS = [
     "interesting_technical_problems",
@@ -270,19 +259,19 @@ def dependency(name, fallback):
 
 def job_service() -> JobService:
     """Compose the framework-independent job use case for a request."""
-    return dependency("job_service", lambda: JobService(INFRASTRUCTURE.job_repository(connect), observe=log_event))
+    return dependency("job_service", lambda: compose_job_service(DB_PATH, log_event))
 
 
 def company_service() -> CompanyService:
-    return dependency("company_service", lambda: CompanyService(INFRASTRUCTURE.company_repository(connect)))
+    return dependency("company_service", lambda: compose_company_service(DB_PATH))
 
 
 def search_query_service() -> SearchQueryService:
-    return dependency("search_query_service", lambda: SearchQueryService(INFRASTRUCTURE.query_repository(connect)))
+    return dependency("search_query_service", lambda: compose_search_query_service(DB_PATH))
 
 
 def settings_service() -> SettingsService:
-    return dependency("settings_service", lambda: SettingsService(INFRASTRUCTURE.settings_repository(connect)))
+    return dependency("settings_service", lambda: compose_settings_service(DB_PATH))
 
 
 def filtering_service() -> FilteringService:
@@ -302,12 +291,7 @@ def filtering_service() -> FilteringService:
 
     return dependency(
         "filtering_service",
-        lambda: FilteringService(
-            INFRASTRUCTURE.filter_repository(connect),
-            now,
-            gpt_scoring_enabled=gpt_scoring_enabled(),
-            observe=observe,
-        ),
+        lambda: compose_filtering_service(DB_PATH, observe),
     )
 
 
@@ -356,7 +340,7 @@ def manual_job_service() -> ManualJobService:
 
 
 def rescrape_service() -> RescrapeService:
-    return RescrapeService(
+    return compose_rescrape_service(
         INFRASTRUCTURE.job_repository(connect),
         lambda url, force_refresh: scrape_job_from_url(url, force_refresh=force_refresh),
         filtering_service().refresh_job,
@@ -364,9 +348,15 @@ def rescrape_service() -> RescrapeService:
     )
 
 
-def packet_attachment_service() -> PacketAttachmentService:
-    storage = INFRASTRUCTURE.packet_storage(ROOT, APPLICATIONS_DIR)
-    return PacketAttachmentService(INFRASTRUCTURE.job_repository(connect), storage.packet_relative_path, now)
+def packet_attachment_service():
+    return dependency("packet_attachment_service", lambda: compose_packet_attachment_service(DB_PATH))
+
+
+def packet_content_service():
+    return dependency(
+        "packet_content_service",
+        lambda: compose_packet_content_service(DB_PATH),
+    )
 
 
 def scoring_service() -> ScoringService:
@@ -384,14 +374,11 @@ def scoring_service() -> ScoringService:
 
 
 def search_repository():
-    return INFRASTRUCTURE.search_repository(connect)
+    return dependency("search_repository", lambda: compose_search_repository(DB_PATH))
 
 
 def console_query_service():
-    return dependency(
-        "console_query_service",
-        lambda: ConsoleQueryService(INFRASTRUCTURE.console_query_repository(connect, list_application_packets)),
-    )
+    return dependency("console_query_service", lambda: compose_console_query_service(DB_PATH))
 
 
 def discovery_policy() -> DiscoveryPolicy:
@@ -399,37 +386,13 @@ def discovery_policy() -> DiscoveryPolicy:
 
 
 def level_service(connection=None) -> LevelService:
-    return LevelService(INFRASTRUCTURE.level_repository(connect, connection), now)
-
-
-class _InitializationAdapter:
-    @staticmethod
-    def connection():
-        return connect()
-
-    @staticmethod
-    def initialize_schema(connection):
-        INFRASTRUCTURE.schema_initializer(connection)
-
-    @staticmethod
-    def initialize_defaults(connection, defaults):
-        INFRASTRUCTURE.read_models.initialize_defaults(connection, defaults)
-
-    @staticmethod
-    def seed_queries(connection):
-        seed_search_queries(connection)
-
-    @staticmethod
-    def remove_legacy_seeds(connection):
-        remove_hardcoded_level_equivalency_seeds(connection)
-
-    @staticmethod
-    def disable_legacy_queries(connection):
-        INFRASTRUCTURE.read_models.disable_legacy_seed_queries(connection)
+    if connection is not None:
+        return compose_level_service(DB_PATH, connection)
+    return dependency("level_service", lambda: compose_level_service(DB_PATH))
 
 
 def initialization_service():
-    return InitializationService(_InitializationAdapter())
+    return dependency("initialization_service", lambda: compose_initialization_service(DB_PATH))
 
 
 def init_db():
@@ -438,7 +401,7 @@ def init_db():
         {"gpt_threshold": "40", "user_threshold": "60", "codex_model": DEFAULT_MODEL, "last_search_at": "0"}
     )
 
-    recovered_tasks = task_repository().initialize(now())
+    recovered_tasks = background_task_service().initialize()
     if recovered_tasks:
         log_event(
             "background_tasks_recovered",
@@ -568,51 +531,35 @@ def full_capture_enabled():
     return os.environ.get("JOB_SEARCH_ENABLE_FULL_CAPTURE", "0") == "1"
 
 
-def task_repository():
-    return INFRASTRUCTURE.task_repository(DB_PATH)
+def background_task_service():
+    return dependency("background_task_service", lambda: compose_background_task_service(DB_PATH, log_event))
 
 
 def get_background_task(task_id):
-    return task_repository().get(task_id)
+    return background_task_service().get(task_id)
 
 
 def list_background_tasks(limit=10):
-    return task_repository().list(limit)
+    return background_task_service().list(limit)
 
 
 def update_background_task(task_id, **updates):
-    return task_repository().update(task_id, now(), **updates)
+    return background_task_service().update(task_id, **updates)
 
 
 def update_background_task_item(task_id, job_id, **updates):
-    return task_repository().update_item(task_id, job_id, now(), **updates)
+    return background_task_service().update_item(task_id, job_id, **updates)
 
 
-def start_background_task(operation, job_ids, worker):
-    task_id = uuid.uuid4().hex
-    created_at = now()
-    task = task_repository().create(task_id, operation, job_ids, created_at)
-    log_event("background_task_queued", task_id=task_id, operation=operation, job_ids=job_ids)
-    return task
-
-
-class _TaskExecutionAdapter:
-    @staticmethod
-    def job(job_id):
-        return console_query_service().job(job_id)
-
-    @staticmethod
-    def score(job_id):
-        return codex_scoring_workflow().populate_by_id(job_id, force_refresh=False)
-
-    @staticmethod
-    def generate_packet(job_id):
-        return packet_generation_service().generate(job_id)
+def start_background_task(operation, job_ids):
+    return background_task_service().start(operation, job_ids)
 
 
 def process_background_task_item(claim):
     """Worker callback delegated to the application-layer task dispatcher."""
-    return TaskExecutionService(_TaskExecutionAdapter()).process(claim)
+    return compose_task_execution_service(
+        console_query_service(), codex_scoring_workflow(), packet_generation_service()
+    ).process(claim)
 
 
 def masked_config():
@@ -628,132 +575,28 @@ def masked_config():
     return config
 
 
-def update_env_file(updates):
-    existing = {}
-    order = []
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in line:
-                order.append((None, line))
-                continue
-            key, value = line.split("=", 1)
-            existing[key] = value
-            order.append((key, None))
-    for key, value in updates.items():
-        existing[key] = str(value)
-        if key not in [item[0] for item in order]:
-            order.append((key, None))
-    lines = []
-    seen = set()
-    for key, original in order:
-        if key is None:
-            lines.append(original)
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        lines.append(f"{key}={existing[key]}")
-    ENV_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+telemetry = StructuredTelemetry(
+    api_logger,
+    event_logger,
+    lambda: getattr(g, "correlation_id", None) if has_request_context() else None,
+    redact_url,
+    redact_value,
+    redact_content_metadata,
+)
+log_api_call = telemetry.api_call
+log_event = telemetry.event
 
 
-def log_api_call(service, method, url, response=None, error=None, elapsed_ms=None):
-    status_code = getattr(response, "status_code", None) if response is not None else None
-    response_text = getattr(response, "text", "") if response is not None else ""
-    event = {
-        "ts": datetime.now(UTC).isoformat(),
-        "service": service,
-        "method": method,
-        "url": redact_url(url),
-        "status_code": status_code,
-        "ok": response is not None and response.ok and error is None,
-        "elapsed_ms": elapsed_ms,
-        "error_type": type(error).__name__ if error else None,
-        "message": redact_value(str(error)[:1000]) if error else None,
-        "response_content": redact_content_metadata(response_text),
-    }
-    api_logger.info(json.dumps(event, sort_keys=True))
-
-
-def log_event(event_type, **fields):
-    event = {
-        "ts": datetime.now(UTC).isoformat(),
-        "event": event_type,
-        "correlation_id": getattr(g, "correlation_id", None) if has_request_context() else None,
-        **redact_value(fields),
-    }
-    event_logger.info(json.dumps(event, sort_keys=True, default=str))
-
-
-def stable_json(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def capture_path(service, operation, request_payload):
-    digest = hashlib.sha256(stable_json(request_payload).encode("utf-8")).hexdigest()
-    return CAPTURE_DIR / service / operation / f"{digest}.json"
-
-
-def read_capture(service, operation, request_payload, force_refresh=False):
-    if force_refresh:
-        log_event("capture_bypass", service=service, operation=operation, reason="force_refresh")
-        return None
-    if not capture_cache_enabled():
-        return None
-    path = capture_path(service, operation, request_payload)
-    if not path.exists():
-        return None
-    try:
-        capture = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        log_event(
-            "capture_corruption_recovered",
-            error_code="CAPTURE_CORRUPTION_RECOVERED",
-            component="data_access.capture",
-            operation="read_capture",
-            path=str(path),
-        )
-        return None
-    log_event("capture_replay", service=service, operation=operation, path=str(path))
-    return capture
-
-
-def write_capture(service, operation, request_payload, response_payload, metadata=None):
-    if not capture_cache_enabled():
-        log_event("capture_write_skipped", service=service, operation=operation, reason="capture_disabled")
-        return None
-    path = capture_path(service, operation, request_payload)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    capture = {
-        "captured_at": datetime.now(UTC).isoformat(),
-        "service": service,
-        "operation": operation,
-        "request": redact_value(request_payload, full_capture=full_capture_enabled()),
-        "response": redact_value(response_payload, full_capture=full_capture_enabled()),
-        "metadata": redact_value(metadata or {}, full_capture=full_capture_enabled()),
-    }
-    with path.open("w", encoding="utf-8") as capture_file:
-        path.chmod(0o600)
-        capture_file.write(json.dumps(capture, indent=2, sort_keys=True, default=str) + "\n")
-    log_event("capture_write", service=service, operation=operation, path=str(path))
-    return path
-
-
-def parse_model_json(output_text):
-    if not output_text:
-        raise json.JSONDecodeError("empty response", "", 0)
-    cleaned = output_text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(cleaned[start : end + 1])
-        raise
+capture_store = CaptureStore(
+    lambda: CAPTURE_DIR,
+    capture_cache_enabled,
+    full_capture_enabled,
+    redact_value,
+    lambda event_type, **fields: log_event(event_type, **fields),
+)
+capture_path = capture_store.path
+read_capture = capture_store.read
+write_capture = capture_store.write
 
 
 def apply_filter(_connection, job_id):
@@ -928,6 +771,9 @@ def escape_html(value):
 
 
 def list_application_packets(conn):
+    catalog = dependency("packet_catalog", lambda: None)
+    if catalog is not None:
+        return catalog.list(conn)
     APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
     associated_rows = INFRASTRUCTURE.read_models.application_packet_jobs(conn)
     associated_by_path = {row["application_packet_path"]: row for row in associated_rows}
@@ -1005,7 +851,7 @@ def application_packet_has_model_attribution(payload, model):
 
 
 def write_application_packet_documents(packet_dir, payload):
-    return INFRASTRUCTURE.packet_writer().write(packet_dir, payload)
+    return compose_packet_document_writer().write(packet_dir, payload)
 
 
 def generate_application_packet_with_codex(job):
@@ -1176,78 +1022,23 @@ def calibration_examples(conn):
 
 
 def fetch_linkedin_jobs(keywords, location, force_refresh=False):
-    url = (
-        "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-        f"?keywords={quote_plus(keywords)}&location={quote_plus(location or 'United States')}&f_TPR=r86400&start=0"
-    )
-    response = fetch_url("linkedin", url, force_refresh=force_refresh)
-    response.raise_for_status()
-    parser = INFRASTRUCTURE.board_parser(clean_text, clean_url, lambda href: source_id("linkedin", href))
-    return dedupe_results(parser.linkedin(response.text, location or ""))
+    return job_board_client().linkedin(keywords, location, force_refresh=force_refresh)
 
 
 def fetch_indeed_jobs(keywords, location, force_refresh=False):
-    url = f"https://www.indeed.com/jobs?q={quote_plus(keywords)}&l={quote_plus(location or 'United States')}&fromage=1&sort=date"
-    response = fetch_url("indeed", url, force_refresh=force_refresh)
-    response.raise_for_status()
-    soup = INFRASTRUCTURE.html_parser(response.text, "html.parser")
-    jobs = []
-    for card in soup.select("[data-jk], .job_seen_beacon"):
-        link = card.select_one("a[href*='/viewjob'], a.jcs-JobTitle")
-        title = card.select_one("h2 span[title], h2 span, .jobTitle span")
-        company = card.select_one("[data-testid='company-name'], .companyName")
-        location_el = card.select_one("[data-testid='text-location'], .companyLocation")
-        href = link.get("href", "") if link else ""
-        if href.startswith("/"):
-            href = urljoin("https://www.indeed.com", href)
-        if not href or not title:
-            continue
-        jobs.append(
-            {
-                "board": "indeed",
-                "source_job_id": card.get("data-jk") or source_id("indeed", href),
-                "company": clean_text(company.get_text(" ")) if company else "",
-                "title": clean_text(title.get("title") or title.get_text(" ")),
-                "location": clean_text(location_el.get_text(" ")) if location_el else location or "",
-                "url": clean_url(href),
-                "snippet": clean_text(card.get_text(" "))[:1200],
-            }
-        )
-    return dedupe_results(jobs)
+    return job_board_client().indeed(keywords, location, force_refresh=force_refresh)
 
 
 def scrape_job_from_url(url, force_refresh=False):
-    cleaned_url = clean_url(url)
-    if not cleaned_url:
-        raise ValueError("URL is required.")
-    service = posting_service_from_url(cleaned_url)
-    response = fetch_url(service, cleaned_url, force_refresh=force_refresh)
-    response.raise_for_status()
-    return INFRASTRUCTURE.posting_parser(clean_text, clean_url, source_id).parse(cleaned_url, response.text, service)
+    return job_board_client().scrape(url, force_refresh=force_refresh)
 
 
 def fallback_job_from_url(url):
-    parsed = urlparse(url)
-    host = parsed.netloc.replace("www.", "")
-    service = posting_service_from_url(url)
-    return {
-        "company": host or "Unknown company",
-        "title": f"Job posting from {host}" if host else "Unknown title",
-        "location": "",
-        "url": clean_url(url),
-        "posting_text": "",
-        "source_board": service if service in ("linkedin", "indeed") else "manual",
-        "source_job_id": source_id(service, url),
-    }
+    return job_board_client().fallback(url)
 
 
 def posting_service_from_url(url):
-    lower = (url or "").lower()
-    if "linkedin." in lower:
-        return "linkedin"
-    if "indeed." in lower:
-        return "indeed"
-    return "manual_posting"
+    return JobBoardClient.posting_service(url)
 
 
 def selector_text(soup, selectors):
@@ -1334,6 +1125,19 @@ def fetch_url(service, url, force_refresh=False):
         OUTBOUND_HTTP_CLIENT, request_headers, read_capture, write_capture, log_api_call, redact_headers
     )
     return gateway.get(service, url, force_refresh=force_refresh)
+
+
+def job_board_client():
+    return JobBoardClient(
+        fetch_url,
+        INFRASTRUCTURE.board_parser(clean_text, clean_url, lambda href: source_id("linkedin", href)),
+        INFRASTRUCTURE.posting_parser(clean_text, clean_url, source_id),
+        INFRASTRUCTURE.html_parser,
+        clean_text,
+        clean_url,
+        source_id,
+        dedupe_results,
+    )
 
 
 def clean_text(value):
@@ -1532,16 +1336,7 @@ def score_with_codex_cli(conn, job, force_refresh=False):
     )
 
 
-class _PacketGenerationAdapter:
-    @staticmethod
-    def connection():
-        return connect()
-
-    @staticmethod
-    def job(connection, job_id):
-        return get_job(connection, job_id)
-
-    @staticmethod
+def packet_generation_service():
     def generate(job):
         result = generate_application_packet_with_codex(job)
         packet_dir = result["packet_dir"]
@@ -1552,21 +1347,14 @@ class _PacketGenerationAdapter:
             "codex_output": result.get("output_text", ""),
         }
 
-    @staticmethod
-    def save_path(connection, job_id, path, timestamp):
-        INFRASTRUCTURE.search_mutations.save_application_packet_path(connection, job_id, path, timestamp)
-
-    @staticmethod
-    def now():
-        return now()
-
-    @staticmethod
-    def log(event, **fields):
-        log_event(event, **fields)
-
-
-def packet_generation_service():
-    return PacketGenerationService(_PacketGenerationAdapter())
+    return compose_packet_generation_service(
+        connect,
+        get_job,
+        generate,
+        INFRASTRUCTURE.search_mutations.save_application_packet_path,
+        now,
+        log_event,
+    )
 
 
 def create_application_packet(_connection, job_id):
@@ -1574,42 +1362,17 @@ def create_application_packet(_connection, job_id):
     return packet_generation_service().generate(job_id)
 
 
-class _CodexScoringAdapter:
-    @staticmethod
-    def connection():
-        return connect()
-
-    @staticmethod
-    def job(connection, job_id):
-        return get_job(connection, job_id)
-
-    @staticmethod
-    def score(connection, job, *, force_refresh):
-        return score_with_codex_cli(connection, job, force_refresh=force_refresh)
-
-    @staticmethod
-    def normalize_pipeline(value, fallback):
-        return normalize_pipeline(value, fallback)
-
-    @staticmethod
-    def save(connection, job_id, values):
-        INFRASTRUCTURE.search_mutations.save_codex_score(connection, job_id, values)
-
-    @staticmethod
-    def apply_filter(connection, job_id):
-        apply_filter(connection, job_id)
-
-    @staticmethod
-    def now():
-        return now()
-
-    @staticmethod
-    def log(event, **fields):
-        log_event(event, **fields)
-
-
 def codex_scoring_workflow():
-    return CodexScoringWorkflow(_CodexScoringAdapter())
+    return compose_codex_scoring_workflow(
+        connect,
+        get_job,
+        score_with_codex_cli,
+        normalize_pipeline,
+        INFRASTRUCTURE.search_mutations.save_codex_score,
+        apply_filter,
+        now,
+        log_event,
+    )
 
 
 def populate_codex_score(conn, job_id, force_refresh=False):
@@ -1713,7 +1476,24 @@ class _DiscoveryAdapter:
 
 
 def discovery_service():
-    return DiscoveryService(_DiscoveryAdapter(), UNKNOWN_LEVEL_ASSESSMENT)
+    adapter = _DiscoveryAdapter()
+    return compose_discovery_service(
+        UNKNOWN_LEVEL_ASSESSMENT,
+        scoring_enabled=adapter.scoring_enabled,
+        scorer_available=adapter.scorer_available,
+        scorer_path=adapter.scorer_path,
+        log=adapter.log,
+        score=adapter.score,
+        create=adapter.create,
+        apply_filter=adapter.apply_filter,
+        now=adapter.now,
+        normalize_pipeline=adapter.normalize_pipeline,
+        refinement_context=adapter.refinement_context,
+        refinement_prompt=adapter.refinement_prompt,
+        refine=adapter.refine,
+        clean_text=adapter.clean_text,
+        update_query=adapter.update_query,
+    )
 
 
 def refine_search_query(conn, query_id, force_refresh=False):
@@ -1797,15 +1577,28 @@ class _SearchRunAdapter:
 
 def run_job_search(trigger="manual", force_refresh=False):
     """Run search through the application-layer orchestration service."""
-    return SearchRunService(_SearchRunAdapter()).run(trigger=trigger, force_refresh=force_refresh)
+    adapter = _SearchRunAdapter()
+    return compose_search_run_service(
+        now=adapter.now,
+        log=adapter.log,
+        repository=adapter.repository,
+        connection=adapter.connection,
+        fetch=adapter.fetch,
+        reject_reason=adapter.reject_reason,
+        level_assessment=adapter.level_assessment,
+        already_seen_reason=adapter.already_seen_reason,
+        classify=adapter.classify,
+        refine=adapter.refine,
+        is_refinement_error=adapter.is_refinement_error,
+    ).run(trigger=trigger, force_refresh=force_refresh)
 
 
-@app.get("/")
+@routes.get("/")
 def index():
     return render_template("index.html")
 
 
-@app.get("/api/state")
+@routes.get("/api/state")
 def api_state():
     include_filtered = request.args.get("include_filtered") == "1"
     state = dict(console_query_service().state(include_filtered=include_filtered))
@@ -1826,7 +1619,7 @@ def api_state():
     return jsonify(state)
 
 
-@app.get("/api/jobs/<int:job_id>")
+@routes.get("/api/jobs/<int:job_id>")
 def api_job(job_id):
     job = console_query_service().job(job_id)
     if not job:
@@ -1834,7 +1627,7 @@ def api_job(job_id):
     return jsonify({"job": job})
 
 
-@app.get("/api/application-packets")
+@routes.get("/api/application-packets")
 def api_application_packets():
     return jsonify({"application_packets": console_query_service().packets()})
 
@@ -1863,12 +1656,12 @@ def request_json_object():
     return require_json_object(request.get_json(silent=True))
 
 
-@app.get("/api/codex-tasks")
+@routes.get("/api/codex-tasks")
 def api_codex_tasks():
     return jsonify({"tasks": list_background_tasks()})
 
 
-@app.get("/api/codex-tasks/<task_id>")
+@routes.get("/api/codex-tasks/<task_id>")
 def api_codex_task(task_id):
     task = get_background_task(task_id)
     if not task:
@@ -1876,7 +1669,7 @@ def api_codex_task(task_id):
     return jsonify({"task": task})
 
 
-@app.post("/api/jobs/bulk/score-gpt")
+@routes.post("/api/jobs/bulk/score-gpt")
 def api_bulk_score_gpt():
     payload = request_json_object()
     if not gpt_scoring_enabled():
@@ -1890,11 +1683,11 @@ def api_bulk_score_gpt():
             }
         ), 409
     job_ids = clean_job_ids(payload)
-    task = start_background_task("scorecards", job_ids, bulk_score_worker)
+    task = start_background_task("scorecards", job_ids)
     return jsonify({"task": task}), 202
 
 
-@app.post("/api/jobs/bulk/application-packets/generate")
+@routes.post("/api/jobs/bulk/application-packets/generate")
 def api_bulk_generate_application_packets():
     payload = request_json_object()
     if not codex_cli_available():
@@ -1902,11 +1695,11 @@ def api_bulk_generate_application_packets():
             {"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."}
         ), 409
     job_ids = clean_job_ids(payload)
-    task = start_background_task("application_packets", job_ids, bulk_packet_worker)
+    task = start_background_task("application_packets", job_ids)
     return jsonify({"task": task}), 202
 
 
-@app.post("/api/jobs/<int:job_id>/application-packet/generate")
+@routes.post("/api/jobs/<int:job_id>/application-packet/generate")
 def api_generate_application_packet(job_id):
     job = console_query_service().job(job_id)
     if not job:
@@ -1923,7 +1716,7 @@ def api_generate_application_packet(job_id):
     ), 201
 
 
-@app.post("/api/jobs/<int:job_id>/application-packet/attach")
+@routes.post("/api/jobs/<int:job_id>/application-packet/attach")
 def api_attach_application_packet(job_id):
     payload = request_json_object()
     packet_path = optional_text(payload.get("path"), "path", max_length=2_000)
@@ -1947,7 +1740,7 @@ def api_attach_application_packet(job_id):
     return jsonify({"job": result["job"], "application_packets": console_query_service().packets()})
 
 
-@app.get("/api/jobs/<int:job_id>/application-packet/content")
+@routes.get("/api/jobs/<int:job_id>/application-packet/content")
 def api_application_packet_content(job_id):
     filename = request.args.get("file", "")
     if not filename.endswith(".md") or "/" in filename or "\\" in filename:
@@ -1958,8 +1751,8 @@ def api_application_packet_content(job_id):
     if not job.get("application_packet_path"):
         return jsonify({"error": "Job does not have an associated application packet."}), 404
     try:
-        packet_dir = application_packet_abs_path(job["application_packet_path"])
-    except ValueError as exc:
+        packet = packet_content_service().read(job["application_packet_path"], filename)
+    except (ValueError, FileNotFoundError) as exc:
         log_event(
             "packet_content_path_rejected",
             error_code="PACKET_CONTENT_PATH_REJECTED",
@@ -1969,20 +1762,10 @@ def api_application_packet_content(job_id):
             error_type=type(exc).__name__,
         )
         return jsonify({"error": str(exc)}), 404
-    file_path = (packet_dir / filename).resolve()
-    if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
-        return jsonify({"error": "Markdown file not found in associated packet."}), 404
-    return jsonify(
-        {
-            "path": repo_relative(packet_dir),
-            "file": filename,
-            "content": file_path.read_text(encoding="utf-8"),
-            "markdown_files": list_markdown_files(packet_dir),
-        }
-    )
+    return jsonify(packet)
 
 
-@app.get("/api/jobs/<int:job_id>/application-packet/render")
+@routes.get("/api/jobs/<int:job_id>/application-packet/render")
 def api_application_packet_render(job_id):
     filename = request.args.get("file", "")
     if not filename.endswith(".md") or "/" in filename or "\\" in filename:
@@ -1994,8 +1777,8 @@ def api_application_packet_render(job_id):
         if not job.get("application_packet_path"):
             return Response("Job does not have an associated application packet.", status=404, mimetype="text/plain")
         try:
-            packet_dir = application_packet_abs_path(job["application_packet_path"])
-        except ValueError as exc:
+            packet = packet_content_service().read(job["application_packet_path"], filename)
+        except (ValueError, FileNotFoundError) as exc:
             log_event(
                 "packet_render_path_rejected",
                 error_code="PACKET_RENDER_PATH_REJECTED",
@@ -2005,10 +1788,7 @@ def api_application_packet_render(job_id):
                 error_type=type(exc).__name__,
             )
             return Response(str(exc), status=404, mimetype="text/plain")
-        file_path = (packet_dir / filename).resolve()
-        if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
-            return Response("Markdown file not found in associated packet.", status=404, mimetype="text/plain")
-        markdown = file_path.read_text(encoding="utf-8")
+        markdown = packet["content"]
         body = markdown_to_html(markdown)
         title = f"{filename} - {job['company']} - {job['title']}"
         html = f"""<!doctype html>
@@ -2072,7 +1852,7 @@ def api_application_packet_render(job_id):
 </head>
 <body>
   <main>
-    <div class="meta">{escape_html(repo_relative(packet_dir))} / {escape_html(filename)}</div>
+    <div class="meta">{escape_html(packet["path"])} / {escape_html(filename)}</div>
     {body}
   </main>
 </body>
@@ -2081,7 +1861,7 @@ def api_application_packet_render(job_id):
         return Response(html, mimetype="text/html")
 
 
-@app.post("/api/jobs/<int:job_id>/scrape")
+@routes.post("/api/jobs/<int:job_id>/scrape")
 def api_rescrape_job(job_id):
     payload = request_json_object()
     force_refresh = boolean(payload.get("force_refresh"), "force_refresh", default=True)
@@ -2101,7 +1881,7 @@ def api_rescrape_job(job_id):
     return jsonify({"job": job_service().get_job(job_id), "scraped": result.scraped})
 
 
-@app.delete("/api/jobs/<int:job_id>")
+@routes.delete("/api/jobs/<int:job_id>")
 def api_delete_job(job_id):
     payload = request_json_object()
     if payload.get("confirm") != "DELETE":
@@ -2114,7 +1894,7 @@ def api_delete_job(job_id):
     return jsonify({"deleted_job_id": job_id, "jobs": console_query_service().jobs(include_filtered=True)})
 
 
-@app.get("/api/companies/<int:company_id>")
+@routes.get("/api/companies/<int:company_id>")
 def api_company_interest(company_id):
     company = console_query_service().company(company_id)
     if not company:
@@ -2122,7 +1902,7 @@ def api_company_interest(company_id):
     return jsonify({"company": company})
 
 
-@app.post("/api/companies")
+@routes.post("/api/companies")
 def api_create_company_interest():
     payload = require_json_object(request.get_json(silent=True) or {})
     company_name = optional_text(payload.get("company", ""), "company", max_length=300) or "Unknown company"
@@ -2154,7 +1934,7 @@ def api_create_company_interest():
     ), 201
 
 
-@app.post("/api/companies/<int:company_id>")
+@routes.post("/api/companies/<int:company_id>")
 def api_update_company_interest(company_id):
     payload = require_json_object(request.get_json(silent=True) or {})
     existing = console_query_service().company(company_id)
@@ -2186,7 +1966,7 @@ def api_update_company_interest(company_id):
     )
 
 
-@app.post("/api/jobs")
+@routes.post("/api/jobs")
 def api_create_job():
     payload = require_json_object(request.get_json(silent=True) or {})
     ts = now()
@@ -2221,7 +2001,7 @@ def api_create_job():
     ), 201
 
 
-@app.post("/api/search/run")
+@routes.post("/api/search/run")
 def api_run_search():
     payload = require_json_object(request.get_json(silent=True) or {})
     force_refresh = boolean(payload.get("force_refresh"), "force_refresh", default=False)
@@ -2232,7 +2012,7 @@ def api_run_search():
     )
 
 
-@app.post("/api/search/queries")
+@routes.post("/api/search/queries")
 def api_create_search_query():
     payload = require_json_object(request.get_json(silent=True) or {})
     ts = now()
@@ -2255,7 +2035,7 @@ def api_create_search_query():
     return jsonify({"search_queries": console_query_service().queries()}), 201
 
 
-@app.post("/api/search/queries/<int:query_id>")
+@routes.post("/api/search/queries/<int:query_id>")
 def api_update_search_query(query_id):
     payload = require_json_object(request.get_json(silent=True) or {})
     board = choice(payload["board"], "board", SUPPORTED_BOARDS, required=True) if "board" in payload else None
@@ -2277,7 +2057,7 @@ def api_update_search_query(query_id):
     return jsonify({"search_queries": console_query_service().queries()})
 
 
-@app.post("/api/config")
+@routes.post("/api/config")
 def api_update_config():
     payload = require_json_object(request.get_json(silent=True) or {})
     updates = {}
@@ -2300,7 +2080,7 @@ def api_update_config():
                 "capture_cache_enabled": capture_cache_enabled(),
             }
         )
-    update_env_file(updates)
+    update_environment_file(ENV_PATH, updates)
     for key, value in updates.items():
         os.environ[key] = value
     if "CODEX_MODEL" in updates:
@@ -2318,7 +2098,7 @@ def api_update_config():
     )
 
 
-@app.post("/api/admin/purge-jobs")
+@routes.post("/api/admin/purge-jobs")
 def api_purge_jobs():
     payload = require_json_object(request.get_json(silent=True) or {})
     if payload.get("confirm") != "PURGE":
@@ -2329,7 +2109,7 @@ def api_purge_jobs():
     return jsonify({"deleted_jobs": before, "jobs": state["jobs"], "discoveries": state["discoveries"]})
 
 
-@app.post("/api/jobs/<int:job_id>/score-gpt")
+@routes.post("/api/jobs/<int:job_id>/score-gpt")
 def api_score_gpt(job_id):
     result = scoring_service().score(job_id)
     if result.state == "missing":
@@ -2339,7 +2119,7 @@ def api_score_gpt(job_id):
     return jsonify({"job": result.job, "raw_score": result.raw_score})
 
 
-@app.post("/api/jobs/<int:job_id>/score-user")
+@routes.post("/api/jobs/<int:job_id>/score-user")
 def api_score_user(job_id):
     payload = require_json_object(request.get_json(silent=True) or {})
     raw_scorecard = payload.get("scorecard", {})
@@ -2355,7 +2135,7 @@ def api_score_user(job_id):
     return jsonify({"job": console_query_service().job(job_id)})
 
 
-@app.post("/api/jobs/<int:job_id>/interactions")
+@routes.post("/api/jobs/<int:job_id>/interactions")
 def api_add_interaction(job_id):
     payload = require_json_object(request.get_json(silent=True) or {})
     values = {
@@ -2372,7 +2152,7 @@ def api_add_interaction(job_id):
     return jsonify({"job": console_query_service().job(job_id)}), 201
 
 
-@app.post("/api/jobs/<int:job_id>/notes")
+@routes.post("/api/jobs/<int:job_id>/notes")
 def api_add_note(job_id):
     payload = require_json_object(request.get_json(silent=True) or {})
     note = optional_text(payload.get("note", ""), "note", max_length=20_000)
@@ -2384,7 +2164,7 @@ def api_add_note(job_id):
     return jsonify({"job": console_query_service().job(job_id)}), 201
 
 
-@app.post("/api/jobs/<int:job_id>/status")
+@routes.post("/api/jobs/<int:job_id>/status")
 def api_update_status(job_id):
     payload = require_json_object(request.get_json(silent=True) or {})
     status = choice(payload.get("status", "researching"), "status", JOB_STATUSES, required=True)
@@ -2394,7 +2174,7 @@ def api_update_status(job_id):
     return jsonify({"job": console_query_service().job(job_id)})
 
 
-@app.post("/api/settings")
+@routes.post("/api/settings")
 def api_update_settings():
     payload = require_json_object(request.get_json(silent=True) or {})
     validated = {}
@@ -2411,7 +2191,7 @@ def api_update_settings():
     )
 
 
-@app.errorhandler(Exception)
+@routes.errorhandler(Exception)
 def api_error(exc):
     if isinstance(exc, RequestValidationError):
         exc = ClientInputError(str(exc))
@@ -2449,11 +2229,11 @@ def api_error(exc):
     return jsonify(mapped.body), mapped.status_code
 
 
-def main():
+def main(application):
     init_db()
     print(f"Job Search Console running at http://{HOST}:{PORT}")
     print(f"Database: {DB_PATH}")
-    app.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)
+    application.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)
 
 
 if __name__ == "__main__":

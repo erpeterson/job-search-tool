@@ -5,10 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from job_search.presentation.factory import create_app
+
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("workflow_app", APP_PATH)
 workflow_app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(workflow_app)
+workflow_app.app = create_app(route_blueprint=workflow_app.routes)
 
 
 class ApplicationWorkflowTests(unittest.TestCase):
@@ -348,7 +351,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         )
         workflow_app.gpt_scoring_enabled = lambda: True
         workflow_app.codex_cli_available = lambda: True
-        workflow_app.start_background_task = lambda kind, ids, _worker: {"kind": kind, "job_ids": ids}
+        workflow_app.start_background_task = lambda kind, ids: {"kind": kind, "job_ids": ids}
         try:
             score = self.client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
             packets = self.client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})

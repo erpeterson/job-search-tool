@@ -3,10 +3,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from job_search.presentation.factory import create_app
+
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("job_search_app", APP_PATH)
 job_search_app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(job_search_app)
+job_search_app.app = create_app(route_blueprint=job_search_app.routes)
 
 
 class LevelEquivalencyTests(unittest.TestCase):

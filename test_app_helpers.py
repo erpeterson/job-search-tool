@@ -159,7 +159,9 @@ class AppHelperTests(unittest.TestCase):
             helpers_app.ENV_PATH = Path(directory) / ".env"
             helpers_app.ENV_PATH.write_text("# local settings\nCODEX_MODEL=old\n\n", encoding="utf-8")
             try:
-                helpers_app.update_env_file({"CODEX_MODEL": "test-model", "CODEX_CLI_PATH": "codex"})
+                helpers_app.update_environment_file(
+                    helpers_app.ENV_PATH, {"CODEX_MODEL": "test-model", "CODEX_CLI_PATH": "codex"}
+                )
                 contents = helpers_app.ENV_PATH.read_text(encoding="utf-8")
             finally:
                 helpers_app.ENV_PATH = original_env_path

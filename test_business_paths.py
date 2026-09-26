@@ -6,11 +6,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_search.data_access import codex_cli
+from job_search.presentation.factory import create_app
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("business_paths_app", APP_PATH)
 app_module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(app_module)
+app_module.app = create_app(route_blueprint=app_module.routes)
 
 
 class BusinessPathTests(unittest.TestCase):

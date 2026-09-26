@@ -1,11 +1,32 @@
 """Concrete dependency wiring kept outside presentation and application layers."""
 
+import logging
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup
 
+from job_search.application.background_task_service import BackgroundTaskService
+from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
+from job_search.application.company_service import CompanyService
+from job_search.application.console_query_service import ConsoleQueryService
+from job_search.application.discovery_service import DiscoveryService
+from job_search.application.filtering_service import FilteringService
+from job_search.application.initialization_service import InitializationService
+from job_search.application.job_service import JobService
+from job_search.application.level_service import LevelService
+from job_search.application.packet_attachment_service import PacketAttachmentService
+from job_search.application.packet_content_service import PacketContentService
+from job_search.application.packet_generation_service import PacketGenerationService
+from job_search.application.rescrape_service import RescrapeService
+from job_search.application.search_query_service import SearchQueryService
+from job_search.application.search_run_service import SearchRunService
+from job_search.application.settings_service import SettingsService
+from job_search.application.task_execution_service import TaskExecutionService
+from job_search.data_access.application_packet_catalog import ApplicationPacketCatalog
 from job_search.data_access.board_gateway import CallableBoardGateway
 from job_search.data_access.codex_cli import CodexCliGateway
 from job_search.data_access.company_repository import SqliteCompanyRepository
@@ -13,10 +34,12 @@ from job_search.data_access.console_query_repository import SqliteConsoleQueryRe
 from job_search.data_access.document_writer import PacketDocumentWriter
 from job_search.data_access.filter_repository import SqliteJobFilterRepository
 from job_search.data_access.http_gateway import CapturingHttpGateway
+from job_search.data_access.initialization_adapter import SqliteInitializationAdapter
 from job_search.data_access.job_board_parser import JobBoardParser
 from job_search.data_access.job_posting_parser import JobPostingParser
 from job_search.data_access.job_repository import SqliteJobRepository
 from job_search.data_access.level_repository import SqliteLevelRepository
+from job_search.data_access.packet_content_reader import FilesystemPacketContentReader
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.data_access.read_models import SqliteReadModels
 from job_search.data_access.schema import initialize_schema
@@ -26,6 +49,7 @@ from job_search.data_access.search_repository import SqliteSearchRepository
 from job_search.data_access.settings_repository import SqliteSettingsRepository
 from job_search.data_access.sqlite import open_connection
 from job_search.http_client import SafeHttpClient
+from job_search.presentation.dependencies import PresentationDependencies
 from job_search.task_repository import TaskRepository
 
 
@@ -94,6 +118,208 @@ def infrastructure() -> Infrastructure:
     )
 
 
+def presentation_dependencies(database_path: Path) -> PresentationDependencies:
+    """Assemble request-facing services at the composition boundary.
+
+    Route modules consume only this service registry; concrete repository
+    construction remains exclusively in this composition module.
+    """
+    adapters = infrastructure()
+
+    def connect():
+        return database_session(database_path)
+
+    def observe(event: str, **fields: Any) -> None:
+        # The web adapter supplies structured event logging.  The composition
+        # root deliberately keeps non-HTTP processes usable without Flask.
+        logging.getLogger("job_search.events").info("%s %s", event, fields)
+
+    packet_catalog = ApplicationPacketCatalog(database_path.parent, database_path.parent / "applications")
+
+    return PresentationDependencies(
+        {
+            "job_service": JobService(adapters.job_repository(connect)),
+            "company_service": CompanyService(adapters.company_repository(connect)),
+            "search_query_service": SearchQueryService(adapters.query_repository(connect)),
+            "settings_service": SettingsService(adapters.settings_repository(connect)),
+            "console_query_service": ConsoleQueryService(
+                adapters.console_query_repository(connect, packet_catalog.list)
+            ),
+            "packet_catalog": packet_catalog,
+            "packet_content_service": PacketContentService(
+                FilesystemPacketContentReader(database_path.parent, database_path.parent / "applications")
+            ),
+            "packet_attachment_service": packet_attachment_service(database_path),
+            "level_service": level_service(database_path),
+            "search_repository": adapters.search_repository(connect),
+            "filtering_service": FilteringService(
+                adapters.filter_repository(connect),
+                lambda: int(time.time()),
+                gpt_scoring_enabled=os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1",
+            ),
+            "background_task_service": BackgroundTaskService(
+                adapters.task_repository(database_path),
+                lambda: int(time.time()),
+                observe,
+            ),
+            "initialization_service": initialization_service(database_path),
+        }
+    )
+
+
+def background_task_service(database_path: Path, observe: Any) -> BackgroundTaskService:
+    """Compose durable-task commands for a process using ``database_path``."""
+    return BackgroundTaskService(TaskRepository(database_path), lambda: int(time.time()), observe)
+
+
+def initialization_service(database_path: Path) -> InitializationService:
+    """Compose startup initialization at the infrastructure boundary."""
+    return InitializationService(SqliteInitializationAdapter(database_path, lambda: int(time.time())))
+
+
+def packet_content_service(database_path: Path) -> PacketContentService:
+    """Compose packet filesystem reads outside the HTTP layer."""
+    root = database_path.parent
+    return PacketContentService(FilesystemPacketContentReader(root, root / "applications"))
+
+
+def packet_attachment_service(database_path: Path) -> PacketAttachmentService:
+    """Compose packet association persistence and filesystem validation."""
+    root = database_path.parent
+    return PacketAttachmentService(
+        SqliteJobRepository(lambda: database_session(database_path)),
+        PacketStorage(root, root / "applications").packet_relative_path,
+        lambda: int(time.time()),
+    )
+
+
+def level_service(database_path: Path, connection: Any = None) -> LevelService:
+    """Compose level-equivalency access for application workflows."""
+    return LevelService(
+        SqliteLevelRepository(lambda: database_session(database_path), connection), lambda: int(time.time())
+    )
+
+
+def search_repository(database_path: Path):
+    """Compose the search persistence adapter for application workflows."""
+    return SqliteSearchRepository(lambda: database_session(database_path))
+
+
+def console_query_service(database_path: Path) -> ConsoleQueryService:
+    """Compose console reads with their SQLite and packet-catalog adapters."""
+    root = database_path.parent
+    catalog = ApplicationPacketCatalog(root, root / "applications")
+    return ConsoleQueryService(SqliteConsoleQueryRepository(lambda: database_session(database_path), catalog.list))
+
+
+def packet_document_writer() -> PacketDocumentWriter:
+    """Compose the concrete document writer for packet-generation workflows."""
+    return PacketDocumentWriter()
+
+
+def job_service(database_path: Path, observe: Any = None) -> JobService:
+    return JobService(SqliteJobRepository(lambda: database_session(database_path)), observe=observe)
+
+
+def company_service(database_path: Path) -> CompanyService:
+    return CompanyService(SqliteCompanyRepository(lambda: database_session(database_path)))
+
+
+def search_query_service(database_path: Path) -> SearchQueryService:
+    return SearchQueryService(SqliteSearchQueryRepository(lambda: database_session(database_path)))
+
+
+def settings_service(database_path: Path) -> SettingsService:
+    return SettingsService(SqliteSettingsRepository(lambda: database_session(database_path)))
+
+
+def filtering_service(database_path: Path, observe: Any = None) -> FilteringService:
+    return FilteringService(
+        SqliteJobFilterRepository(lambda: database_session(database_path)),
+        lambda: int(time.time()),
+        gpt_scoring_enabled=os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1",
+        observe=observe,
+    )
+
+
+class _TaskExecutionOperations:
+    def __init__(self, console: Any, scoring: Any, packets: Any) -> None:
+        self._console = console
+        self._scoring = scoring
+        self._packets = packets
+
+    def job(self, job_id: int):
+        return self._console.job(job_id)
+
+    def score(self, job_id: int):
+        return self._scoring.populate_by_id(job_id, force_refresh=False)
+
+    def generate_packet(self, job_id: int):
+        return self._packets.generate(job_id)
+
+
+def task_execution_service(console: Any, scoring: Any, packets: Any) -> TaskExecutionService:
+    """Compose durable-task operations from application services, not HTTP callbacks."""
+    return TaskExecutionService(_TaskExecutionOperations(console, scoring, packets))
+
+
+class _PacketGenerationOperations:
+    def __init__(self, connection: Any, job: Any, generate: Any, save_path: Any, now: Any, log: Any) -> None:
+        self.connection = connection
+        self.job = job
+        self.generate = generate
+        self.save_path = save_path
+        self.now = now
+        self.log = log
+
+
+def packet_generation_service(
+    connection: Any, job: Any, generate: Any, save_path: Any, now: Any, log: Any
+) -> PacketGenerationService:
+    """Compose packet generation from explicit workflow ports."""
+    return PacketGenerationService(_PacketGenerationOperations(connection, job, generate, save_path, now, log))
+
+
+class _CodexScoringOperations:
+    def __init__(
+        self, connection: Any, job: Any, score: Any, normalize: Any, save: Any, apply_filter: Any, now: Any, log: Any
+    ) -> None:
+        self.connection, self.job, self.score, self.normalize_pipeline = connection, job, score, normalize
+        self.save, self.apply_filter, self.now, self.log = save, apply_filter, now, log
+
+
+def codex_scoring_workflow(
+    connection: Any, job: Any, score: Any, normalize: Any, save: Any, apply_filter: Any, now: Any, log: Any
+) -> CodexScoringWorkflow:
+    return CodexScoringWorkflow(
+        _CodexScoringOperations(connection, job, score, normalize, save, apply_filter, now, log)
+    )
+
+
+class _DiscoveryOperations:
+    def __init__(self, **operations: Any) -> None:
+        self.__dict__.update(operations)
+
+
+def discovery_service(unknown_level_assessment: str, **operations: Any) -> DiscoveryService:
+    """Compose discovery workflow ports outside the presentation layer."""
+    return DiscoveryService(_DiscoveryOperations(**operations), unknown_level_assessment)
+
+
+class _SearchRunOperations:
+    def __init__(self, **operations: Any) -> None:
+        self.__dict__.update(operations)
+
+
+def search_run_service(**operations: Any) -> SearchRunService:
+    """Compose search-run workflow ports outside the presentation layer."""
+    return SearchRunService(_SearchRunOperations(**operations))
+
+
+def rescrape_service(repository: Any, scraper: Any, refresh_filter: Any, clock: Any) -> RescrapeService:
+    return RescrapeService(repository, scraper, refresh_filter, clock)
+
+
 __all__ = [
     "BeautifulSoup",
     "CallableBoardGateway",
@@ -117,4 +343,24 @@ __all__ = [
     "initialize_schema",
     "infrastructure",
     "database_session",
+    "presentation_dependencies",
+    "background_task_service",
+    "initialization_service",
+    "packet_content_service",
+    "packet_attachment_service",
+    "level_service",
+    "search_repository",
+    "console_query_service",
+    "packet_document_writer",
+    "job_service",
+    "company_service",
+    "search_query_service",
+    "settings_service",
+    "filtering_service",
+    "task_execution_service",
+    "packet_generation_service",
+    "codex_scoring_workflow",
+    "discovery_service",
+    "search_run_service",
+    "rescrape_service",
 ]
