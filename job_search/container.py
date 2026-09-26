@@ -66,7 +66,11 @@ def build_container(
     codex_kwargs = {"runner": codex_runner} if codex_runner else {}
     codex = CodexClient(runtime, captures, config.workspace_root, config.codex_cli_timeout_seconds, **codex_kwargs)
     documents = CareerDocuments(config.career_manual_path, config.guidance_path, config.master_resume_path)
-    store = PacketStore(config.workspace_root, config.applications_dir, pandoc or PandocConverter())
+    store = PacketStore(
+        config.workspace_root,
+        config.applications_dir,
+        pandoc or PandocConverter(timeout_seconds=config.pandoc_timeout_seconds),
+    )
     scoring = ScoringService(db, runtime, codex, documents, parse_model_json)
     packets = PacketService(db, runtime, codex, documents, store, parse_model_json)
     search = SearchService(db, runtime, boards, scoring, codex, parse_model_json)
