@@ -170,6 +170,34 @@ class AppConfig:
         )
 
 
+CODEX_EXECUTABLE_NAME = "codex"
+
+
+def validate_codex_cli_path(value):
+    """Accept only ``codex`` on PATH or an absolute path to an executable named ``codex``.
+
+    The value is executed as a subprocess, so the web UI must not be able to point it
+    at an arbitrary program.
+    """
+    if value == CODEX_EXECUTABLE_NAME:
+        if shutil.which(value) is None:
+            raise ValidationError("CODEX_CLI_PATH 'codex' was not found on PATH.", "config_codex_not_on_path")
+        return value
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValidationError(
+            "CODEX_CLI_PATH must be 'codex' or an absolute path to the codex executable.",
+            "config_codex_path_not_absolute",
+        )
+    if path.name != CODEX_EXECUTABLE_NAME:
+        raise ValidationError(
+            "CODEX_CLI_PATH must point to an executable named 'codex'.", "config_codex_path_wrong_name"
+        )
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValidationError("CODEX_CLI_PATH must be an existing executable file.", "config_codex_path_not_executable")
+    return value
+
+
 class RuntimeSettings:
     """Settings editable from the UI, backed by the process environment."""
 
@@ -231,6 +259,8 @@ class RuntimeSettings:
                 raise ValidationError(f"{key} must be at most 1024 characters.", "config_value_too_long")
             if key in _BOOLEAN_RUNTIME_KEYS and value not in ("", "0", "1"):
                 raise ValidationError(f"{key} must be 0 or 1.", "config_value_not_boolean")
+            if key == "CODEX_CLI_PATH" and value:
+                validate_codex_cli_path(value)
             if value or key == "CODEX_MODEL":
                 updates[key] = value
         return updates

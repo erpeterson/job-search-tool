@@ -96,3 +96,41 @@ class TestBindSafety:
         )
         assert code == cli.EXIT_CONFIG_ERROR, f"expected exit code 2, got {code}"
         assert "JOB_SEARCH_ALLOW_REMOTE" in capsys.readouterr().err, "stderr should explain the opt-in"
+
+
+class TestCodexCliPathUpdates:
+    def post_config(self, client, value):
+        return client.post("/api/config", data=json.dumps({"CODEX_CLI_PATH": value}), content_type="application/json")
+
+    @pytest.mark.parametrize(
+        ("value", "code"),
+        [
+            ("/bin/sh", "config_codex_path_wrong_name"),
+            ("bin/codex", "config_codex_path_not_absolute"),
+            ("/nonexistent/codex", "config_codex_path_not_executable"),
+        ],
+    )
+    def test_arbitrary_executables_are_rejected(self, client, container, value, code):
+        before = blame(code)
+        response = self.post_config(client, value)
+        assert response.status_code == 400, f"{value} must be rejected, got {response.status_code}"
+        assert blame(code) == before + 1, f"expected error code {code}"
+        assert not container.config.env_path.exists(), ".env must not change when validation fails"
+
+    def test_non_executable_codex_file_is_rejected(self, client, workspace):
+        fake = workspace / "codex-dir" / "codex"
+        fake.parent.mkdir()
+        fake.write_text("not executable", encoding="utf-8")
+        response = self.post_config(client, str(fake))
+        assert response.status_code == 400, f"non-executable file must be rejected: {response.get_json()}"
+
+    def test_bare_codex_must_be_on_path(self, client, monkeypatch):
+        monkeypatch.setattr("job_search.config.shutil.which", lambda _name: None)
+        response = self.post_config(client, "codex")
+        assert response.status_code == 400, f"'codex' not on PATH must be rejected: {response.get_json()}"
+
+    def test_valid_codex_executable_is_saved(self, client, container, workspace):
+        path = str(workspace / "bin" / "codex")
+        response = self.post_config(client, path)
+        assert response.status_code == 200, f"valid codex path should be saved: {response.get_json()}"
+        assert f"CODEX_CLI_PATH={path}" in container.config.env_path.read_text(), ".env should record the path"
