@@ -261,3 +261,18 @@ class TestBoardUrlSanitizing:
         blank_links = re.findall(r'<a [^>]*target="_blank"[^>]*>', html)
         missing_rel = [link for link in blank_links if 'rel="noopener noreferrer"' not in link]
         assert not missing_rel, f"target=_blank links need rel=noopener noreferrer: {missing_rel}"
+
+
+class TestSecurityHeaders:
+    @pytest.mark.parametrize(
+        ("path", "status"),
+        [("/", 200), ("/api/state", 200), ("/api/jobs/999", 404), ("/api/does-not-exist", 404)],
+    )
+    def test_headers_on_pages_api_and_errors(self, client, path, status):
+        from job_search.web.app import SECURITY_HEADERS
+
+        response = client.get(path)
+        assert response.status_code == status, f"{path}: unexpected status {response.status_code}"
+        for name, value in SECURITY_HEADERS.items():
+            assert response.headers.get(name) == value, f"{path}: missing or wrong {name}: {response.headers.get(name)}"
+        assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"], "framing must be blocked"

@@ -23,7 +23,7 @@ P3 = hygiene or completeness.
 | T-4 | Reject malformed or non-JSON request bodies; cap request size | Security / Validation | P1 | Done |
 | T-5 | Close SSRF gaps in the HTTP client | Security | P1 | Done |
 | T-6 | Sanitize board-sourced URLs before rendering them as links | Security | P1 | Done |
-| T-7 | Add HTTP security headers | Security | P2 | Open |
+| T-7 | Add HTTP security headers | Security | P2 | Done |
 | T-8 | Stop returning raw exception text and internal paths to clients | Security / Errors | P2 | Open |
 | T-9 | Add security linting and a dependency vulnerability audit | Tooling | P2 | Open |
 | T-10 | Pin transitive dependencies | Dependencies | P2 | Open |
