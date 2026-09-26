@@ -913,7 +913,7 @@
               <tr class="${job.filtered ? "filtered" : ""} ${job.id === selectedId ? "active" : ""}" onclick="selectJob(${job.id})" tabindex="0" onkeydown="activateOnKey(event)">
                 <td class="select-cell"><input type="checkbox" aria-label="Select ${escapeAttr(job.company)} ${escapeAttr(job.title)}" ${bulkSelectedJobIds.has(job.id) ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleBulkJobSelection(${job.id}, this.checked)"></td>
                 <td><b>${escapeHtml(job.company)}</b><div class="small">${escapeHtml(job.location || "")}</div></td>
-                <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
+                <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${safeHref(job.url)}" target="_blank" rel="noopener noreferrer">posting</a></div>` : ""}</td>
                 <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
                 <td>${escapeHtml(job.status || "")}${job.application_packet_path ? '<div class="small">packet attached</div>' : ""}${job.filtered ? '<div class="small">filtered/downlevel hidden by default</div>' : ""}</td>
                 <td><b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></td>
@@ -1031,7 +1031,7 @@
               <thead><tr><th>Role</th><th>Status</th><th>Pipeline</th><th>Scores</th></tr></thead>
               <tbody>${company.jobs.map(job => `
                 <tr onclick="showPage('jobs'); selectJob(${job.id})" tabindex="0" onkeydown="activateOnKey(event)">
-                  <td>${escapeHtml(job.title)}${job.url ? `<div class="small"><a href="${escapeAttr(job.url)}" target="_blank">posting</a></div>` : ""}</td>
+                  <td>${escapeHtml(job.title)}${job.url ? `<div class="small"><a href="${safeHref(job.url)}" target="_blank" rel="noopener noreferrer">posting</a></div>` : ""}</td>
                   <td>${escapeHtml(job.status || "")}${job.downlevel ? '<div class="small">downlevel</div>' : ""}${job.filtered ? '<div class="small">filtered</div>' : ""}</td>
                   <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
                   <td>Codex ${scoreText(job.gpt_score)} · Mine ${scoreText(job.user_score)}</td>
@@ -1062,7 +1062,7 @@
           <div class="toolbar">
             <div class="grow">
               <h2>${escapeHtml(job.company)} - ${escapeHtml(job.title)}</h2>
-              <div class="meta">${escapeHtml(job.location || "")} ${job.url ? `· <a href="${escapeAttr(job.url)}" target="_blank">posting</a>` : ""}</div>
+              <div class="meta">${escapeHtml(job.location || "")} ${job.url ? `· <a href="${safeHref(job.url)}" target="_blank" rel="noopener noreferrer">posting</a>` : ""}</div>
             </div>
             <div>
               <label for="status">Status</label>
@@ -1177,7 +1177,7 @@
           <div>${(state.discoveries || []).slice(0, 12).map(d => `
             <div class="interaction">
               <b>${escapeHtml(d.company || "Unknown")}</b> - ${escapeHtml(d.title || "Unknown")}
-              <div class="meta">${escapeHtml(d.board)} · ${escapeHtml(d.location || "")} · ${d.url ? `<a href="${escapeAttr(d.url)}" target="_blank">posting</a>` : ""}</div>
+              <div class="meta">${escapeHtml(d.board)} · ${escapeHtml(d.location || "")} · ${d.url ? `<a href="${safeHref(d.url)}" target="_blank" rel="noopener noreferrer">posting</a>` : ""}</div>
               <div class="chips">
                 <span class="chip">Decision: ${escapeHtml(d.decision)}</span>
                 <span class="chip">Codex: <b class="${scoreClass(d.gpt_score)}">${scoreText(d.gpt_score)}</b></span>
@@ -1247,7 +1247,7 @@
     function openApplicationMarkdown(id) {
       const selector = document.getElementById("application_markdown_file");
       if (!selector || !selector.value) return;
-      window.open(`/api/jobs/${id}/application-packet/render?file=${encodeURIComponent(selector.value)}`, "_blank", "noopener");
+      window.open(`/api/jobs/${id}/application-packet/render?file=${encodeURIComponent(selector.value)}`, "_blank", "noopener,noreferrer");
     }
 
     async function createJob() {
@@ -1603,6 +1603,16 @@
       return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
     }
     function escapeAttr(s) { return escapeHtml(s).replace(/`/g, "&#96;"); }
+    // Only absolute http(s) URLs become links; anything else (e.g. javascript:) renders as "#".
+    function safeHref(url) {
+      try {
+        const parsed = new URL(String(url || ""));
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") return escapeAttr(parsed.href);
+      } catch (err) {
+        // Not an absolute URL; fall through to the inert placeholder.
+      }
+      return "#";
+    }
     // Lets keyboard users activate clickable table rows; ignores keys aimed at controls inside the row.
     function activateOnKey(event) {
       if (event.target !== event.currentTarget) return;
