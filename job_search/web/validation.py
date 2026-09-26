@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from datetime import date
 
 from flask import request
 
@@ -119,6 +120,16 @@ def job_ids(payload):
     return ids
 
 
+MAX_FILENAME_CHARS = 255
+
+
+def packet_filename():
+    filename = request.args.get("file", "")
+    if len(filename) > MAX_FILENAME_CHARS:
+        raise ValidationError(f"file must be at most {MAX_FILENAME_CHARS} characters.", "packet_filename_too_long")
+    return filename
+
+
 def require_confirmation(payload, word, error_code):
     if payload.get("confirm") != word:
         raise ValidationError(f"Type {word} to confirm.", error_code)
@@ -147,8 +158,10 @@ _COMPANY_TEXT_FIELDS = ("rationale", "notes", "next_step", "contacts")
 
 def company_fields(payload, partial=False):
     fields = {}
-    if not partial or "company" in payload:
-        fields["company"] = text(payload, "company") or "Unknown company"
+    if not partial:
+        fields["company"] = text(payload, "company", required=True)
+    elif "company" in payload:
+        fields["company"] = text(payload, "company")
     if not partial or "status" in payload:
         fields["status"] = choice(payload, "status", COMPANY_STATUSES, default="watching")
     if not partial or "interest_score" in payload:
@@ -163,6 +176,11 @@ def user_scorecard(payload):
     raw = payload.get("scorecard", {})
     if not isinstance(raw, dict):
         raise ValidationError("scorecard must be an object.", "user_scorecard_not_object")
+    unknown = sorted(set(raw) - set(RUBRIC_FIELDS))
+    if unknown:
+        raise ValidationError(
+            f"scorecard has unknown rubric fields: {', '.join(unknown)}.", "user_scorecard_unknown_field"
+        )
     scorecard = {}
     for field in RUBRIC_FIELDS:
         value = raw.get(field, 0)
@@ -170,12 +188,37 @@ def user_scorecard(payload):
             value = 0
         if isinstance(value, bool) or not re.match(r"^-?\d+(\.\d+)?$", str(value).strip()):
             raise ValidationError(f"scorecard.{field} must be a number.", "user_scorecard_not_number")
-        scorecard[field] = max(0, min(10, round(float(value))))
+        number = float(value)
+        if not 0 <= number <= 10:
+            raise ValidationError(f"scorecard.{field} must be between 0 and 10.", "user_scorecard_out_of_range")
+        scorecard[field] = round(number)
     return scorecard
 
 
+def iso_date(payload, key):
+    value = text(payload, key, max_length=10)
+    if not value:
+        raise ValidationError(f"{key} is required (YYYY-MM-DD).", f"field_{key}_required")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        record_exception(
+            f"field_{key}_date_parse_failed",
+            "web.validation",
+            "iso_date",
+            exc,
+            level=logging.INFO,
+            recovery="Rejected with HTTP 400.",
+        )
+        raise ValidationError(f"{key} must be a valid date in YYYY-MM-DD form.", f"field_{key}_invalid_date") from exc
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        raise ValidationError(f"{key} must be a valid date in YYYY-MM-DD form.", f"field_{key}_invalid_date")
+    return value
+
+
 def interaction(payload):
-    fields = {key: text(payload, key) for key in ("occurred_on", "person_name", "person_role", "channel", "next_step")}
+    fields = {key: text(payload, key) for key in ("person_name", "person_role", "channel", "next_step")}
+    fields["occurred_on"] = iso_date(payload, "occurred_on")
     fields.update({key: text(payload, key, max_length=LONG_TEXT) for key in ("summary", "notes_to_self")})
     return fields
 

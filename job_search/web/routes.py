@@ -103,7 +103,7 @@ def api_score_gpt(job_id):
 def api_score_user(job_id):
     payload = v.json_body()
     scorecard = v.user_scorecard(payload)
-    total = v.integer(payload, "total_score", 0, 100, nullable=True) if payload.get("total_score") else None
+    total = v.integer(payload, "total_score", 0, 100, nullable=True) if "total_score" in payload else None
     rationale = v.text(payload, "user_rationale", max_length=v.LONG_TEXT)
     return jsonify({"job": services().jobs.score_user(job_id, scorecard, rationale, total)})
 
@@ -190,7 +190,7 @@ def api_attach_application_packet(job_id):
 
 @bp.get("/api/jobs/<int:job_id>/application-packet/content")
 def api_application_packet_content(job_id):
-    document = services().packets.read_document(job_id, request.args.get("file", ""))
+    document = services().packets.read_document(job_id, v.packet_filename())
     return jsonify(
         {
             "path": document.packet_path,
@@ -203,7 +203,7 @@ def api_application_packet_content(job_id):
 
 @bp.get("/api/jobs/<int:job_id>/application-packet/render")
 def api_application_packet_render(job_id):
-    document = services().packets.read_document(job_id, request.args.get("file", ""))
+    document = services().packets.read_document(job_id, v.packet_filename())
     job = document.job
     return render_template(
         "packet.html",
