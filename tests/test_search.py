@@ -70,9 +70,8 @@ def test_run_filters_rejections_and_tracks_without_codex(client, container, http
     assert jobs["Acme"]["url"] == "https://www.linkedin.com/jobs/view/1", "tracking suffix stripped"
     assert jobs["BigCo"]["downlevel"] == 1, "cached title taxonomy marks senior SWE as downlevel"
     assert jobs["BigCo"]["filtered"] == 1, "downlevel discoveries are hidden by default"
-    assert "Codex scoring is disabled" in jobs["Acme"]["notes"], (
-        f"expected 'Codex scoring is disabled' in {jobs['Acme']['notes']!r}"
-    )
+    acme_notes = client.get(f"/api/jobs/{jobs['Acme']['id']}").get_json()["job"]["notes"]
+    assert "Codex scoring is disabled" in acme_notes, f"notes should explain the missing score: {acme_notes}"
 
 
 def test_rerun_skips_already_tracked_and_replays_capture(client, container, http):

@@ -17,6 +17,8 @@ from job_search.domain.rules import RUBRIC_FIELDS
 from job_search.domain.text import append_note_text
 from job_search.observability import log_event, record_exception, traced
 
+DEFAULT_LIST_LIMIT = 2000
+MAX_LIST_LIMIT = 5000
 _BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "metadata.google.internal"}
 
 
@@ -71,9 +73,14 @@ class JobService:
             raise NotFoundError("Job not found", "job_not_found")
         return job
 
-    def list(self, include_filtered=False):
+    def list(self, include_filtered=False, limit=DEFAULT_LIST_LIMIT, offset=0):
+        """Job summaries (full details come from ``get``), newest first, at most ``limit`` rows."""
         with self._db.unit_of_work() as uow:
-            return uow.jobs.list(include_filtered=include_filtered)
+            return uow.jobs.list(include_filtered=include_filtered, limit=limit, offset=offset)
+
+    def count(self, include_filtered=False):
+        with self._db.unit_of_work() as uow:
+            return uow.jobs.count(include_filtered=include_filtered)
 
     @traced("manual_job_create", "domain.jobs")
     def create_manual(self, fields, force_refresh=False):

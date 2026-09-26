@@ -1,6 +1,7 @@
 """Scoring thresholds and runtime configuration use cases."""
 
 from job_search.domain.job_filter import apply_job_filters
+from job_search.domain.jobs import DEFAULT_LIST_LIMIT
 from job_search.domain.rules import DEFAULT_SETTINGS
 from job_search.domain.runtime_policy import RuntimeSettingsPolicy
 from job_search.observability import traced
@@ -28,7 +29,7 @@ class SettingsService:
             for key, value in updates.items():
                 uow.settings.set(key, value)
             apply_job_filters(uow, self._runtime.gpt_scoring_enabled())
-            return uow.settings.all(), uow.jobs.list(include_filtered=True)
+            return uow.settings.all(), uow.jobs.list(include_filtered=True, limit=DEFAULT_LIST_LIMIT)
 
     def apply_runtime_config(self, payload):
         """Validate a runtime config payload and apply it. Returns settings, or None when nothing changed."""

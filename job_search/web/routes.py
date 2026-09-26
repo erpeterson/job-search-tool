@@ -36,11 +36,13 @@ def index():
 def api_state():
     c = services()
     include_filtered = request.args.get("include_filtered") == "1"
+    limit, offset = v.list_window()
     return jsonify(
         {
             **_config_payload(c),
             "settings": c.settings.all(),
-            "jobs": c.jobs.list(include_filtered=include_filtered),
+            "jobs": c.jobs.list(include_filtered=include_filtered, limit=limit, offset=offset),
+            "jobs_total": c.jobs.count(include_filtered=include_filtered),
             "company_interests": c.companies.list(),
             "search_queries": c.search.list_queries(),
             "search_runs": c.search.list_runs(),

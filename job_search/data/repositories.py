@@ -36,6 +36,30 @@ JOB_COLUMNS = frozenset(
 )
 
 
+JOB_SUMMARY_COLUMNS = ", ".join(
+    (
+        "id",
+        "created_at",
+        "updated_at",
+        "company",
+        "title",
+        "url",
+        "location",
+        "pipeline",
+        "status",
+        "gpt_score",
+        "user_score",
+        "filtered",
+        "source_board",
+        "source_job_id",
+        "discovered_at",
+        "level_assessment",
+        "downlevel",
+        "application_packet_path",
+    )
+)
+
+
 def _chunks(values, size=500):
     """Split values so IN (...) lists stay under SQLite's bound-parameter limit."""
     for start in range(0, len(values), size):
@@ -101,12 +125,19 @@ class JobRepository:
     def exists(self, job_id):
         return self._conn.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone() is not None
 
-    def list(self, include_filtered=False):
-        query = "SELECT * FROM jobs"
-        if not include_filtered:
-            query += " WHERE filtered = 0"
-        query += " ORDER BY updated_at DESC, created_at DESC"
-        return [_job_from_row(row) for row in self._conn.execute(query)]
+    def list(self, include_filtered=False, limit=None, offset=0):
+        """Summary rows for list views: no posting text, notes, rationales, or scorecards."""
+        where = "" if include_filtered else " WHERE filtered = 0"
+        query = f"SELECT {JOB_SUMMARY_COLUMNS} FROM jobs{where} ORDER BY updated_at DESC, created_at DESC"  # noqa: S608 - constant SQL fragments
+        params = ()
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params = (limit, offset)
+        return [_row_to_dict(row) for row in self._conn.execute(query, params)]
+
+    def count(self, include_filtered=False):
+        where = "" if include_filtered else " WHERE filtered = 0"
+        return self._conn.execute(f"SELECT COUNT(*) FROM jobs{where}").fetchone()[0]  # noqa: S608 - constant fragment
 
     def existing_urls(self, urls):
         """Return the subset of ``urls`` already tracked, using one query per 500 URLs."""
