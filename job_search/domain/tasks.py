@@ -5,11 +5,12 @@ import threading
 import uuid
 
 from job_search.domain.clock import now
-from job_search.domain.errors import AppError
+from job_search.domain.errors import AppError, CapacityError, ConflictError
 from job_search.domain.scoring import score_total
 from job_search.observability import correlation_scope, log_event, record_exception
 
 GENERIC_ITEM_ERROR = "Unexpected error; see logs for details."
+ACTIVE_STATUSES = ("queued", "running")
 JOB_NOT_FOUND_CODES = {"score_job_not_found", "packet_job_not_found"}
 
 
@@ -22,10 +23,11 @@ def _snapshot(task):
 class BackgroundTaskRegistry:
     """Thread-safe task registry. Finished tasks beyond ``max_retained`` are evicted oldest-first."""
 
-    def __init__(self, max_retained=50, thread_factory=threading.Thread):
+    def __init__(self, max_retained=50, thread_factory=threading.Thread, max_running=2):
         self._tasks = {}
         self._lock = threading.Lock()
         self._max_retained = max_retained
+        self._max_running = max_running
         self._thread_factory = thread_factory
 
     def get(self, task_id):
@@ -90,6 +92,18 @@ class BackgroundTaskRegistry:
             ],
         }
         with self._lock:
+            active = [t for t in self._tasks.values() if t["status"] in ACTIVE_STATUSES]
+            if len(active) >= self._max_running:
+                raise CapacityError(
+                    f"{len(active)} background tasks are already running; try again when one finishes.",
+                    "background_task_capacity_reached",
+                )
+            busy = sorted({item["job_id"] for t in active for item in t["items"]} & set(job_ids))
+            if busy:
+                raise ConflictError(
+                    f"Jobs already being processed by another task: {', '.join(map(str, busy))}.",
+                    "background_task_job_busy",
+                )
             self._evict_finished()
             self._tasks[task_id] = task
         log_event("background_task_started", task_id=task_id, operation=operation_name, job_ids=job_ids)

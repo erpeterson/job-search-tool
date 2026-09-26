@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from conftest import SCORE_RESPONSE, FakePandoc, insert_job, wait_for_task
 
 MODEL = "gpt-test"
@@ -311,3 +312,64 @@ def test_codex_unavailable_message_omits_cli_path(client, container, environ):
     job_id = insert_job(container)
     body = post(client, f"/api/jobs/{job_id}/application-packet/generate").get_json()
     assert "/secret/location" not in body["error"], f"the CLI path must not be returned: {body}"
+
+
+class TestTaskConcurrency:
+    class DeferredThread:
+        """Never runs the worker, so tasks stay queued."""
+
+        def __init__(self, target, args=(), daemon=None, name=None):
+            pass
+
+        def start(self):
+            pass
+
+    def registry(self):
+        from job_search.domain.tasks import BackgroundTaskRegistry
+
+        return BackgroundTaskRegistry(max_running=2, thread_factory=self.DeferredThread)
+
+    def test_third_running_task_is_rejected(self):
+        from job_search.domain.errors import CapacityError
+
+        registry = self.registry()
+        registry.start("op", [1], lambda *_: None)
+        registry.start("op", [2], lambda *_: None)
+        with pytest.raises(CapacityError) as info:
+            registry.start("op", [3], lambda *_: None)
+        assert info.value.error_code == "background_task_capacity_reached", info.value.error_code
+
+    def test_job_already_in_a_task_is_rejected(self):
+        from job_search.domain.errors import ConflictError
+
+        registry = self.registry()
+        registry.start("op", [1, 2], lambda *_: None)
+        with pytest.raises(ConflictError) as info:
+            registry.start("op", [2, 3], lambda *_: None)
+        assert "2" in info.value.message and info.value.error_code == "background_task_job_busy", info.value.message
+
+    def test_capacity_error_maps_to_429(self, client, container, monkeypatch, enable_scoring):
+        from job_search.domain.errors import CapacityError
+
+        def full(*_args, **_kwargs):
+            raise CapacityError("2 background tasks are already running.", "background_task_capacity_reached")
+
+        monkeypatch.setattr(container.tasks, "start", full)
+        response = post(client, "/api/search/run")
+        assert response.status_code == 429, f"capacity errors must return 429: {response.get_json()}"
+
+    def test_manual_add_still_saves_when_task_capacity_is_full(
+        self, client, container, http, monkeypatch, enable_scoring
+    ):
+        from job_search.domain.errors import CapacityError
+
+        http.route("example.com", "<html><h1>Architect</h1></html>")
+
+        def full(*_args, **_kwargs):
+            raise CapacityError("2 background tasks are already running.", "background_task_capacity_reached")
+
+        monkeypatch.setattr(container.tasks, "start", full)
+        response = post(client, "/api/jobs", {"url": "https://example.com/jobs/cap", "pipeline": "Wildcards"})
+        body = response.get_json()
+        assert response.status_code == 201, f"the job must still be saved: {body}"
+        assert body["score_task"] is None and "already running" in body["score_error"], body

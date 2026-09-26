@@ -162,6 +162,7 @@ class AppConfig:
     http_timeout_seconds: int
     db_timeout_seconds: int
     max_retained_tasks: int
+    max_running_tasks: int
     profile_path: Path
 
     @classmethod
@@ -222,6 +223,7 @@ class AppConfig:
             http_timeout_seconds=_int_env(environ, "JOB_SEARCH_HTTP_TIMEOUT_SECONDS", 30, 1, 600),
             db_timeout_seconds=_int_env(environ, "JOB_SEARCH_DB_TIMEOUT_SECONDS", 30, 1, 600),
             profile_path=_profile_path(environ, workspace_root, app_dir),
+            max_running_tasks=_int_env(environ, "JOB_SEARCH_MAX_RUNNING_TASKS", 2, 1, 32),
             max_retained_tasks=_int_env(environ, "JOB_SEARCH_MAX_RETAINED_TASKS", 50, 1, 10_000),
             http_max_response_bytes=_int_env(
                 environ, "JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES", 5 * 1024**2, 1024, 256 * 1024**2

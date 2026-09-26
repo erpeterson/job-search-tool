@@ -89,7 +89,7 @@ def build_container(
     scoring = ScoringService(db, runtime, codex, documents, parse_model_json, profile)
     packets = PacketService(db, runtime, codex, documents, store, parse_model_json)
     search = SearchService(db, runtime, boards, scoring, codex, parse_model_json, profile)
-    task_kwargs = {"max_retained": config.max_retained_tasks}
+    task_kwargs = {"max_retained": config.max_retained_tasks, "max_running": config.max_running_tasks}
     if thread_factory:
         task_kwargs["thread_factory"] = thread_factory
     tasks = BackgroundTaskRegistry(**task_kwargs)

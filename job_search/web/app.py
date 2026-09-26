@@ -9,6 +9,7 @@ from werkzeug.exceptions import HTTPException
 
 from job_search.domain.errors import (
     AppError,
+    CapacityError,
     ConflictError,
     DependencyUnavailableError,
     ExternalServiceError,
@@ -48,6 +49,7 @@ STATUS_BY_ERROR = (
     (NotFoundError, 404),
     (ConflictError, 409),
     (UnsupportedMediaTypeError, 415),
+    (CapacityError, 429),
     (DependencyUnavailableError, 409),
     (ExternalServiceError, 502),
 )
