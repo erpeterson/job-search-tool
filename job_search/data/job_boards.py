@@ -41,6 +41,12 @@ _DESCRIPTION_SELECTORS = [
 ]
 
 
+def is_http_url(url):
+    """True for absolute http(s) URLs; board markup could otherwise inject ``javascript:`` links."""
+    parsed = urlparse(url or "")
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
 def posting_service_from_url(url):
     lower = (url or "").lower()
     if "linkedin." in lower:
@@ -145,6 +151,8 @@ class LinkedInBoard:
             if not link or not title:
                 continue
             href = clean_url(link.get("href", ""))
+            if not is_http_url(href):
+                continue
             jobs.append(
                 {
                     "board": self.name,
@@ -179,7 +187,7 @@ class IndeedBoard:
             href = link.get("href", "") if link else ""
             if href.startswith("/"):
                 href = urljoin("https://www.indeed.com", href)
-            if not href or not title:
+            if not is_http_url(href) or not title:
                 continue
             jobs.append(
                 {

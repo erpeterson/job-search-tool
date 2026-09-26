@@ -231,3 +231,33 @@ class TestSsrfGuards:
 
         client._resolve = fail
         assert self.error_code(client, "https://nowhere.invalid/") == "http_host_unresolvable"
+
+
+class TestBoardUrlSanitizing:
+    def test_linkedin_parser_drops_non_http_links(self):
+        from job_search.data.job_boards import LinkedInBoard
+
+        html = (
+            '<li><a class="base-card__full-link" href="javascript:alert(1)">x</a><h3>Evil Architect</h3></li>'
+            '<li><a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/1">x</a><h3>Architect</h3></li>'
+        )
+        titles = [job["title"] for job in LinkedInBoard().parse(html, "Remote")]
+        assert titles == ["Architect"], f"javascript: links must be dropped, got {titles}"
+
+    def test_indeed_parser_drops_non_http_links(self):
+        from job_search.data.job_boards import IndeedBoard
+
+        html = '<div data-jk="1"><h2><span>T</span></h2><a class="jcs-JobTitle" href="javascript:alert(1)">x</a></div>'
+        assert IndeedBoard().parse(html, "Remote") == [], "javascript: links must be dropped"
+
+    def test_every_ui_href_goes_through_safe_href(self):
+        import re
+        from pathlib import Path
+
+        html = (Path(__file__).parent.parent / "job_search" / "web" / "static" / "index.html").read_text()
+        hrefs = re.findall(r'href="([^"]*)"', html)
+        unsafe = [href for href in hrefs if not href.startswith("${safeHref(")]
+        assert hrefs and not unsafe, f"hrefs must use safeHref(): {unsafe}"
+        blank_links = re.findall(r'<a [^>]*target="_blank"[^>]*>', html)
+        missing_rel = [link for link in blank_links if 'rel="noopener noreferrer"' not in link]
+        assert not missing_rel, f"target=_blank links need rel=noopener noreferrer: {missing_rel}"
