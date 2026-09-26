@@ -2,7 +2,7 @@
 
 import json
 
-from conftest import SCORE_RESPONSE, FakePandoc, insert_job
+from conftest import SCORE_RESPONSE, FakePandoc, insert_job, wait_for_task
 
 MODEL = "gpt-test"
 
@@ -20,16 +20,23 @@ def post(client, path, payload=None):
     return client.post(path, data=json.dumps(payload or {}), content_type="application/json")
 
 
+def generate(client, job_id):
+    """Start packet generation and return the finished task (tasks run synchronously in tests)."""
+    response = post(client, f"/api/jobs/{job_id}/application-packet/generate")
+    assert response.status_code == 202, f"generation should start as a task: {response.get_json()}"
+    return wait_for_task(client, response.get_json()["task"])
+
+
 class TestPacketGeneration:
     def test_generate_writes_markdown_and_docx(self, client, container, codex_runner, pandoc, workspace):
         job_id = insert_job(container, source_job_id="linkedin:1")
         codex_runner.respond(packet_response())
 
-        response = post(client, f"/api/jobs/{job_id}/application-packet/generate")
+        task = generate(client, job_id)
 
-        body = response.get_json()
-        assert response.status_code == 201, body
-        packet_dir = workspace / body["packet"]["path"]
+        assert task["status"] == "complete", f"generation should succeed: {task}"
+        packet = task["result"]["packet"]
+        packet_dir = workspace / packet["path"]
         assert sorted(p.name for p in packet_dir.iterdir()) == [
             "Cover-Letter.docx",
             "Cover-Letter.md",
@@ -38,7 +45,8 @@ class TestPacketGeneration:
             "Resume.docx",
             "Resume.md",
         ]
-        assert body["job"]["application_packet_path"] == body["packet"]["path"]
+        job = client.get(f"/api/jobs/{job_id}").get_json()["job"]
+        assert job["application_packet_path"] == packet["path"], "the packet is associated with the job"
         prompt = codex_runner.calls[0]["input"]
         assert "Use evidence only." in prompt, "packet rules from the Career Manual are included"
         assert "--sandbox" in codex_runner.calls[0]["command"]
@@ -48,8 +56,8 @@ class TestPacketGeneration:
         job_id = insert_job(container)
         codex_runner.respond(packet_response(model=None), model=MODEL)
         codex_runner.respond(packet_response(), model=MODEL)
-        response = post(client, f"/api/jobs/{job_id}/application-packet/generate")
-        assert response.status_code == 201
+        task = generate(client, job_id)
+        assert task["status"] == "complete", f"the retry should succeed: {task}"
         assert "codex_generation_metadata" in codex_runner.calls[1]["input"]
         assert "-m" in codex_runner.calls[1]["command"], "retry pins the model reported by the first call"
 
@@ -57,15 +65,16 @@ class TestPacketGeneration:
         job_id = insert_job(container)
         codex_runner.respond(packet_response(model=None))
         codex_runner.respond(packet_response(model=None))
-        response = post(client, f"/api/jobs/{job_id}/application-packet/generate")
-        assert response.status_code == 502
-        assert "attribution" in response.get_json()["error"]
+        task = generate(client, job_id)
+        assert task["status"] == "error", f"generation should fail: {task}"
+        assert "attribution" in task["message"], task["message"]
         assert list((workspace / "applications").glob("*")) == [], "no partial packet is published"
 
     def test_fails_when_model_unreported(self, client, container, codex_runner):
         job_id = insert_job(container)
         codex_runner.respond(packet_response(), model="")
-        assert post(client, f"/api/jobs/{job_id}/application-packet/generate").status_code == 502
+        task = generate(client, job_id)
+        assert task["error_code"] == "packet_model_unreported", f"unexpected outcome: {task}"
 
     def test_pandoc_failure_publishes_nothing(self, config, environ, http, codex_runner, workspace):
         from conftest import FakeResolver, ImmediateThread, make_client
@@ -85,10 +94,10 @@ class TestPacketGeneration:
         client = make_client(container)
         job_id = insert_job(container)
         codex_runner.respond(packet_response())
-        response = post(client, f"/api/jobs/{job_id}/application-packet/generate")
-        assert response.status_code == 502
-        assert "Pandoc failed for Resume.md" in response.get_json()["error"]
-        assert list((workspace / "applications").glob("*")) == []
+        task = generate(client, job_id)
+        assert task["status"] == "error", f"generation should fail: {task}"
+        assert "Pandoc failed for Resume.md" in task["message"], task["message"]
+        assert list((workspace / "applications").glob("*")) == [], "no partial packet is published"
 
     def test_generate_preconditions(self, client, container, environ):
         assert post(client, "/api/jobs/999/application-packet/generate").status_code == 404
@@ -292,11 +301,9 @@ def test_pandoc_failure_response_omits_stderr(config, environ, http, codex_runne
     container.bootstrap()
     job_id = insert_job(container)
     codex_runner.respond(packet_response())
-    response = post(make_client(container), f"/api/jobs/{job_id}/application-packet/generate")
-    body = response.get_json()
-    assert response.status_code == 502, f"pandoc failure should be 502: {body}"
-    assert "SECRET" not in json.dumps(body), f"stderr must not be returned to the client: {body}"
-    assert "pandoc_conversion_failed" in body["error"] or "Pandoc conversion failed" in body["error"], body
+    task = generate(make_client(container), job_id)
+    assert task["error_code"] == "pandoc_conversion_failed", f"pandoc failure expected: {task}"
+    assert "SECRET" not in json.dumps(task), f"stderr must not be returned to the client: {task}"
 
 
 def test_codex_unavailable_message_omits_cli_path(client, container, environ):

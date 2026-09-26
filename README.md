@@ -117,6 +117,31 @@ The app is served by the Werkzeug development server and is meant for local,
 single-user use only. It refuses to bind to a non-loopback address unless
 `JOB_SEARCH_ALLOW_REMOTE=1` is set.
 
+## Long-Running Work
+
+Decision (T-27): work that calls Codex or runs a whole search happens in
+background tasks, not inside HTTP requests. These endpoints return `202` with a
+`task`, and the UI polls `GET /api/codex-tasks/<id>` until `status` is
+`complete` (the outcome is in `result`) or `error` (see `message` and
+`error_code`):
+
+- `POST /api/search/run`
+- `POST /api/jobs/<id>/score-gpt`
+- `POST /api/jobs/<id>/application-packet/generate`
+- `POST /api/jobs/bulk/score-gpt` and `POST /api/jobs/bulk/application-packets/generate`
+- `POST /api/jobs` returns `201` with the saved job and, when Codex is
+  available, a `score_task` for the automatic score.
+
+Preconditions (job exists, Codex available, no packet yet) are still checked
+synchronously, so those errors come back immediately as `4xx`.
+
+Upper bound for synchronous handlers: apart from local database and file work,
+the only outbound call made inside a request is the posting scrape in
+`POST /api/jobs` and `POST /api/jobs/<id>/scrape`. Each fetch has an overall
+deadline of `JOB_SEARCH_HTTP_TIMEOUT_SECONDS x 6` (initial request plus up to 5
+redirects; 180 seconds by default), after which it fails with
+`http_fetch_deadline_exceeded`.
+
 ## Errors, Logs, And Troubleshooting
 
 - State-changing requests must send JSON (`Content-Type: application/json`) or

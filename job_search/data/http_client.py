@@ -102,10 +102,24 @@ class HttpClient:
                 "URL resolves to a private, loopback, or reserved address.", "http_host_resolves_private"
             )
 
-    def _read_limited(self, response):
+    @property
+    def deadline_seconds(self):
+        """Upper bound on one fetch, including redirects and slow bodies."""
+        return self._timeout_seconds * (MAX_REDIRECTS + 1)
+
+    def _check_deadline(self, deadline, response=None):
+        if time.monotonic() > deadline:
+            if response is not None:
+                response.close()
+            raise ExternalServiceError(
+                f"Request exceeded the {self.deadline_seconds}-second fetch deadline.", "http_fetch_deadline_exceeded"
+            )
+
+    def _read_limited(self, response, deadline):
         chunks = []
         size = 0
         for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
+            self._check_deadline(deadline, response)
             size += len(chunk)
             if size > self._max_response_bytes:
                 response.close()
@@ -117,9 +131,11 @@ class HttpClient:
         return body.decode(response.encoding or "utf-8", errors="replace")
 
     def _get_following_redirects(self, url):
+        deadline = time.monotonic() + self.deadline_seconds
         self.check_url(url)
         current = url
         for _ in range(MAX_REDIRECTS + 1):
+            self._check_deadline(deadline)
             response = self._get(
                 current, headers=REQUEST_HEADERS, timeout=self._timeout_seconds, allow_redirects=False, stream=True
             )
@@ -135,7 +151,7 @@ class HttpClient:
                         "http_redirect_blocked",
                     ) from exc
                 continue
-            return HttpResponse(response.status_code, dict(response.headers), self._read_limited(response))
+            return HttpResponse(response.status_code, dict(response.headers), self._read_limited(response, deadline))
         raise ExternalServiceError(f"More than {MAX_REDIRECTS} redirects.", "http_too_many_redirects")
 
     def fetch(self, service, url, force_refresh=False):

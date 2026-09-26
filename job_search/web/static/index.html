@@ -860,6 +860,17 @@
       status.innerHTML = `${["running", "queued"].includes(currentTask.status) ? '<span class="spinner"></span> ' : ""}${escapeHtml(parts.join(" · "))}`;
     }
 
+    // Long-running work (search, scoring, packets) runs as a server task; poll until it finishes.
+    async function waitForTask(task, label) {
+      let current = task;
+      while (["queued", "running"].includes(current.status)) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        ({ task: current } = await api(`/api/codex-tasks/${current.id}`, { activityLabel: label }));
+      }
+      if (current.status === "error") throw new Error(current.message || "Task failed");
+      return current;
+    }
+
     function startBulkTaskPolling(taskId) {
       activeBulkTaskId = taskId;
       localStorage.setItem("activeBulkTaskId", taskId);
@@ -1211,15 +1222,15 @@
 
     async function generateApplicationPacket(id) {
       try {
-        const result = await api(`/api/jobs/${id}/application-packet/generate`, {
+        const { task } = await api(`/api/jobs/${id}/application-packet/generate`, {
           method: "POST",
           body: "{}",
           activityLabel: "Generating application packet",
         });
-        const job = result.job;
-        if (result.packet && result.packet.warning) alert(result.packet.warning);
-        selectedId = job.id;
-        selectedJob = job;
+        const finished = await waitForTask(task, "Generating application packet");
+        const packet = finished.result && finished.result.packet;
+        if (packet && packet.warning) alert(packet.warning);
+        selectedId = id;
         await load();
       } catch (err) {
         alert(err.message);
@@ -1256,12 +1267,20 @@
         pipeline: document.getElementById("pipeline").value,
         force_refresh: document.getElementById("manual_force_refresh").checked,
       };
-      const { job, score_error: scoreError } = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload), activityLabel: "Adding and scoring job" });
+      const { job, score_error: scoreError, score_task: scoreTask } = await api("/api/jobs", { method: "POST", body: JSON.stringify(payload), activityLabel: "Adding job" });
       selectedId = job.id;
       document.getElementById("url").value = "";
       document.getElementById("manual_force_refresh").checked = false;
       await load();
       if (scoreError) alert(scoreError);
+      if (scoreTask) {
+        try {
+          await waitForTask(scoreTask, "Scoring new job with Codex");
+        } catch (err) {
+          alert(`Automatic Codex scoring failed: ${err.message}`);
+        }
+        await load();
+      }
     }
 
     async function createCompanyInterest() {
@@ -1325,7 +1344,8 @@
 
     async function scoreGpt(id) {
       try {
-        await api(`/api/jobs/${id}/score-gpt`, { method: "POST", body: "{}" });
+        const { task } = await api(`/api/jobs/${id}/score-gpt`, { method: "POST", body: "{}" });
+        await waitForTask(task, "Scoring with Codex");
         await load();
       } catch (err) {
         alert(err.message);
@@ -1469,10 +1489,11 @@
       searchRunning = true;
       renderSearchState();
       try {
-        await api("/api/search/run", {
+        const { task } = await api("/api/search/run", {
           method: "POST",
           body: JSON.stringify({ force_refresh: document.getElementById("force_refresh").checked })
         });
+        await waitForTask(task, "Job search running");
         searchRunning = false;
         await load();
       } catch (err) {

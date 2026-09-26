@@ -43,7 +43,7 @@ P3 = hygiene or completeness.
 | T-24 | Fix `.env.example` and `run.sh` configuration handling | Configuration / CLI | P2 | Done |
 | T-25 | Close request-validation gaps | Validation | P2 | Done |
 | T-26 | Validate Codex model output against a schema | Validation | P1 | Done |
-| T-27 | Move long-running work out of request handlers | Performance | P2 | Open |
+| T-27 | Move long-running work out of request handlers | Performance | P2 | Done |
 | T-28 | Cap concurrent background tasks | Performance | P2 | Open |
 | T-29 | Refactor N+1 queries into batched queries and index the company join | Performance | P2 | Open |
 | T-30 | Bound API response sizes | Performance | P3 | Open |

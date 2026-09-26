@@ -192,19 +192,27 @@ class PacketService:
                 )
         return {PACKET_FIELDS[field]: content for field, content in payload.items()}, output_text
 
-    def create_packet(self, job_id, skip_if_associated=False):
-        """Generate and associate a packet. Returns the packet dict, or None when skipped."""
+    def check_can_generate(self, job_id):
+        """Raise if a packet cannot be generated for ``job_id``; return the job otherwise."""
         with self._db.unit_of_work() as uow:
             job = uow.jobs.get(job_id)
         if not job:
             raise NotFoundError("Job not found", "packet_job_not_found")
         if job.get("application_packet_path"):
-            if skip_if_associated:
-                return None
             raise ConflictError("This job already has an associated application packet.", "packet_already_associated")
         if not job.get("url"):
             raise ValidationError("Job does not have a URL for Codex packet generation.", "packet_job_missing_url")
         self.ensure_available()
+        return job
+
+    def create_packet(self, job_id, skip_if_associated=False):
+        """Generate and associate a packet. Returns the packet dict, or None when skipped."""
+        if skip_if_associated:
+            with self._db.unit_of_work() as uow:
+                existing = uow.jobs.get(job_id)
+            if existing and existing.get("application_packet_path"):
+                return None
+        job = self.check_can_generate(job_id)
         with operation("application_packet_generation", "domain.packets", job_id=job_id, url=job.get("url")):
             documents, output_text = self._generate_documents(job)
             packet_dir = self._store.publish(application_packet_slug(job), documents)

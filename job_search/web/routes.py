@@ -71,10 +71,8 @@ def api_job(job_id):
 def api_create_job():
     payload = v.json_body()
     fields = v.manual_job(payload, services().profile.pipeline_names)
-    job, scrape_error, score_error = services().jobs.create_manual(
-        fields, force_refresh=v.boolean(payload, "force_refresh")
-    )
-    return jsonify({"job": job, "scrape_error": scrape_error, "score_error": score_error}), 201
+    result = services().jobs.create_manual(fields, force_refresh=v.boolean(payload, "force_refresh"))
+    return jsonify(result), 201
 
 
 @bp.post("/api/jobs/<int:job_id>/scrape")
@@ -95,8 +93,8 @@ def api_delete_job(job_id):
 
 @bp.post("/api/jobs/<int:job_id>/score-gpt")
 def api_score_gpt(job_id):
-    job, score = services().scoring.score_tracked_job(job_id)
-    return jsonify({"job": job, "raw_score": score})
+    v.json_body()
+    return jsonify({"task": services().bulk.start_score(job_id)}), 202
 
 
 @bp.post("/api/jobs/<int:job_id>/score-user")
@@ -175,10 +173,8 @@ def api_application_packets():
 
 @bp.post("/api/jobs/<int:job_id>/application-packet/generate")
 def api_generate_application_packet(job_id):
-    c = services()
-    # Intentionally synchronous: the UI shows progress and waits for the packet.
-    packet = c.packets.create_packet(job_id)
-    return jsonify({"packet": packet, "job": c.jobs.get(job_id), "application_packets": c.packets.list_packets()}), 201
+    v.json_body()
+    return jsonify({"task": services().bulk.start_packet(job_id)}), 202
 
 
 @bp.post("/api/jobs/<int:job_id>/application-packet/attach")
@@ -239,17 +235,8 @@ def api_update_company_interest(company_id):
 
 @bp.post("/api/search/run")
 def api_run_search():
-    c = services()
-    # Intentionally synchronous: the UI shows a running state and refreshes on completion.
-    run = c.search.run(trigger="manual", force_refresh=v.boolean(v.json_body(), "force_refresh"))
-    return jsonify(
-        {
-            "run": run,
-            "jobs": c.jobs.list(include_filtered=True),
-            "search_runs": c.search.list_runs(),
-            "discoveries": c.search.list_discoveries(),
-        }
-    )
+    force_refresh = v.boolean(v.json_body(), "force_refresh")
+    return jsonify({"task": services().bulk.start_search(force_refresh=force_refresh)}), 202
 
 
 @bp.post("/api/search/queries")

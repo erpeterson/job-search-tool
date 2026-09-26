@@ -3,7 +3,7 @@
 import json
 
 import requests
-from conftest import SCORE_RESPONSE, insert_job
+from conftest import SCORE_RESPONSE, insert_job, wait_for_task
 
 from job_search.domain.scheduler import SearchScheduler
 
@@ -44,8 +44,11 @@ def run_search(client, force_refresh=False):
     response = client.post(
         "/api/search/run", data=json.dumps({"force_refresh": force_refresh}), content_type="application/json"
     )
-    assert response.status_code == 200, response.get_json()
-    return response.get_json()
+    assert response.status_code == 202, response.get_json()
+    task = wait_for_task(client, response.get_json()["task"])
+    assert task["status"] == "complete", f"search task failed: {task}"
+    state = client.get("/api/state?include_filtered=1").get_json()
+    return {"run": task["result"]["run"], "jobs": state["jobs"], "discoveries": state["discoveries"]}
 
 
 def test_run_filters_rejections_and_tracks_without_codex(client, container, http):

@@ -4,7 +4,7 @@ import io
 import json
 
 import pytest
-from conftest import SCORE_RESPONSE, insert_job
+from conftest import SCORE_RESPONSE, insert_job, wait_for_task
 
 from job_search.domain.errors import ExternalServiceError
 from job_search.domain.model_output import validate_refinement_payload, validate_score_payload
@@ -74,7 +74,7 @@ class TestFlows:
     def test_non_dict_scorecard_is_recorded_and_job_still_saved(self, client, http, codex_runner, enable_scoring):
         http.route("example.com", "<html><h1>Chief Architect</h1></html>")
         codex_runner.respond({**SCORE_RESPONSE, "scorecard": "excellent"})
-        before = blame("manual_job_auto_score_failed")
+        before = blame("codex_auto_score_task_failed")
         response = client.post(
             "/api/jobs",
             data=json.dumps({"url": "https://example.com/jobs/77", "pipeline": "Wildcards"}),
@@ -82,9 +82,12 @@ class TestFlows:
         )
         body = response.get_json()
         assert response.status_code == 201, f"job must still be saved: {body}"
-        assert body["score_error"] == "Codex scorecard must be a JSON object.", body["score_error"]
-        assert body["job"]["gpt_score"] is None, "nothing from the invalid payload is persisted"
-        assert blame("manual_job_auto_score_failed") == before + 1, "the failure must be recorded"
+        task = wait_for_task(client, body["score_task"])
+        assert task["message"] == "Codex scorecard must be a JSON object.", task["message"]
+        assert task["error_code"] == "codex_scorecard_not_object", task
+        job = client.get(f"/api/jobs/{body['job']['id']}").get_json()["job"]
+        assert job["gpt_score"] is None, "nothing from the invalid payload is persisted"
+        assert blame("codex_auto_score_task_failed") == before + 1, "the failure must be recorded"
 
     def test_out_of_range_total_is_clamped_and_logged(self, container, codex_runner, enable_scoring):
         job_id = insert_job(container)
@@ -121,8 +124,9 @@ class TestFlows:
 
         response = client.post("/api/search/run", data="{}", content_type="application/json")
 
-        run = response.get_json()["run"]
-        assert (response.status_code, run["status"]) == (200, "complete"), f"run must complete: {run}"
+        task = wait_for_task(client, response.get_json()["task"])
+        run = task["result"]["run"]
+        assert (response.status_code, run["status"]) == (202, "complete"), f"run must complete: {run}"
         assert blame("search_query_refinement_failed") == before + 1, "the invalid refinement must be recorded"
         after_keywords = next(q for q in container.search.list_queries() if q["enabled"])["keywords"]
         assert after_keywords == before_keywords, "the query is unchanged when refinement output is invalid"

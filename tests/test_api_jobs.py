@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from conftest import SCORE_RESPONSE, insert_job
+from conftest import SCORE_RESPONSE, insert_job, wait_for_task
 
 POSTING_HTML = """
 <html><head><title>Fallback title</title>
@@ -74,8 +74,10 @@ class TestCreateJob:
         http.route("example.com", POSTING_HTML)
         codex_runner.respond("not json at all")
         body = post(client, "/api/jobs", {"url": "https://example.com/jobs/4", "pipeline": "Wildcards"}).get_json()
-        assert body["score_error"] == "Codex CLI response was not valid JSON."
-        assert body["job"]["gpt_score"] is None
+        task = wait_for_task(client, body["score_task"])
+        assert task["status"] == "error", f"the scoring task should fail: {task}"
+        assert task["message"] == "Codex CLI response was not valid JSON.", task["message"]
+        assert client.get(f"/api/jobs/{body['job']['id']}").get_json()["job"]["gpt_score"] is None, "job stays unscored"
 
     def test_duplicate_url_conflicts(self, client, container, http):
         from job_search.observability import METRICS
@@ -170,9 +172,13 @@ class TestJobCrm:
     def test_score_gpt_persists_score(self, client, container, codex_runner, enable_scoring):
         job_id = insert_job(container)
         codex_runner.respond({**SCORE_RESPONSE, "total_score": 20, "downlevel": True})
-        body = post(client, f"/api/jobs/{job_id}/score-gpt").get_json()
-        assert body["job"]["gpt_score"] == 20
-        assert body["job"]["filtered"] == 1, "downlevel or low Codex score hides the job"
+        response = post(client, f"/api/jobs/{job_id}/score-gpt")
+        assert response.status_code == 202, f"scoring runs as a background task: {response.get_json()}"
+        task = wait_for_task(client, response.get_json()["task"])
+        assert task["result"]["raw_score"]["total_score"] == 20, task
+        job = client.get(f"/api/jobs/{job_id}").get_json()["job"]
+        assert job["gpt_score"] == 20, f"score should be persisted: {job['gpt_score']}"
+        assert job["filtered"] == 1, "downlevel or low Codex score hides the job"
 
 
 class TestCompanies:
