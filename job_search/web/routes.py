@@ -3,9 +3,7 @@
 from flask import Blueprint, current_app, jsonify, render_template, request, send_from_directory
 
 from job_search.domain.errors import NotFoundError
-from job_search.domain.packets import validate_markdown_filename
 from job_search.domain.rules import JOB_STATUSES, PIPELINES, RUBRIC_FIELDS
-from job_search.domain.runtime_policy import RuntimeSettingsPolicy
 from job_search.observability import METRICS
 from job_search.web import validation as v
 from job_search.web.markdown import markdown_to_html
@@ -97,11 +95,8 @@ def api_delete_job(job_id):
 
 @bp.post("/api/jobs/<int:job_id>/score-gpt")
 def api_score_gpt(job_id):
-    c = services()
-    c.jobs.get(job_id)
-    c.scoring.ensure_available()
-    score = c.scoring.populate_score(job_id)
-    return jsonify({"job": c.jobs.get(job_id), "raw_score": score})
+    job, score = services().scoring.score_tracked_job(job_id)
+    return jsonify({"job": job, "raw_score": score})
 
 
 @bp.post("/api/jobs/<int:job_id>/score-user")
@@ -162,16 +157,12 @@ def api_codex_task(task_id):
 
 @bp.post("/api/jobs/bulk/score-gpt")
 def api_bulk_score_gpt():
-    c = services()
-    c.scoring.ensure_available()
-    return jsonify({"task": c.bulk.start_scoring(v.job_ids(v.json_body()))}), 202
+    return jsonify({"task": services().bulk.start_scoring(v.job_ids(v.json_body()))}), 202
 
 
 @bp.post("/api/jobs/bulk/application-packets/generate")
 def api_bulk_generate_application_packets():
-    c = services()
-    c.packets.ensure_available()
-    return jsonify({"task": c.bulk.start_packets(v.job_ids(v.json_body()))}), 202
+    return jsonify({"task": services().bulk.start_packets(v.job_ids(v.json_body()))}), 202
 
 
 # Application packets --------------------------------------------------------------
@@ -212,9 +203,7 @@ def api_application_packet_content(job_id):
 
 @bp.get("/api/jobs/<int:job_id>/application-packet/render")
 def api_application_packet_render(job_id):
-    filename = request.args.get("file", "")
-    validate_markdown_filename(filename)
-    document = services().packets.read_document(job_id, filename)
+    document = services().packets.read_document(job_id, request.args.get("file", ""))
     job = document.job
     return render_template(
         "packet.html",
@@ -286,8 +275,7 @@ def api_update_settings():
 @bp.post("/api/config")
 def api_update_config():
     c = services()
-    updates = RuntimeSettingsPolicy.validate(v.json_body())
-    settings = c.settings.update_runtime_config(updates)
+    settings = c.settings.apply_runtime_config(v.json_body())
     payload = _config_payload(c)
     if settings is not None:
         payload["settings"] = settings
