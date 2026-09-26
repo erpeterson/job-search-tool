@@ -50,7 +50,7 @@ STATUS_BY_ERROR = (
     (ConflictError, 409),
     (UnsupportedMediaTypeError, 415),
     (CapacityError, 429),
-    (DependencyUnavailableError, 409),
+    (DependencyUnavailableError, 503),
     (ExternalServiceError, 502),
 )
 

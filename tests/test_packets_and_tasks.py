@@ -116,8 +116,8 @@ class TestPacketGeneration:
         container.runtime.update({"CODEX_CLI_PATH": "/nonexistent/codex"})
         fresh = insert_job(container, url="https://example.com/3")
         response = post(client, f"/api/jobs/{fresh}/application-packet/generate")
-        assert response.status_code == 409, (
-            f"expected HTTP 409, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        assert response.status_code == 503, (
+            f"missing Codex CLI should be 503, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
         )
         assert "unavailable" in response.get_json()["error"], (
             f"expected 'unavailable' in {response.get_json()['error']!r}"
@@ -241,9 +241,8 @@ class TestBulkTasks:
         )
 
     def test_bulk_scoring_requires_enabled_scoring(self, client):
-        assert post(client, "/api/jobs/bulk/score-gpt", {"job_ids": [1]}).status_code == 409, (
-            "expected post(...).status_code to be 409"
-        )
+        response = post(client, "/api/jobs/bulk/score-gpt", {"job_ids": [1]})
+        assert response.status_code == 503, f"disabled scoring should return 503, got {response.status_code}"
 
     def test_unexpected_item_error_is_generic(self, container, monkeypatch, enable_scoring):
         job_id = insert_job(container)
