@@ -1,5 +1,6 @@
 """Composition root: constructs data adapters and domain services from configuration."""
 
+import os
 from dataclasses import dataclass
 
 from job_search.config import AppConfig, RuntimeSettings
@@ -48,11 +49,11 @@ def build_container(
 ):
     """Build the service graph.
 
-    ``environ`` backs runtime settings (defaults to ``os.environ``). The other
+    ``environ`` seeds runtime settings once (defaults to ``os.environ``, read only). The other
     optional arguments replace external effects in tests.
     """
     runtime = RuntimeSettings(
-        EnvFile(config.env_path), config.default_codex_cli_path, config.default_codex_model, environ=environ
+        os.environ if environ is None else environ, config.default_codex_cli_path, config.default_codex_model
     )
     db = Database(config.db_path)
     captures = CaptureStore(config.capture_dir, runtime.capture_cache_enabled)
@@ -84,7 +85,7 @@ def build_container(
         scoring=scoring,
         packets=packets,
         search=search,
-        settings=SettingsService(db, runtime, config.default_codex_model),
+        settings=SettingsService(db, runtime, EnvFile(config.env_path), config.default_codex_model),
         tasks=tasks,
         bulk=BulkOperations(tasks, scoring, packets),
         scheduler=SearchScheduler(db, search, config.search_interval_seconds, config.autorun),

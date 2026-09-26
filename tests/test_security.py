@@ -125,7 +125,7 @@ class TestCodexCliPathUpdates:
         assert response.status_code == 400, f"non-executable file must be rejected: {response.get_json()}"
 
     def test_bare_codex_must_be_on_path(self, client, monkeypatch):
-        monkeypatch.setattr("job_search.config.shutil.which", lambda _name: None)
+        monkeypatch.setattr("job_search.domain.runtime_policy.shutil.which", lambda _name: None)
         response = self.post_config(client, "codex")
         assert response.status_code == 400, f"'codex' not on PATH must be rejected: {response.get_json()}"
 
@@ -133,7 +133,10 @@ class TestCodexCliPathUpdates:
         path = str(workspace / "bin" / "codex")
         response = self.post_config(client, path)
         assert response.status_code == 200, f"valid codex path should be saved: {response.get_json()}"
-        assert f"CODEX_CLI_PATH={path}" in container.config.env_path.read_text(), ".env should record the path"
+        from job_search.data.env_file import EnvFile
+
+        saved = EnvFile(container.config.env_path).read()
+        assert saved.get("CODEX_CLI_PATH") == path, f".env should record the path: {saved}"
 
 
 class TestRequestBodies:

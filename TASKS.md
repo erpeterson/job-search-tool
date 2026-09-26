@@ -35,7 +35,7 @@ P3 = hygiene or completeness.
 | T-16 | Emit start, success, and failure events for all major operations | Observability | P2 | Done |
 | T-17 | Tag non-request events with a process run ID | Observability | P3 | Open |
 | T-18 | Map `DependencyUnavailableError` to a correct HTTP status | Errors | P3 | Open |
-| T-19 | Split `RuntimeSettings` and stop mutating `os.environ` | Architecture | P2 | Open |
+| T-19 | Split `RuntimeSettings` and stop mutating `os.environ` | Architecture | P2 | Done |
 | T-20 | Move orchestration out of Flask routes | Architecture | P2 | Open |
 | T-21 | Move domain decisions out of the job-board adapter | Architecture | P3 | Open |
 | T-22 | Make hardcoded paths, timeouts, and limits configurable | Configuration | P2 | Open |

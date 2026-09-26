@@ -31,7 +31,7 @@ def captures(tmp_path):
 @pytest.fixture
 def codex(tmp_path, captures, environ):
     runner = FakeCodexRunner()
-    runtime = RuntimeSettings(EnvFile(tmp_path / ".env"), "codex", environ=environ)
+    runtime = RuntimeSettings(environ, "codex")
     return CodexClient(runtime, captures, tmp_path, timeout_seconds=5, runner=runner), runner
 
 
@@ -226,7 +226,16 @@ class TestFileStores:
         path = tmp_path / ".env"
         path.write_text("# comment\nA=1\nB=2\nA=3\n", encoding="utf-8")
         EnvFile(path).update({"B": "20", "C": "30"})
-        assert path.read_text() == "# comment\nA=3\nB=20\nC=30\n"
+        assert path.read_text() == '# comment\nA=3\nB="20"\nC="30"\n', path.read_text()
+
+    @pytest.mark.parametrize("value", ["a # not a comment", 'say "hi"', "  padded  ", "back\\slash", "it's"])
+    def test_env_file_values_round_trip(self, tmp_path, value):
+        env = EnvFile(tmp_path / ".env")
+        env.update({"KEY": value})
+        assert env.read() == {"KEY": value}, f"{value!r} must survive save and reload: {env.read()}"
+
+    def test_env_file_read_missing_file(self, tmp_path):
+        assert EnvFile(tmp_path / "missing.env").read() == {}, "a missing file reads as empty"
 
     def test_pandoc_converter_errors(self, tmp_path):
         missing = PandocConverter(which=lambda _name: None)

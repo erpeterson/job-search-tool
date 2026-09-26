@@ -9,10 +9,9 @@ import logging
 import os
 import sys
 
-from dotenv import dotenv_values
-
 from job_search.config import DEFAULT_APP_DIR, AppConfig
 from job_search.container import build_container
+from job_search.data.env_file import EnvFile
 from job_search.domain.errors import ConfigurationError
 from job_search.observability import (
     configure_console_logging,
@@ -37,20 +36,21 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def load_env_file(environ, env_path):
-    """Merge ``.env`` values into ``environ`` without overriding values already set."""
-    if env_path.exists():
-        for key, value in dotenv_values(env_path).items():
-            if value is not None:
-                environ.setdefault(key, value)
+def startup_settings(environ, env_path, args):
+    """Merge settings without mutating the process environment.
+
+    Precedence: CLI arguments, then the environment, then ``.env``.
+    """
+    settings = {**EnvFile(env_path).read(), **environ}
+    if args.host:
+        settings["JOB_SEARCH_HOST"] = args.host
+    if args.port:
+        settings["JOB_SEARCH_PORT"] = args.port
+    return settings
 
 
 def run(args, environ, serve, out, app_dir):
-    load_env_file(environ, app_dir / ".env")
-    if args.host:
-        environ["JOB_SEARCH_HOST"] = args.host
-    if args.port:
-        environ["JOB_SEARCH_PORT"] = args.port
+    environ = startup_settings(environ, app_dir / ".env", args)
     config = AppConfig.from_env(environ, app_dir=app_dir)
     install_thread_excepthook()
     configure_file_logging(config.event_log_path, config.api_log_path, config.log_max_bytes, config.log_backup_count)
