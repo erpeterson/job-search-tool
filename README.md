@@ -81,9 +81,14 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_INTERVAL_SECONDS` | `86400` | Scheduled search cadence (scheduler currently disabled). |
 | `JOB_SEARCH_LOG_MAX_BYTES` / `JOB_SEARCH_LOG_BACKUP_COUNT` | `1048576` / `5` | Log rotation. |
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
-| `JOB_SEARCH_DEBUG` | `0` | Flask debug mode. |
+| `JOB_SEARCH_ALLOW_REMOTE` | `0` | Set `1` to allow a non-loopback `JOB_SEARCH_HOST`. The API has no authentication, so only do this on a trusted network. |
+| `JOB_SEARCH_DEBUG` | `0` | Flask debug mode. Refused with a non-loopback host because the debugger allows remote code execution. |
 
 Invalid values stop startup with exit code `2` and a message naming the variable.
+
+The app is served by the Werkzeug development server and is meant for local,
+single-user use only. It refuses to bind to a non-loopback address unless
+`JOB_SEARCH_ALLOW_REMOTE=1` is set.
 
 ## Errors, Logs, And Troubleshooting
 
