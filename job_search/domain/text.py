@@ -3,12 +3,6 @@
 import hashlib
 import re
 
-from job_search.domain.rules import (
-    PIPELINES,
-    SALES_ROLE_EXCLUSION_CRITERIA,
-    SALES_ROLE_EXCLUSION_QUERY,
-)
-
 
 def clean_text(value):
     return " ".join((value or "").split())
@@ -49,30 +43,32 @@ def dedupe_results(results):
     return deduped
 
 
-def normalize_pipeline(value, fallback=""):
+def normalize_pipeline(value, pipelines, fallback=""):
     """Return a valid pipeline string from model or request data."""
     if isinstance(value, str):
         candidate = value.strip()
-        return candidate if candidate in PIPELINES else fallback
+        return candidate if candidate in pipelines else fallback
     if isinstance(value, (list, tuple, set)):
         for candidate in value:
-            if isinstance(candidate, str) and candidate.strip() in PIPELINES:
+            if isinstance(candidate, str) and candidate.strip() in pipelines:
                 return candidate.strip()
     return fallback
 
 
-def with_sales_role_exclusion_keywords(keywords):
+def with_sales_role_exclusion_keywords(keywords, exclusion):
+    """Append the profile's sales exclusion unless the query already excludes a sales title."""
     keywords = clean_text(keywords or "")
-    if "Account Executive" in keywords or SALES_ROLE_EXCLUSION_QUERY in keywords:
+    lowered = keywords.lower()
+    if exclusion.query in keywords or any(f'-"{term}"' in lowered for term in exclusion.title_terms):
         return keywords
-    return clean_text(f"{keywords} {SALES_ROLE_EXCLUSION_QUERY}")
+    return clean_text(f"{keywords} {exclusion.query}")
 
 
-def with_sales_role_exclusion_criteria(criteria):
+def with_sales_role_exclusion_criteria(criteria, exclusion):
     criteria = clean_text(criteria or "")
-    if "Account Executive" in criteria and "sales roles" in criteria.lower():
+    if clean_text(exclusion.criteria).lower() in criteria.lower():
         return criteria
-    return clean_text(f"{criteria} {SALES_ROLE_EXCLUSION_CRITERIA}")
+    return clean_text(f"{criteria} {exclusion.criteria}")
 
 
 def slugify(value, limit):

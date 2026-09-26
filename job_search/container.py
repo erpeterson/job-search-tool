@@ -12,9 +12,11 @@ from job_search.data.env_file import EnvFile
 from job_search.data.http_client import HttpClient
 from job_search.data.job_boards import JobBoardClient
 from job_search.data.packet_store import PacketStore, PandocConverter
+from job_search.data.profile_file import load_search_profile
 from job_search.domain.companies import CompanyService
 from job_search.domain.jobs import JobService
 from job_search.domain.packets import PacketService
+from job_search.domain.profile import SearchProfile
 from job_search.domain.scheduler import SearchScheduler
 from job_search.domain.scoring import ScoringService
 from job_search.domain.search import SearchService
@@ -33,6 +35,7 @@ class Container:
     packets: PacketService
     search: SearchService
     settings: SettingsService
+    profile: SearchProfile
     tasks: BackgroundTaskRegistry
     bulk: BulkOperations
     scheduler: SearchScheduler
@@ -45,7 +48,14 @@ class Container:
 
 
 def build_container(
-    config, environ=None, http_get=None, codex_runner=None, pandoc=None, thread_factory=None, resolve_host=None
+    config,
+    environ=None,
+    http_get=None,
+    codex_runner=None,
+    pandoc=None,
+    thread_factory=None,
+    resolve_host=None,
+    profile=None,
 ):
     """Build the service graph.
 
@@ -55,6 +65,7 @@ def build_container(
     runtime = RuntimeSettings(
         os.environ if environ is None else environ, config.default_codex_cli_path, config.default_codex_model
     )
+    profile = profile or load_search_profile(config.profile_path)
     db = Database(config.db_path, timeout_seconds=config.db_timeout_seconds)
     captures = CaptureStore(config.capture_dir, runtime.capture_cache_enabled)
     http_kwargs = {
@@ -75,9 +86,9 @@ def build_container(
         config.applications_dir,
         pandoc or PandocConverter(timeout_seconds=config.pandoc_timeout_seconds),
     )
-    scoring = ScoringService(db, runtime, codex, documents, parse_model_json)
+    scoring = ScoringService(db, runtime, codex, documents, parse_model_json, profile)
     packets = PacketService(db, runtime, codex, documents, store, parse_model_json)
-    search = SearchService(db, runtime, boards, scoring, codex, parse_model_json)
+    search = SearchService(db, runtime, boards, scoring, codex, parse_model_json, profile)
     task_kwargs = {"max_retained": config.max_retained_tasks}
     if thread_factory:
         task_kwargs["thread_factory"] = thread_factory
@@ -89,6 +100,7 @@ def build_container(
         jobs=JobService(db, runtime, boards, scoring),
         companies=CompanyService(db),
         scoring=scoring,
+        profile=profile,
         packets=packets,
         search=search,
         settings=SettingsService(db, runtime, EnvFile(config.env_path), config.default_codex_model),

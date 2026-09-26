@@ -99,6 +99,18 @@ def _path_env(environ, key, default, base, kind):
     return path
 
 
+PROFILE_EXAMPLE_PATH = DEFAULT_APP_DIR / "profile.example.json"
+DEFAULT_PROFILE_FILENAME = "job-search-profile.json"
+
+
+def _profile_path(environ, workspace_root, app_dir):
+    """Explicit JOB_SEARCH_PROFILE_PATH, else ``<workspace>/job-search-profile.json``, else the shipped example."""
+    if environ.get("JOB_SEARCH_PROFILE_PATH", "").strip():
+        return _path_env(environ, "JOB_SEARCH_PROFILE_PATH", None, app_dir, "file")
+    default = (workspace_root / DEFAULT_PROFILE_FILENAME).resolve()
+    return default if default.is_file() else PROFILE_EXAMPLE_PATH
+
+
 _HOST_ENTRY_PATTERN = re.compile(r"^[a-z0-9.\-\[\]:]{1,262}$")
 
 
@@ -150,6 +162,7 @@ class AppConfig:
     http_timeout_seconds: int
     db_timeout_seconds: int
     max_retained_tasks: int
+    profile_path: Path
 
     @classmethod
     def from_env(cls, environ=None, app_dir=None):
@@ -208,6 +221,7 @@ class AppConfig:
             pandoc_timeout_seconds=_int_env(environ, "PANDOC_TIMEOUT_SECONDS", 120, 1, 3600),
             http_timeout_seconds=_int_env(environ, "JOB_SEARCH_HTTP_TIMEOUT_SECONDS", 30, 1, 600),
             db_timeout_seconds=_int_env(environ, "JOB_SEARCH_DB_TIMEOUT_SECONDS", 30, 1, 600),
+            profile_path=_profile_path(environ, workspace_root, app_dir),
             max_retained_tasks=_int_env(environ, "JOB_SEARCH_MAX_RETAINED_TASKS", 50, 1, 10_000),
             http_max_response_bytes=_int_env(
                 environ, "JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES", 5 * 1024**2, 1024, 256 * 1024**2

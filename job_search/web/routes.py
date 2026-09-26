@@ -3,7 +3,7 @@
 from flask import Blueprint, current_app, jsonify, render_template, request, send_from_directory
 
 from job_search.domain.errors import NotFoundError
-from job_search.domain.rules import JOB_STATUSES, PIPELINES, RUBRIC_FIELDS
+from job_search.domain.rules import JOB_STATUSES, RUBRIC_FIELDS
 from job_search.observability import METRICS
 from job_search.web import validation as v
 from job_search.web.markdown import markdown_to_html
@@ -48,7 +48,7 @@ def api_state():
             "discoveries": c.search.list_discoveries(),
             "application_packets": c.packets.list_packets(),
             "codex_tasks": c.tasks.list(),
-            "pipelines": PIPELINES,
+            "pipelines": c.profile.pipeline_names,
             "rubric_fields": RUBRIC_FIELDS,
         }
     )
@@ -70,7 +70,7 @@ def api_job(job_id):
 @bp.post("/api/jobs")
 def api_create_job():
     payload = v.json_body()
-    fields = v.manual_job(payload)
+    fields = v.manual_job(payload, services().profile.pipeline_names)
     job, scrape_error, score_error = services().jobs.create_manual(
         fields, force_refresh=v.boolean(payload, "force_refresh")
     )
@@ -254,12 +254,18 @@ def api_run_search():
 
 @bp.post("/api/search/queries")
 def api_create_search_query():
-    return jsonify({"search_queries": services().search.create_query(v.search_query(v.json_body()))}), 201
+    return jsonify(
+        {
+            "search_queries": services().search.create_query(
+                v.search_query(v.json_body(), services().profile.pipeline_names)
+            )
+        }
+    ), 201
 
 
 @bp.post("/api/search/queries/<int:query_id>")
 def api_update_search_query(query_id):
-    fields = v.search_query(v.json_body(), partial=True)
+    fields = v.search_query(v.json_body(), services().profile.pipeline_names, partial=True)
     return jsonify({"search_queries": services().search.update_query(query_id, fields)})
 
 
