@@ -31,7 +31,7 @@ P3 = hygiene or completeness.
 | T-12 | Stop leaving search runs stuck in `running` after a failure | Errors / Integrity | P1 | Done |
 | T-13 | Add top-level exception handling to background threads | Errors / Telemetry | P1 | Done |
 | T-14 | Do not replay failed captures as successes; make capture writes safe | Integrity | P1 | Done |
-| T-15 | Add a timeout and error handling to the Pandoc subprocess | Errors / Performance | P2 | Open |
+| T-15 | Add a timeout and error handling to the Pandoc subprocess | Errors / Performance | P2 | Done |
 | T-16 | Emit start, success, and failure events for all major operations | Observability | P2 | Open |
 | T-17 | Tag non-request events with a process run ID | Observability | P3 | Open |
 | T-18 | Map `DependencyUnavailableError` to a correct HTTP status | Errors | P3 | Open |

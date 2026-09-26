@@ -241,6 +241,30 @@ class TestFileStores:
         assert "bad input" not in info.value.message, "Pandoc stderr must not reach the client message"
         assert info.value.detail == "bad input", "stderr is kept in detail for the logs"
 
+    @pytest.mark.parametrize(
+        ("error", "code"),
+        [
+            (subprocess.TimeoutExpired("pandoc", 5), "pandoc_timeout"),
+            (PermissionError("denied"), "pandoc_launch_failed"),
+        ],
+    )
+    def test_pandoc_timeout_and_launch_failure(self, tmp_path, error, code):
+        from job_search.observability import METRICS
+
+        calls = []
+
+        def runner(*args, **kwargs):
+            calls.append(kwargs)
+            raise error
+
+        converter = PandocConverter(which=lambda _name: "/usr/bin/pandoc", runner=runner, timeout_seconds=5)
+        before = METRICS.snapshot().get(f"blame.{code}", 0)
+        with pytest.raises(ExternalServiceError) as info:
+            converter.to_docx(tmp_path / "a.md", tmp_path / "a.docx")
+        assert info.value.error_code == code, f"expected {code}, got {info.value.error_code}"
+        assert calls[0]["timeout"] == 5, "Pandoc must run with the configured timeout"
+        assert METRICS.snapshot()[f"blame.{code}"] == before + 1, "the failure must be recorded"
+
 
 class TestMarkdown:
     def test_renders_structure_and_escapes(self):

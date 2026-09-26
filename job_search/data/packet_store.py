@@ -6,14 +6,18 @@ import tempfile
 from pathlib import Path
 
 from job_search.domain.errors import ConflictError, DependencyUnavailableError, ExternalServiceError, NotFoundError
+from job_search.observability import record_exception
+
+DEFAULT_PANDOC_TIMEOUT_SECONDS = 120
 
 
 class PandocConverter:
     """Converts Markdown files to DOCX with the ``pandoc`` executable."""
 
-    def __init__(self, which=shutil.which, runner=subprocess.run):
+    def __init__(self, which=shutil.which, runner=subprocess.run, timeout_seconds=DEFAULT_PANDOC_TIMEOUT_SECONDS):
         self._which = which
         self._runner = runner
+        self._timeout_seconds = timeout_seconds
 
     def to_docx(self, source_path, output_path):
         pandoc_path = self._which("pandoc")
@@ -22,12 +26,24 @@ class PandocConverter:
                 "Pandoc is required to generate packet DOCX deliverables but was not found on PATH.",
                 "pandoc_unavailable",
             )
-        completed = self._runner(
-            [pandoc_path, "--from", "markdown", "--to", "docx", "--output", str(output_path), str(source_path)],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        command = [pandoc_path, "--from", "markdown", "--to", "docx", "--output", str(output_path), str(source_path)]
+        try:
+            completed = self._runner(
+                command, text=True, capture_output=True, check=False, timeout=self._timeout_seconds
+            )
+        except subprocess.TimeoutExpired as exc:
+            record_exception("pandoc_timeout", "data.packet_store", "to_docx", exc, source=source_path.name)
+            raise ExternalServiceError(
+                f"Pandoc timed out after {self._timeout_seconds} seconds converting {source_path.name}.",
+                "pandoc_timeout",
+            ) from exc
+        except OSError as exc:
+            record_exception("pandoc_launch_failed", "data.packet_store", "to_docx", exc, pandoc_path=pandoc_path)
+            raise ExternalServiceError(
+                "Pandoc could not be started; check the Pandoc installation.",
+                "pandoc_launch_failed",
+                detail=f"pandoc_path={pandoc_path!r}",
+            ) from exc
         if completed.returncode != 0:
             raise ExternalServiceError(
                 f"Pandoc conversion failed for {source_path.name}; see logs for details.",
