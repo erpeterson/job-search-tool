@@ -11,7 +11,7 @@ job-search-tool/run.sh
 The script will:
 
 - create `job-search-tool/.venv` if needed
-- install dependencies from `job-search-tool/requirements.txt` if needed
+- install pinned, hash-verified dependencies from `job-search-tool/requirements.lock` if needed
 - create `job-search-tool/.env` if needed
 - configure `CODEX_CLI_PATH=codex` when the Codex CLI is on `PATH`
 - start the local Flask app
@@ -57,10 +57,20 @@ The app is a `job_search` package split into three tiers:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install --require-hashes -r requirements-dev.lock
 .venv/bin/python -m pytest          # runs tests with coverage; fails below 80%
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/pip-audit -r requirements.txt  # known-vulnerability check for runtime deps
+```
+
+Dependencies: `requirements.txt` and `requirements-dev.txt` list direct
+dependencies; `requirements.lock` and `requirements-dev.lock` pin every
+transitive package with hashes. After changing a direct dependency, regenerate
+both locks:
+
+```bash
+.venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt
+.venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements-dev.lock requirements-dev.txt
 ```
 
 Ruff includes the `S` (bandit security) and `A` (builtin shadowing) rules; any
