@@ -28,6 +28,77 @@ Then open:
 http://127.0.0.1:5050
 ```
 
+Command-line options (also accepted by `python app.py` or `python -m job_search`):
+
+| Flag | Purpose |
+| --- | --- |
+| `-v`, `--verbose` | Write non-error logs to stdout. ERROR logs always go to stderr. |
+| `--host HOST` | Bind address; overrides `JOB_SEARCH_HOST`. |
+| `--port PORT` | Port; overrides `JOB_SEARCH_PORT`. |
+
+Exit codes: `0` success, `1` unexpected failure, `2` invalid configuration,
+`130` interrupted.
+
+## Architecture
+
+The app is a `job_search` package split into three tiers:
+
+- `job_search/web/` and `job_search/cli.py` (presentation): Flask routes,
+  request validation, the static UI, and the CLI entry point.
+- `job_search/domain/` (business logic): search runs and discovery filters,
+  scoring, application packets, level calibration, job CRM, and background tasks.
+- `job_search/data/` (data access): SQLite repositories behind a unit of work,
+  the Codex CLI adapter, job-board adapters, HTTP capture/replay, and file stores.
+
+`job_search/container.py` is the composition root that wires them together.
+`app.py` is a thin entry point kept for `run.sh`.
+
+## Development
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest          # runs tests with coverage; fails below 80%
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
+```
+
+Tests run without network access, Codex, or Pandoc; those are replaced by fakes
+in `tests/conftest.py`.
+
+## Configuration
+
+Values are read from the environment and `job-search-tool/.env`.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `CODEX_CLI_PATH` | `codex` on `PATH` | Editable in the UI. |
+| `CODEX_MODEL` | blank (Codex default) | Editable in the UI. |
+| `CODEX_CLI_TIMEOUT_SECONDS` | `270` | Per Codex invocation. |
+| `JOB_SEARCH_ENABLE_GPT_SCORING` | `0` | `1` enables Codex scoring. Editable in the UI. |
+| `JOB_SEARCH_USE_CAPTURE_CACHE` | `1` | `0` forces live requests. Editable in the UI. |
+| `JOB_SEARCH_HOST` / `JOB_SEARCH_PORT` | `127.0.0.1` / `5050` | Bind address. |
+| `JOB_SEARCH_INTERVAL_SECONDS` | `86400` | Scheduled search cadence (scheduler currently disabled). |
+| `JOB_SEARCH_LOG_MAX_BYTES` / `JOB_SEARCH_LOG_BACKUP_COUNT` | `1048576` / `5` | Log rotation. |
+| `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
+| `JOB_SEARCH_DEBUG` | `0` | Flask debug mode. |
+
+Invalid values stop startup with exit code `2` and a message naming the variable.
+
+## Errors, Logs, And Troubleshooting
+
+- API errors return JSON `{"error": ..., "request_id": ...}` with `400`
+  (validation), `404`, `409` (conflict or Codex/scoring unavailable), `502`
+  (Codex/Pandoc failure), or `500`. A `500` never includes internal details;
+  search the logs for its `request_id`.
+- Every response has an `X-Request-ID` header. Search runs and bulk tasks log a
+  `correlation_id` of `search-run-<id>` or `task-<id>`.
+- Each caught exception writes an `exception` event with a stable `error_code`
+  and a `blame_metric` event to `logs/job-search.log`. `GET /api/metrics`
+  returns the in-process blame counters.
+- `Codex CLI is unavailable`: set `CODEX_CLI_PATH` in the Configuration panel.
+- `Pandoc is required`: install Pandoc (`brew install pandoc`).
+- Job-board `403`s: see `logs/api.log`; retry later or add the job by URL.
+
 Codex-backed features require a locally installed and authenticated Codex CLI.
 This includes application packet generation and optional Codex scoring.
 If `codex` is not on `PATH`, pass its executable path:
@@ -122,7 +193,7 @@ JOB_SEARCH_USE_CAPTURE_CACHE=0
 
 The app can run saved LinkedIn and Indeed searches:
 
-- automatically on a daily cadence
+- automatically on a daily cadence (currently disabled; see below)
 - manually from the Search panel
 
 The default queries are derived from `supporting-documents/20260731-job-search-guidance.md`.
@@ -145,7 +216,9 @@ Those searches cover the four pipelines:
 - Adjacent industries
 - Wildcards
 
-Set `JOB_SEARCH_AUTORUN=0` in `job-search-tool/.env` to disable scheduled daily searches.
+Scheduled daily searches are currently disabled in code (`SCHEDULER_SUPPORTED` in
+`job_search/config.py`) because the scheduler has known bugs and consumes Codex
+credits unattended. `JOB_SEARCH_AUTORUN` is ignored until it is re-enabled.
 
 Set `JOB_SEARCH_INTERVAL_SECONDS` to change the cadence.
 

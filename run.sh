@@ -14,11 +14,12 @@ PIP_BIN="${VENV_DIR}/bin/pip"
 CODEX_CLI_ARG=""
 NO_PROMPT=0
 SETUP_ONLY=0
+APP_ARGS=()
 
 usage() {
   cat <<'EOF'
 Usage:
-  job-search-tool/run.sh [--codex-cli PATH] [--no-prompt] [--setup-only]
+  job-search-tool/run.sh [--codex-cli PATH] [--no-prompt] [--setup-only] [-v]
 
 Options:
   --codex-cli PATH    Write PATH to job-search-tool/.env before starting.
@@ -27,6 +28,7 @@ Options:
   --api-key=KEY       Ignored; scoring uses Codex CLI auth, not API keys.
   --no-prompt         Do not prompt for CODEX_CLI_PATH when missing.
   --setup-only        Prepare venv/.env and exit without starting the app.
+  -v, --verbose       Write non-error app logs to stdout (errors always go to stderr).
   -h, --help          Show this help.
 
 Codex scoring uses your existing Codex CLI authentication.
@@ -65,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --setup-only)
       SETUP_ONLY=1
+      shift
+      ;;
+    -v|--verbose)
+      APP_ARGS+=("--verbose")
       shift
       ;;
     -h|--help)
@@ -187,7 +193,7 @@ main() {
 
   echo "Starting Job Search Console"
   echo "Open http://127.0.0.1:5050"
-  exec "${PYTHON_BIN}" "${SCRIPT_DIR}/app.py"
+  exec "${PYTHON_BIN}" "${SCRIPT_DIR}/app.py" ${APP_ARGS[@]+"${APP_ARGS[@]}"}
 }
 
 main
