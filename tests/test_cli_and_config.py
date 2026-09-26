@@ -32,6 +32,43 @@ class TestConfig:
         assert (config.host, config.port, config.codex_cli_timeout_seconds) == ("127.0.0.1", 5050, 270)
         assert config.workspace_root == tmp_path.resolve()
         assert config.autorun is False, "the scheduler stays disabled until its known bugs are fixed"
+        app, root = (tmp_path / "app").resolve(), tmp_path.resolve()
+        expected = {
+            "db_path": app / "job_search.sqlite3",
+            "log_dir": app / "logs",
+            "capture_dir": app / "captures",
+            "guidance_path": root / "supporting-documents" / "20260731-job-search-guidance.md",
+            "career_manual_path": root / "career-manual" / "Career-Manual.md",
+            "master_resume_path": root / "resume" / "Master-Resume.md",
+            "http_timeout_seconds": 30,
+            "db_timeout_seconds": 30,
+            "max_retained_tasks": 50,
+        }
+        actual = {key: getattr(config, key) for key in expected}
+        assert actual == expected, f"unexpected defaults: {actual}"
+
+    def test_configured_paths_resolve_relative_to_their_base(self, tmp_path):
+        environ = {
+            "JOB_SEARCH_DB_PATH": "data/jobs.db",
+            "JOB_SEARCH_LOG_DIR": str(tmp_path / "elsewhere" / "logs"),
+            "JOB_SEARCH_CAPTURE_DIR": "cap",
+            "JOB_SEARCH_GUIDANCE_PATH": "docs/guide.md",
+            "JOB_SEARCH_CAREER_MANUAL_PATH": "docs/manual.md",
+            "JOB_SEARCH_MASTER_RESUME_PATH": "docs/resume.md",
+            "JOB_SEARCH_HTTP_TIMEOUT_SECONDS": "12",
+            "JOB_SEARCH_DB_TIMEOUT_SECONDS": "7",
+            "JOB_SEARCH_MAX_RETAINED_TASKS": "5",
+        }
+        config = AppConfig.from_env(environ, app_dir=tmp_path / "app")
+        app, root = (tmp_path / "app").resolve(), tmp_path.resolve()
+        assert config.db_path == app / "data" / "jobs.db", "app paths resolve against the app directory"
+        assert config.log_dir == (tmp_path / "elsewhere" / "logs").resolve(), "absolute paths are used as given"
+        assert config.api_log_path.parent == config.log_dir, "log files follow the log directory"
+        assert config.capture_dir == app / "cap"
+        assert config.guidance_path == root / "docs" / "guide.md", "document paths resolve against the workspace"
+        assert config.career_manual_path == root / "docs" / "manual.md"
+        assert config.master_resume_path == root / "docs" / "resume.md"
+        assert (config.http_timeout_seconds, config.db_timeout_seconds, config.max_retained_tasks) == (12, 7, 5)
 
     @pytest.mark.parametrize(
         ("environ", "code"),
@@ -39,12 +76,24 @@ class TestConfig:
             ({"JOB_SEARCH_PORT": "http"}, "config_invalid_integer"),
             ({"JOB_SEARCH_PORT": "70000"}, "config_integer_out_of_range"),
             ({"JOB_SEARCH_HOST": " "}, "config_empty_host"),
+            ({"JOB_SEARCH_HTTP_TIMEOUT_SECONDS": "0"}, "config_integer_out_of_range"),
+            ({"JOB_SEARCH_DB_TIMEOUT_SECONDS": "soon"}, "config_invalid_integer"),
+            ({"JOB_SEARCH_MAX_RETAINED_TASKS": "0"}, "config_integer_out_of_range"),
+            ({"JOB_SEARCH_DB_PATH": "a\x00b"}, "config_path_invalid"),
+            ({"JOB_SEARCH_DB_PATH": "."}, "config_path_not_file"),
+            ({"JOB_SEARCH_LOG_DIR": "marker.txt"}, "config_path_not_directory"),
+            ({"JOB_SEARCH_CAPTURE_DIR": "marker.txt"}, "config_path_not_directory"),
+            ({"JOB_SEARCH_WORKSPACE_ROOT": "marker.txt"}, "config_path_not_directory"),
+            ({"JOB_SEARCH_GUIDANCE_PATH": "."}, "config_path_not_file"),
+            ({"JOB_SEARCH_CAREER_MANUAL_PATH": "."}, "config_path_not_file"),
+            ({"JOB_SEARCH_MASTER_RESUME_PATH": "."}, "config_path_not_file"),
         ],
     )
     def test_invalid_values_raise_actionable_errors(self, tmp_path, environ, code):
+        (tmp_path / "marker.txt").write_text("x", encoding="utf-8")
         with pytest.raises(ConfigurationError) as info:
             AppConfig.from_env(environ, app_dir=tmp_path)
-        assert info.value.error_code == code
+        assert info.value.error_code == code, f"{environ}: expected {code}, got {info.value.error_code}"
 
     def test_runtime_settings(self, tmp_path):
         environ = {"CODEX_MODEL": "", "CODEX_CLI_PATH": "a-very-long-path"}

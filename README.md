@@ -96,6 +96,18 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_INTERVAL_SECONDS` | `86400` | Scheduled search cadence (scheduler currently disabled). |
 | `JOB_SEARCH_LOG_MAX_BYTES` / `JOB_SEARCH_LOG_BACKUP_COUNT` | `1048576` / `5` | Log rotation. |
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
+| `JOB_SEARCH_DB_PATH` | `job-search-tool/job_search.sqlite3` | SQLite database file. Relative paths resolve against `job-search-tool/`. |
+| `JOB_SEARCH_LOG_DIR` | `job-search-tool/logs` | Directory for `api.log` and `job-search.log`. |
+| `JOB_SEARCH_CAPTURE_DIR` | `job-search-tool/captures` | Directory for replayable request/response captures. |
+| `JOB_SEARCH_GUIDANCE_PATH` | `supporting-documents/20260731-job-search-guidance.md` | Search guidance file. Relative paths resolve against the workspace root. |
+| `JOB_SEARCH_CAREER_MANUAL_PATH` | `career-manual/Career-Manual.md` | Career Manual file (workspace-relative). |
+| `JOB_SEARCH_MASTER_RESUME_PATH` | `resume/Master-Resume.md` | Master resume file (workspace-relative). |
+| `JOB_SEARCH_HTTP_TIMEOUT_SECONDS` | `30` | Timeout for each job-board or posting request. |
+| `JOB_SEARCH_DB_TIMEOUT_SECONDS` | `30` | SQLite busy timeout. |
+| `JOB_SEARCH_MAX_RETAINED_TASKS` | `50` | Finished bulk tasks kept in memory for polling. |
+
+Configured paths are resolved at startup; an existing path of the wrong type (for
+example a file where a directory is expected) stops startup with exit code `2`.
 | `JOB_SEARCH_ALLOW_REMOTE` | `0` | Set `1` to allow a non-loopback `JOB_SEARCH_HOST`. The API has no authentication, so only do this on a trusted network. |
 | `JOB_SEARCH_MAX_REQUEST_BYTES` | `1048576` | Largest accepted request body; larger requests get `413`. |
 | `JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES` | `5242880` | Largest job-board or posting response the app reads; larger responses fail with `http_response_too_large`. |

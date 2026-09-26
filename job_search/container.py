@@ -55,9 +55,12 @@ def build_container(
     runtime = RuntimeSettings(
         os.environ if environ is None else environ, config.default_codex_cli_path, config.default_codex_model
     )
-    db = Database(config.db_path)
+    db = Database(config.db_path, timeout_seconds=config.db_timeout_seconds)
     captures = CaptureStore(config.capture_dir, runtime.capture_cache_enabled)
-    http_kwargs = {"max_response_bytes": config.http_max_response_bytes}
+    http_kwargs = {
+        "max_response_bytes": config.http_max_response_bytes,
+        "timeout_seconds": config.http_timeout_seconds,
+    }
     if http_get:
         http_kwargs["get"] = http_get
     if resolve_host:
@@ -75,7 +78,10 @@ def build_container(
     scoring = ScoringService(db, runtime, codex, documents, parse_model_json)
     packets = PacketService(db, runtime, codex, documents, store, parse_model_json)
     search = SearchService(db, runtime, boards, scoring, codex, parse_model_json)
-    tasks = BackgroundTaskRegistry(**({"thread_factory": thread_factory} if thread_factory else {}))
+    task_kwargs = {"max_retained": config.max_retained_tasks}
+    if thread_factory:
+        task_kwargs["thread_factory"] = thread_factory
+    tasks = BackgroundTaskRegistry(**task_kwargs)
     return Container(
         config=config,
         runtime=runtime,
