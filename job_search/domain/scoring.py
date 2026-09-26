@@ -104,7 +104,7 @@ class ScoringService:
         if not self._runtime.gpt_scoring_enabled():
             return "Codex scoring is disabled."
         if not self._runtime.codex_cli_available():
-            return f"Codex CLI is unavailable at {self._runtime.codex_cli_path()!r}."
+            return "Codex CLI is unavailable."
         return None
 
     def ensure_available(self):
@@ -115,9 +115,9 @@ class ScoringService:
             )
         if not self._runtime.codex_cli_available():
             raise DependencyUnavailableError(
-                f"Codex CLI is unavailable at {self._runtime.codex_cli_path()!r}. "
-                "Set CODEX_CLI_PATH or install Codex CLI before scoring.",
+                "Codex CLI is unavailable. Set CODEX_CLI_PATH or install Codex CLI before scoring.",
                 "codex_cli_unavailable",
+                detail=f"cli_path={self._runtime.codex_cli_path()!r}",
             )
 
     def scoring_inputs(self, uow):

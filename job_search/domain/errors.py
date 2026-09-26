@@ -8,12 +8,19 @@ a user-safe message. Presentation layers map the class to a response code.
 class AppError(Exception):
     """Base class for expected, user-reportable failures."""
 
-    def __init__(self, message, error_code, response_fields=None):
+    def __init__(self, message, error_code, response_fields=None, detail=None):
         super().__init__(message)
         self.message = message
         self.error_code = error_code
+        # Diagnostic specifics (paths, stderr); logged by record_exception, never sent to clients.
+        self.detail = detail
         # Extra user-safe fields presentation layers may include in the error response.
         self.response_fields = response_fields or {}
+
+
+def public_error_code(exc, default):
+    """The stable code to show users for ``exc``: its own code for AppErrors, else ``default``."""
+    return exc.error_code if isinstance(exc, AppError) else default
 
 
 class ValidationError(AppError):

@@ -5,7 +5,7 @@ import logging
 from urllib.parse import urlparse
 
 from job_search.domain.clock import now
-from job_search.domain.errors import AppError, DuplicateJobError, NotFoundError, ValidationError
+from job_search.domain.errors import AppError, DuplicateJobError, NotFoundError, ValidationError, public_error_code
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.rules import RUBRIC_FIELDS
 from job_search.domain.text import append_note_text
@@ -89,7 +89,10 @@ class JobService:
                 url=url,
                 pipeline=fields["pipeline"],
             )
-            scrape_error = str(exc)[:1000]
+            scrape_error = (
+                f"Posting could not be scraped ({public_error_code(exc, 'manual_job_scrape_failed')}); "
+                "saved with URL-derived details. See logs for the cause."
+            )
             scraped = self._boards.fallback_posting(url)
         final_url = scraped.get("url") or url
         ts = now()
@@ -97,7 +100,7 @@ class JobService:
             existing_id = uow.jobs.find_id_by_url(final_url)
             if existing_id:
                 raise DuplicateJobError(uow.jobs.get(existing_id))
-            scrape_note = f" Scrape failed: {scrape_error[:500]}" if scrape_error else ""
+            scrape_note = f" {scrape_error}" if scrape_error else ""
             job_id = uow.jobs.insert(
                 {
                     "created_at": ts,
