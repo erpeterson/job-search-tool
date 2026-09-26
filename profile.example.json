@@ -1,0 +1,118 @@
+{
+  "candidate_name": "Eric Peterson",
+  "pipelines": {
+    "Executive IC": {
+      "description": "Distinguished Engineer, Chief Architect, Technical Fellow, Principal Architect, Senior Principal Engineer roles at cloud, infrastructure, enterprise software, and AI platform companies.",
+      "keywords": "(\"Distinguished Engineer\" OR \"Chief Architect\" OR \"Technical Fellow\" OR \"Principal Architect\" OR \"Senior Principal Engineer\") (cloud OR infrastructure OR platform OR enterprise OR AI)"
+    },
+    "Office of the CTO": {
+      "description": "Office of CTO, technical strategy, engineering strategy, CTO advisor, strategic initiatives, technical incubation, emerging technology roles hidden inside executive descriptions.",
+      "keywords": "(\"Office of the CTO\" OR \"Technical Strategy\" OR \"Engineering Strategy\" OR \"CTO Advisor\" OR \"Strategic Initiatives\" OR \"Technical Incubation\" OR \"Emerging Technology\")"
+    },
+    "Adjacent industries": {
+      "description": "Architectural roles in healthcare, defense, climate, industrial automation, and scientific computing organizations with complicated technical organizations.",
+      "keywords": "(\"Chief Architect\" OR \"Principal Architect\" OR \"Distinguished Engineer\" OR \"Technical Strategy\") (healthcare OR defense OR climate OR \"industrial automation\" OR \"scientific computing\")"
+    },
+    "Wildcards": {
+      "description": "Intellectually interesting roles in national labs, Disney Imagineering, Apple Vision, NVIDIA research operations, NASA contractors, AI safety, and robotics platforms.",
+      "keywords": "(\"AI safety\" OR robotics OR \"research operations\" OR \"national lab\" OR NASA OR \"Apple Vision\" OR Imagineering OR NVIDIA) (\"Principal Engineer\" OR Architect OR \"Technical Strategy\")"
+    }
+  },
+  "default_search_location": "Remote",
+  "sales_role_exclusion": {
+    "query": "-\"Account Executive\" -\"Sales Executive\" -\"Sales Director\" -\"Account Manager\" -\"Business Development\" -sales",
+    "criteria": "Exclude Account Executive and other sales roles.",
+    "title_terms": [
+      "account executive",
+      "sales executive",
+      "sales director",
+      "sales manager",
+      "sales representative",
+      "account manager",
+      "account director",
+      "business development"
+    ]
+  },
+  "target_level": {
+    "system": "Oracle",
+    "label": "Oracle IC6",
+    "reference": "Oracle Software Engineer IC-6 is Architect. Treat IC6-equivalent as Architect / Principal-plus / Staff-plus scope with broad technical influence, cross-team architecture, durable technical direction, or organization-level engineering judgment.",
+    "at_or_above_level": "IC6+",
+    "at_or_above_title": "Architect-equivalent or higher",
+    "below_level": "BELOW_IC6",
+    "below_title": "Below Architect-equivalent",
+    "at_or_above_title_patterns": [
+      "\\b(distinguished engineer|technical fellow|fellow|chief architect)\\b",
+      "\\b(senior principal engineer|senior principal software engineer|senior principal architect|principal architect)\\b",
+      "\\b(architect|enterprise architect|platform architect)\\b"
+    ],
+    "below_title_patterns": [
+      "^(new grad|entry level|junior|intern)\\b",
+      "^(software engineer|senior software engineer|staff software engineer|staff engineer)(\\b|$)",
+      "^engineering manager\\b"
+    ]
+  },
+  "min_annual_compensation": 200000,
+  "location": {
+    "home_metro_label": "Seattle",
+    "home_metro_terms": [
+      "seattle",
+      "bellevue",
+      "redmond",
+      "kirkland",
+      "renton",
+      "mercer island",
+      "tukwila",
+      "puget sound",
+      "greater seattle",
+      "seattle metropolitan"
+    ],
+    "us_terms": [
+      "united states",
+      "usa",
+      "u.s.",
+      " us ",
+      "us-based",
+      "anywhere in the us",
+      "anywhere in us"
+    ],
+    "non_us_terms": [
+      "canada",
+      "united kingdom",
+      "uk",
+      "europe",
+      "emea",
+      "india",
+      "australia",
+      "germany",
+      "france",
+      "netherlands",
+      "singapore",
+      "mexico"
+    ]
+  },
+  "downlevel_high_score_exception": 80,
+  "scoring_instructions": [
+    "Return JSON only.",
+    "Use a 0-100 total fit score.",
+    "Score each rubric item from 0-10.",
+    "Reward cross-cutting architecture, organizational scaling, engineering effectiveness, developer experience, AI-enabled development, technical strategy, and technical decision quality.",
+    "Penalize line management, heavy operational ownership, firefighting, incremental feature ownership, narrow service ownership, and roles that only value hands-on coding.",
+    "Reject or heavily penalize Account Executive, account management, business development, quota-carrying, and other sales roles.",
+    "Use the calibration examples to adjust future scoring toward Eric's own scores.",
+    "Classify whether this role appears Oracle IC6-equivalent or higher using the local target definition: Oracle IC-6 is Architect.",
+    "Treat Principal Engineer, Architect, Senior Principal Engineer, Distinguished Engineer, Fellow, Chief Architect, CTO advisor, and equivalent strategic IC roles as potentially IC6-equivalent or higher depending on scope.",
+    "Treat ordinary software engineer, senior engineer, staff engineer with narrow feature ownership, line-management-heavy manager roles, and single-service owner roles as downlevel unless the posting clearly indicates Architect-equivalent broad cross-org technical influence.",
+    "Do not invent facts missing from the posting."
+  ],
+  "refinement_instructions": [
+    "Return JSON only.",
+    "Keep the same job board and pipeline.",
+    "Improve the keywords so the next run is more likely to find high-scoring roles for this pipeline.",
+    "Prefer query terms that imply Oracle IC6 Architect-equivalent or higher scope.",
+    "Avoid terms that produced downlevel or low-score results.",
+    "Explicitly exclude Account Executive and other sales roles.",
+    "Keep the query concise enough for LinkedIn or Indeed public search boxes.",
+    "Do not use Eric's personal LinkedIn or Indeed profile data."
+  ]
+}

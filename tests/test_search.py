@@ -158,9 +158,16 @@ def test_level_equivalency_cache_is_populated_without_network(container):
 
     with container.db.unit_of_work() as uow:
         assert uow.levels.count() == 0, "no level equivalencies are seeded"
-        assert lookup_level_equivalency(uow.levels, "Atlassian", "Principal Engineer") is None
-        first = lookup_level_equivalency(uow.levels, "ExampleCo", "Senior Software Engineer")
-        second = lookup_level_equivalency(uow.levels, "ExampleCo", "Senior Software Engineer II")
+        assert (
+            lookup_level_equivalency(uow.levels, "Atlassian", "Principal Engineer", container.profile.target_level)
+            is None
+        )
+        first = lookup_level_equivalency(
+            uow.levels, "ExampleCo", "Senior Software Engineer", container.profile.target_level
+        )
+        second = lookup_level_equivalency(
+            uow.levels, "ExampleCo", "Senior Software Engineer II", container.profile.target_level
+        )
         assert uow.levels.count() == 1, "ambiguous titles are not cached; matching prefixes reuse the cache"
     assert first["oracle_level"] == second["oracle_level"] == "BELOW_IC6"
 

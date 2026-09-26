@@ -7,31 +7,9 @@ from job_search.domain.clock import now
 from job_search.domain.errors import DependencyUnavailableError, ExternalServiceError, NotFoundError
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.model_output import validate_score_payload
-from job_search.domain.rules import ORACLE_IC6_LEVEL_REFERENCE, PIPELINES, RUBRIC_FIELDS
+from job_search.domain.rules import RUBRIC_FIELDS
 from job_search.domain.text import normalize_pipeline
 from job_search.observability import log_event, operation, record_exception
-
-SCORING_INSTRUCTIONS = [
-    "Return JSON only.",
-    "Use a 0-100 total fit score.",
-    "Score each rubric item from 0-10.",
-    "Reward cross-cutting architecture, organizational scaling, engineering effectiveness, developer experience, "
-    "AI-enabled development, technical strategy, and technical decision quality.",
-    "Penalize line management, heavy operational ownership, firefighting, incremental feature ownership, narrow "
-    "service ownership, and roles that only value hands-on coding.",
-    "Reject or heavily penalize Account Executive, account management, business development, quota-carrying, and "
-    "other sales roles.",
-    "Use the calibration examples to adjust future scoring toward Eric's own scores.",
-    "Classify whether this role appears Oracle IC6-equivalent or higher using the local target definition: "
-    "Oracle IC-6 is Architect.",
-    "Treat Principal Engineer, Architect, Senior Principal Engineer, Distinguished Engineer, Fellow, Chief "
-    "Architect, CTO advisor, and equivalent strategic IC roles as potentially IC6-equivalent or higher depending "
-    "on scope.",
-    "Treat ordinary software engineer, senior engineer, staff engineer with narrow feature ownership, "
-    "line-management-heavy manager roles, and single-service owner roles as downlevel unless the posting clearly "
-    "indicates Architect-equivalent broad cross-org technical influence.",
-    "Do not invent facts missing from the posting.",
-]
 
 
 def calibration_examples(rows):
@@ -49,17 +27,21 @@ def calibration_examples(rows):
     ]
 
 
-def build_scoring_prompt(job, career_context, examples):
+def level_reference(profile):
     return {
-        "task": "Score this job for Eric Peterson's job search.",
-        "level_reference": {
-            "canonical_source": "local Oracle IC6 target definition",
-            "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
-        },
-        "instructions": SCORING_INSTRUCTIONS,
+        "canonical_source": f"local {profile.target_level.label} target definition",
+        "target_level_definition": profile.target_level.reference,
+    }
+
+
+def build_scoring_prompt(job, career_context, examples, profile):
+    return {
+        "task": f"Score this job for {profile.candidate_name}'s job search.",
+        "level_reference": level_reference(profile),
+        "instructions": list(profile.scoring_instructions),
         "expected_json_schema": {
             "total_score": "integer 0-100",
-            "pipeline": f"one of: {', '.join(PIPELINES)}",
+            "pipeline": f"one of: {', '.join(profile.pipeline_names)}",
             "scorecard": {field: "integer 0-10" for field in RUBRIC_FIELDS},
             "level_assessment": "short phrase",
             "downlevel": "boolean",
@@ -92,8 +74,9 @@ def score_total(score):
 
 
 class ScoringService:
-    def __init__(self, db, runtime, codex, documents, parse_json):
+    def __init__(self, db, runtime, codex, documents, parse_json, profile):
         self._db = db
+        self._profile = profile
         self._runtime = runtime
         self._codex = codex
         self._documents = documents
@@ -130,7 +113,7 @@ class ScoringService:
     def score(self, job, examples, model, force_refresh=False):
         """Score a job-like dict with Codex. Does not touch the database."""
         self.ensure_available()
-        prompt = build_scoring_prompt(job, self._documents.career_context(), examples)
+        prompt = build_scoring_prompt(job, self._documents.career_context(), examples, self._profile)
         result = self._codex.call_json(model, prompt, "score_job", force_refresh=force_refresh)
         if not result.output_text:
             raise ExternalServiceError("Codex CLI response did not include text output.", "codex_score_empty")
@@ -170,7 +153,7 @@ class ScoringService:
                     total,
                     score["rationale"],
                     score["scorecard"],
-                    normalize_pipeline(score["pipeline"], job.get("pipeline") or ""),
+                    normalize_pipeline(score["pipeline"], self._profile.pipeline_names, job.get("pipeline") or ""),
                     score["level_assessment"],
                     downlevel,
                     now(),

@@ -2,12 +2,14 @@
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from flask.testing import FlaskClient
 
 from job_search.config import AppConfig
 from job_search.container import build_container
+from job_search.data.profile_file import load_search_profile
 from job_search.web.app import create_app
 
 CAREER_MANUAL = """# Career Manual
@@ -181,13 +183,22 @@ def pandoc():
     return FakePandoc()
 
 
+PROFILE_EXAMPLE = Path(__file__).resolve().parent.parent / "profile.example.json"
+
+
+@pytest.fixture(scope="session")
+def profile():
+    """The shipped example profile, loaded through the real loader and validator."""
+    return load_search_profile(PROFILE_EXAMPLE)
+
+
 @pytest.fixture
 def config(workspace, environ):
     return AppConfig.from_env(environ, app_dir=workspace / "job-search-tool")
 
 
 @pytest.fixture
-def container(config, environ, http, codex_runner, pandoc, resolver):
+def container(config, environ, http, codex_runner, pandoc, resolver, profile):
     built = build_container(
         config,
         environ=environ,
@@ -196,6 +207,7 @@ def container(config, environ, http, codex_runner, pandoc, resolver):
         pandoc=pandoc,
         thread_factory=ImmediateThread,
         resolve_host=resolver,
+        profile=profile,
     )
     built.bootstrap()
     return built

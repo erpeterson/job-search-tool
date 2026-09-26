@@ -53,15 +53,18 @@ class TestText:
             (None, "fallback"),
         ],
     )
-    def test_normalize_pipeline(self, value, expected):
-        assert normalize_pipeline(value, "fallback") == expected
+    def test_normalize_pipeline(self, profile, value, expected):
+        assert normalize_pipeline(value, profile.pipeline_names, "fallback") == expected, value
 
-    def test_sales_exclusion_is_appended_once(self):
-        once = with_sales_role_exclusion_keywords("Chief Architect")
+    def test_sales_exclusion_is_appended_once(self, profile):
+        exclusion = profile.sales_exclusion
+        once = with_sales_role_exclusion_keywords("Chief Architect", exclusion)
         assert '-"Account Executive"' in once, "exclusion should be appended"
-        assert with_sales_role_exclusion_keywords(once) == once, "exclusion should not be appended twice"
-        criteria = with_sales_role_exclusion_criteria("Architects.")
-        assert with_sales_role_exclusion_criteria(criteria) == criteria
+        assert with_sales_role_exclusion_keywords(once, exclusion) == once, "exclusion should not be appended twice"
+        criteria = with_sales_role_exclusion_criteria("Architects.", exclusion)
+        assert with_sales_role_exclusion_criteria(criteria, exclusion) == criteria, (
+            "criteria exclusion is appended once"
+        )
 
 
 class TestDiscoveryFilters:
@@ -76,31 +79,31 @@ class TestDiscoveryFilters:
             ({"location": "New York, NY"}, False),
         ],
     )
-    def test_location(self, result, allowed):
-        assert location_filter_decision(result)[0] is allowed, f"unexpected decision for {result}"
+    def test_location(self, profile, result, allowed):
+        assert location_filter_decision(result, profile)[0] is allowed, f"unexpected decision for {result}"
 
     def test_compensation_annualizes_hourly_and_monthly(self):
         assert extract_annual_compensation_values("$100/hour") == [208000]
         assert extract_annual_compensation_values("$15,000 per month") == [180000]
         assert extract_annual_compensation_values("$150k - $190k") == [150000, 190000]
 
-    def test_compensation_rejects_explicit_low_pay(self):
-        allowed, reason = compensation_filter_decision({"snippet": "Pay: $150,000 - $180,000 per year"})
+    def test_compensation_rejects_explicit_low_pay(self, profile):
+        allowed, reason = compensation_filter_decision({"snippet": "Pay: $150,000 - $180,000 per year"}, profile)
         assert not allowed, "a range entirely below $200k should be rejected"
         assert "$180,000" in reason
 
-    def test_compensation_allows_missing_or_high_pay(self):
-        assert compensation_filter_decision({"snippet": "Great benefits"})[0]
-        assert compensation_filter_decision({"snippet": "$250k - $300k"})[0]
+    def test_compensation_allows_missing_or_high_pay(self, profile):
+        assert compensation_filter_decision({"snippet": "Great benefits"}, profile)[0], "missing pay is allowed"
+        assert compensation_filter_decision({"snippet": "$250k - $300k"}, profile)[0], "high pay is allowed"
 
-    def test_sales_titles_are_rejected(self):
-        assert not sales_role_filter_decision({"title": "Enterprise Account Executive"})[0]
-        assert sales_role_filter_decision({"title": "Chief Architect"})[0]
+    def test_sales_titles_are_rejected(self, profile):
+        assert not sales_role_filter_decision({"title": "Enterprise Account Executive"}, profile)[0], "AE rejected"
+        assert sales_role_filter_decision({"title": "Chief Architect"}, profile)[0], "architect allowed"
 
-    def test_first_rejection_stops_at_first_failing_filter(self):
+    def test_first_rejection_stops_at_first_failing_filter(self, profile):
         result = {"title": "Account Executive", "location": "Paris, France"}
-        assert first_rejection(result)[0] == "sales_role", "sales filter runs before location"
-        assert first_rejection({"title": "Architect", "location": "Seattle"}) is None
+        assert first_rejection(result, profile)[0] == "sales_role", "sales filter runs before location"
+        assert first_rejection({"title": "Architect", "location": "Seattle"}, profile) is None
 
 
 class TestJobFilter:
@@ -135,11 +138,11 @@ class TestLevels:
             ("", None),
         ],
     )
-    def test_estimate(self, title, level):
-        estimate = estimate_level_equivalency(title)
+    def test_estimate(self, profile, title, level):
+        estimate = estimate_level_equivalency(title, profile.target_level)
         assert (estimate["oracle_level"] if estimate else None) == level, f"unexpected level for {title!r}"
 
-    def test_assessment_text(self):
+    def test_assessment_text(self, profile):
         text = level_assessment_from_equivalency(
             {
                 "company": "Co",
@@ -148,10 +151,11 @@ class TestLevels:
                 "source_level": "L6",
                 "oracle_level": "BELOW_IC6",
                 "oracle_title": "Below",
-            }
+            },
+            profile.target_level,
         )
         assert text == "Co Staff Engineer L6 maps to Oracle BELOW_IC6 Below per cached level calibration."
-        assert level_assessment_from_equivalency(None) == ""
+        assert level_assessment_from_equivalency(None, profile.target_level) == ""
 
 
 class TestScoringAndPacketRules:
