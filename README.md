@@ -185,8 +185,8 @@ evidence. `JOB_SEARCH_LOG_BACKUP_COUNT` was removed with this change.
 - State-changing requests must send JSON (`Content-Type: application/json`) or
   no body at all; malformed JSON returns `400`.
 - API errors return JSON `{"error": ..., "request_id": ...}` with `400`
-  (validation), `403` (disallowed host or cross-origin request), `404`, `409` (conflict or Codex/scoring unavailable), `413` (body too large), `429` (too many background tasks running),
-  `415` (non-empty body that is not `application/json`), `502`
+  (validation), `403` (disallowed host or cross-origin request), `404`, `409` (conflict with current state), `413` (body too large), `429` (too many background tasks running),
+  `415` (non-empty body that is not `application/json`), `503` (Codex CLI, Codex scoring, or Pandoc unavailable), `502`
   (Codex/Pandoc failure), or `500`. A `500` never includes internal details;
   search the logs for its `request_id`.
 - Every response carries `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,

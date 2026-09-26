@@ -225,8 +225,8 @@ class TestJobCrm:
     def test_score_gpt_requires_enabled_scoring(self, client, container):
         job_id = insert_job(container)
         response = post(client, f"/api/jobs/{job_id}/score-gpt")
-        assert response.status_code == 409, (
-            f"expected HTTP 409, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        assert response.status_code == 503, (
+            f"disabled scoring should be 503, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
         )
         assert "disabled" in response.get_json()["error"], f"expected 'disabled' in {response.get_json()['error']!r}"
 
