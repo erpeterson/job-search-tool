@@ -5,7 +5,7 @@ import logging
 from urllib.parse import urlparse
 
 from job_search.domain.clock import now
-from job_search.domain.errors import AppError, DuplicateJobError, NotFoundError, ValidationError, public_error_code
+from job_search.domain.errors import DuplicateJobError, NotFoundError, ValidationError, public_error_code
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.rules import RUBRIC_FIELDS
 from job_search.domain.text import append_note_text
@@ -48,11 +48,12 @@ def user_score_total(scorecard, total_score=None):
 
 
 class JobService:
-    def __init__(self, db, runtime, boards, scoring):
+    def __init__(self, db, runtime, boards, scoring, background):
         self._db = db
         self._runtime = runtime
         self._boards = boards
         self._scoring = scoring
+        self._background = background
 
     def _gpt_enabled(self):
         return self._runtime.gpt_scoring_enabled()
@@ -70,10 +71,11 @@ class JobService:
 
     @traced("manual_job_create", "domain.jobs")
     def create_manual(self, fields, force_refresh=False):
-        """Scrape and track a job from a URL, then score it when Codex is available.
+        """Scrape and track a job from a URL, then start background scoring when Codex is available.
 
-        Returns ``(job, scrape_error, score_error)``. Scrape and scoring failures
-        are non-fatal: the job is still saved and the reason is returned.
+        The scrape is bounded by the HTTP timeout and redirect limit. Returns a dict with
+        ``job``, ``scrape_error``, ``score_error`` (why scoring was skipped), and
+        ``score_task`` (the pollable scoring task, or None).
         """
         url = validate_posting_url(fields["url"])
         scrape_error = None
@@ -120,28 +122,21 @@ class JobService:
                 }
             )
             apply_job_filters(uow, self._gpt_enabled(), job_id)
-        score_error = self._auto_score(job_id)
-        return self.get(job_id), scrape_error, score_error
+        score_error, score_task = self._start_auto_score(job_id)
+        return {
+            "job": self.get(job_id),
+            "scrape_error": scrape_error,
+            "score_error": score_error,
+            "score_task": score_task,
+        }
 
-    def _auto_score(self, job_id):
+    def _start_auto_score(self, job_id):
+        """Return ``(skip_reason, task)``: scoring runs as a background task when Codex is available."""
         unavailable = self._scoring.unavailable_reason()
         if unavailable:
             log_event("manual_job_auto_score_skipped", job_id=job_id, reason=unavailable)
-            return f"Automatic Codex scoring skipped: {unavailable}"
-        try:
-            self._scoring.populate_score(job_id)
-        except AppError as exc:
-            record_exception(
-                "manual_job_auto_score_failed",
-                "domain.jobs",
-                "auto_score",
-                exc,
-                level=logging.WARNING,
-                recovery="The job is saved; scoring can be retried from the UI.",
-                job_id=job_id,
-            )
-            return exc.message
-        return None
+            return f"Automatic Codex scoring skipped: {unavailable}", None
+        return None, self._background.start_auto_score(job_id)
 
     @traced("job_rescrape", "domain.jobs", id_arg="job_id")
     def rescrape(self, job_id, force_refresh=True):

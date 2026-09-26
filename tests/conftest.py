@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from flask.testing import FlaskClient
 from job_search.config import AppConfig
 from job_search.container import build_container
 from job_search.data.profile_file import load_search_profile
+from job_search.observability import configure_console_logging
 from job_search.web.app import create_app
 
 CAREER_MANUAL = """# Career Manual
@@ -93,6 +95,20 @@ class FakeHttp:
                     raise error
                 return FakeResponse(status_code, text, response_headers)
         raise AssertionError(f"Unexpected HTTP GET: {url}")
+
+
+@pytest.fixture(autouse=True)
+def reset_console_logging():
+    """Point console logging back at the real streams so no handler outlives pytest's capture."""
+    yield
+    configure_console_logging(verbose=False, stdout=sys.__stdout__, stderr=sys.__stderr__)
+
+
+def wait_for_task(client, task):
+    """Return the final task state. Tasks run synchronously in tests (ImmediateThread)."""
+    final = client.get(f"/api/codex-tasks/{task['id']}").get_json()["task"]
+    assert final["status"] not in ("queued", "running"), f"task should have finished: {final}"
+    return final
 
 
 PUBLIC_TEST_IP = "93.184.216.34"
