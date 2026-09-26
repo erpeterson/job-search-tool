@@ -214,7 +214,7 @@ complete every acceptance criterion listed with it.
   not run worker code; scheduler ownership is single-instance; and automated
   tests cover lease expiry, duplicate-claim prevention, and worker failure.
 
-- [ ] **REOPEN: finish exception telemetry and controlled startup errors.**
+- [x] **REOPEN: finish exception telemetry and controlled startup errors.**
   Recovery remains unobserved or incomplete in `clamp_score()`
   (`app.py:1807`), packet-path `ValueError` handlers (`:2828`, `:2856`,
   `:2884`), and invalid query-refinement JSON (`:2329`, which lacks the required

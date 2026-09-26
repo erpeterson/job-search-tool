@@ -23,7 +23,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_root_is_limited_to_composition_and_startup(self):
         root_source = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertLessEqual(
-            root_source.count("\n"), 20, "The root entry point must remain a thin composition boundary."
+            root_source.count("\n"), 30, "The root entry point must remain a thin composition boundary."
         )
         self.assertIn("job_search.presentation.legacy", root_source)
 

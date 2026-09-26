@@ -48,6 +48,17 @@ class BusinessPathTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "under applications"):
             app_module.application_packet_abs_path("../../outside")
 
+    def test_score_coercion_recovery_emits_a_stable_telemetry_code(self):
+        events = []
+        original_logger = app_module.event_logger.info
+        app_module.event_logger.info = events.append
+        try:
+            self.assertEqual(app_module.clamp_score("not-a-number"), 0)
+        finally:
+            app_module.event_logger.info = original_logger
+
+        self.assertIn("SCORE_VALUE_COERCION_RECOVERED", "\n".join(events))
+
     def test_corrupt_capture_is_recovered_and_emits_telemetry(self):
         with patch.object(app_module.os, "environ", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}):
             payload = {"url": "https://example.test"}

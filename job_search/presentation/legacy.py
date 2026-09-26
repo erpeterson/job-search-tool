@@ -1592,7 +1592,15 @@ def append_note_text(existing, addition):
 def clamp_score(value, low=0, high=10):
     try:
         parsed = int(round(float(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        log_event(
+            "score_value_coercion_recovered",
+            error_code="SCORE_VALUE_COERCION_RECOVERED",
+            component="business.scoring",
+            operation="clamp_score",
+            value_type=type(value).__name__,
+            error_type=type(exc).__name__,
+        )
         return low
     return max(low, min(high, parsed))
 
@@ -1950,8 +1958,15 @@ def refine_search_query(conn, query_id, force_refresh=False):
         return
     try:
         refined = parse_model_json(output_text)
-    except json.JSONDecodeError:
-        log_event("query_refinement_invalid_json", query_id=query_id, response_excerpt=output_text[:1000])
+    except json.JSONDecodeError as exc:
+        log_event(
+            "query_refinement_invalid_json",
+            error_code="QUERY_REFINEMENT_INVALID_JSON",
+            component="business.search_refinement",
+            operation="parse_model_json",
+            query_id=query_id,
+            error_type=type(exc).__name__,
+        )
         return
     keywords = clean_text(refined.get("keywords") or query.get("keywords"))
     location = clean_text(refined.get("location") or query.get("location") or "Remote")
@@ -2422,6 +2437,14 @@ def api_attach_application_packet(job_id):
     try:
         result = packet_attachment_service().attach(job_id, packet_path)
     except ValueError as exc:
+        log_event(
+            "packet_attachment_rejected",
+            error_code="PACKET_ATTACHMENT_REJECTED",
+            component="presentation.packets",
+            operation="attach",
+            job_id=job_id,
+            error_type=type(exc).__name__,
+        )
         return jsonify({"error": str(exc)}), 400
     if result is None:
         return jsonify({"error": "Job not found"}), 404
@@ -2449,6 +2472,14 @@ def api_application_packet_content(job_id):
         try:
             packet_dir = application_packet_abs_path(job["application_packet_path"])
         except ValueError as exc:
+            log_event(
+                "packet_content_path_rejected",
+                error_code="PACKET_CONTENT_PATH_REJECTED",
+                component="presentation.packets",
+                operation="content",
+                job_id=job_id,
+                error_type=type(exc).__name__,
+            )
             return jsonify({"error": str(exc)}), 404
         file_path = (packet_dir / filename).resolve()
         if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
@@ -2477,6 +2508,14 @@ def api_application_packet_render(job_id):
         try:
             packet_dir = application_packet_abs_path(job["application_packet_path"])
         except ValueError as exc:
+            log_event(
+                "packet_render_path_rejected",
+                error_code="PACKET_RENDER_PATH_REJECTED",
+                component="presentation.packets",
+                operation="render",
+                job_id=job_id,
+                error_type=type(exc).__name__,
+            )
             return Response(str(exc), status=404, mimetype="text/plain")
         file_path = (packet_dir / filename).resolve()
         if packet_dir not in file_path.parents or not file_path.exists() or not file_path.is_file():
