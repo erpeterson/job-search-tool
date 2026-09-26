@@ -61,8 +61,15 @@ def run(args, environ, serve, out, app_dir):
     print(f"Job Search Console running at http://{config.host}:{config.port}", file=out)
     print(f"Database: {config.db_path}", file=out)
     log_event("app_started", host=config.host, port=config.port)
-    serve(app, config)
-    log_event("app_stopped")
+    outcome = "error"
+    try:
+        serve(app, config)
+        outcome = "ok"
+    except KeyboardInterrupt:
+        outcome = "interrupted"
+        raise
+    finally:
+        log_event("app_stopped", outcome=outcome)
 
 
 def _serve(app, config):

@@ -13,7 +13,7 @@ from job_search.domain.errors import (
     ValidationError,
 )
 from job_search.domain.text import clean_text, slugify
-from job_search.observability import log_event, operation, record_exception
+from job_search.observability import log_event, operation, record_exception, traced
 
 PACKET_FIELDS = {
     "job_brief_markdown": "Job-Brief.md",
@@ -219,6 +219,7 @@ class PacketService:
             "codex_output": output_text,
         }
 
+    @traced("application_packet_attach", "domain.packets", id_arg="job_id")
     def attach(self, job_id, packet_path):
         packet_path = clean_text(packet_path)
         with self._db.unit_of_work() as uow:
