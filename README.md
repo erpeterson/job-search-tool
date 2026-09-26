@@ -77,6 +77,7 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_ENABLE_GPT_SCORING` | `0` | `1` enables Codex scoring. Editable in the UI. |
 | `JOB_SEARCH_USE_CAPTURE_CACHE` | `1` | `0` forces live requests. Editable in the UI. |
 | `JOB_SEARCH_HOST` / `JOB_SEARCH_PORT` | `127.0.0.1` / `5050` | Bind address. |
+| `JOB_SEARCH_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>` | Comma-separated `Host` header values the app accepts. Other hosts get `403` (DNS-rebinding protection); state-changing requests with a foreign `Origin` also get `403`. |
 | `JOB_SEARCH_INTERVAL_SECONDS` | `86400` | Scheduled search cadence (scheduler currently disabled). |
 | `JOB_SEARCH_LOG_MAX_BYTES` / `JOB_SEARCH_LOG_BACKUP_COUNT` | `1048576` / `5` | Log rotation. |
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
@@ -87,7 +88,7 @@ Invalid values stop startup with exit code `2` and a message naming the variable
 ## Errors, Logs, And Troubleshooting
 
 - API errors return JSON `{"error": ..., "request_id": ...}` with `400`
-  (validation), `404`, `409` (conflict or Codex/scoring unavailable), `502`
+  (validation), `403` (disallowed host or cross-origin request), `404`, `409` (conflict or Codex/scoring unavailable), `502`
   (Codex/Pandoc failure), or `500`. A `500` never includes internal details;
   search the logs for its `request_id`.
 - Every response has an `X-Request-ID` header. Search runs and bulk tasks log a

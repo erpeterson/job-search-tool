@@ -4,6 +4,7 @@ import json
 import subprocess
 
 import pytest
+from flask.testing import FlaskClient
 
 from job_search.config import AppConfig
 from job_search.container import build_container
@@ -166,11 +167,24 @@ def container(config, environ, http, codex_runner, pandoc):
     return built
 
 
-@pytest.fixture
-def client(container):
+class LocalClient(FlaskClient):
+    """Test client that sends the Host header a browser uses for the default local address."""
+
+    def open(self, *args, **kwargs):
+        kwargs.setdefault("base_url", "http://127.0.0.1:5050")
+        return super().open(*args, **kwargs)
+
+
+def make_client(container):
     app = create_app(container)
     app.testing = True
+    app.test_client_class = LocalClient
     return app.test_client()
+
+
+@pytest.fixture
+def client(container):
+    return make_client(container)
 
 
 @pytest.fixture
