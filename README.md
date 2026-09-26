@@ -88,6 +88,7 @@ Values are read from the environment and `job-search-tool/.env`.
 | `CODEX_CLI_PATH` | `codex` on `PATH` | Editable in the UI, but only as `codex` (found on `PATH`) or an absolute path to an executable named `codex`, because the value is run as a subprocess. Other values are rejected with `400`. |
 | `CODEX_MODEL` | blank (Codex default) | Editable in the UI. |
 | `CODEX_CLI_TIMEOUT_SECONDS` | `270` | Per Codex invocation. |
+| `PANDOC_TIMEOUT_SECONDS` | `120` | Per Pandoc DOCX conversion; timeouts fail with `pandoc_timeout`. |
 | `JOB_SEARCH_ENABLE_GPT_SCORING` | `0` | `1` enables Codex scoring. Editable in the UI. |
 | `JOB_SEARCH_USE_CAPTURE_CACHE` | `1` | `0` forces live requests. Editable in the UI. |
 | `JOB_SEARCH_HOST` / `JOB_SEARCH_PORT` | `127.0.0.1` / `5050` | Bind address. |
