@@ -75,11 +75,16 @@ class TestCreateJob:
         assert body["job"]["gpt_score"] is None
 
     def test_duplicate_url_conflicts(self, client, container, http):
+        from job_search.observability import METRICS
+
         http.route("example.com", POSTING_HTML)
         insert_job(container, url="https://example.com/jobs/5")
+        before = METRICS.snapshot().get("blame.job_url_already_tracked", 0)
         response = post(client, "/api/jobs", {"url": "https://example.com/jobs/5", "pipeline": "Wildcards"})
-        assert response.status_code == 409
-        assert response.get_json()["job"]["url"] == "https://example.com/jobs/5"
+        assert response.status_code == 409, f"duplicate URL should conflict: {response.get_json()}"
+        assert response.get_json()["job"]["url"] == "https://example.com/jobs/5", "the existing job is returned"
+        after = METRICS.snapshot().get("blame.job_url_already_tracked", 0)
+        assert after == before + 1, "the duplicate must be recorded as a blame metric"
 
     def test_validation_errors(self, client):
         assert post(client, "/api/jobs", {"pipeline": "Wildcards"}).get_json()["error"] == "URL is required."
