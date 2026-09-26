@@ -120,6 +120,10 @@ single-user use only. It refuses to bind to a non-loopback address unless
   `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
 - Every response has an `X-Request-ID` header. Search runs and bulk tasks log a
   `correlation_id` of `search-run-<id>` or `task-<id>`.
+- Major operations (search runs, scoring, packet generation and attach, manual
+  add, re-scrape, delete, purge, query refinement, config updates) emit
+  `<name>_started`, `<name>_succeeded`, and `<name>_failed` events. Startup and
+  shutdown emit `app_started` and `app_stopped` (with `outcome`).
 - Each caught exception writes an `exception` event with a stable `error_code`
   and a `blame_metric` event to `logs/job-search.log`. `GET /api/metrics`
   returns the in-process blame counters.

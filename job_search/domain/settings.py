@@ -2,6 +2,7 @@
 
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.rules import DEFAULT_SETTINGS
+from job_search.observability import traced
 
 
 class SettingsService:
@@ -27,6 +28,7 @@ class SettingsService:
             apply_job_filters(uow, self._runtime.gpt_scoring_enabled())
             return uow.settings.all(), uow.jobs.list(include_filtered=True)
 
+    @traced("runtime_config_update", "domain.settings")
     def update_runtime_config(self, updates):
         """Persist runtime config to ``.env`` and the process; mirror the model into settings."""
         if not updates:

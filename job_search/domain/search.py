@@ -23,7 +23,7 @@ from job_search.domain.text import (
     with_sales_role_exclusion_criteria,
     with_sales_role_exclusion_keywords,
 )
-from job_search.observability import correlation_scope, log_event, operation, record_exception
+from job_search.observability import correlation_scope, log_event, operation, record_exception, traced
 
 REFINEMENT_INSTRUCTIONS = [
     "Return JSON only.",
@@ -374,6 +374,7 @@ class SearchService:
 
     # Refinement ---------------------------------------------------------------
 
+    @traced("query_refinement", "domain.search", id_arg="query_id")
     def refine_query(self, query_id, force_refresh=False):
         unavailable = self._scoring.unavailable_reason()
         if unavailable:
