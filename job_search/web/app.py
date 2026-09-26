@@ -29,6 +29,16 @@ from job_search.web.routes import bp
 from job_search.web.validation import require_json_content_type
 
 REQUEST_ID_HEADER = "X-Request-ID"
+# 'unsafe-inline' for scripts is required until the inline UI script and handlers are extracted (T-35).
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -84,6 +94,8 @@ def create_app(container):
         request_id = current_correlation_id()
         if request_id:
             response.headers[REQUEST_ID_HEADER] = request_id
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
         started = g.get("request_started")
         log_event(
             "http_request_completed",

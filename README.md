@@ -101,6 +101,8 @@ single-user use only. It refuses to bind to a non-loopback address unless
   `415` (non-empty body that is not `application/json`), `502`
   (Codex/Pandoc failure), or `500`. A `500` never includes internal details;
   search the logs for its `request_id`.
+- Every response carries `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
 - Every response has an `X-Request-ID` header. Search runs and bulk tasks log a
   `correlation_id` of `search-run-<id>` or `task-<id>`.
 - Each caught exception writes an `exception` event with a stable `error_code`
