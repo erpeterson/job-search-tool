@@ -113,7 +113,8 @@ def create_app(container):
             method=request.method,
             path=request.path,
         )
-        return jsonify({"error": exc.message, "request_id": current_correlation_id()}), status
+        body = {**exc.response_fields, "error": exc.message, "request_id": current_correlation_id()}
+        return jsonify(body), status
 
     @app.errorhandler(HTTPException)
     def handle_http_exception(exc):
