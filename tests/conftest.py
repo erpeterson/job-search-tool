@@ -222,8 +222,8 @@ def client(container):
 
 
 @pytest.fixture
-def enable_scoring(environ):
-    environ["JOB_SEARCH_ENABLE_GPT_SCORING"] = "1"
+def enable_scoring(container):
+    container.runtime.update({"JOB_SEARCH_ENABLE_GPT_SCORING": "1"})
 
 
 def insert_job(container, **overrides):

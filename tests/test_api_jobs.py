@@ -209,9 +209,12 @@ class TestSettingsAndConfig:
         body = post(client, "/api/config", {"JOB_SEARCH_ENABLE_GPT_SCORING": "1", "CODEX_MODEL": "gpt-x"}).get_json()
         assert body["gpt_scoring_enabled"] is True
         assert body["settings"]["codex_model"] == "gpt-x"
-        assert environ["CODEX_MODEL"] == "gpt-x"
-        env_text = container.config.env_path.read_text()
-        assert "JOB_SEARCH_ENABLE_GPT_SCORING=1" in env_text and "CODEX_MODEL=gpt-x" in env_text
+        assert container.runtime.codex_model() == "gpt-x", "the new model applies in memory"
+        assert "CODEX_MODEL" not in environ, "the process environment is never modified"
+        from job_search.data.env_file import EnvFile
+
+        saved = EnvFile(container.config.env_path).read()
+        assert saved == {"JOB_SEARCH_ENABLE_GPT_SCORING": "1", "CODEX_MODEL": "gpt-x"}, f".env contents: {saved}"
 
     def test_config_without_updates_returns_current_config(self, client):
         body = post(client, "/api/config", {}).get_json()

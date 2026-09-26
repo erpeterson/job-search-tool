@@ -1,8 +1,7 @@
 """Configuration loaded from environment variables.
 
-``AppConfig`` is read once at startup and validated. ``RuntimeSettings`` wraps the
-subset of settings the UI can change while the app runs; those remain backed by
-``os.environ`` (so child processes inherit them) and are persisted to ``.env``.
+``AppConfig`` is read once at startup and validated. ``RuntimeSettings`` holds the
+subset of settings the UI can change while the app runs, in memory.
 """
 
 import ipaddress
@@ -10,23 +9,17 @@ import logging
 import os
 import re
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from job_search.domain.errors import ConfigurationError, ValidationError
+from job_search.domain.errors import ConfigurationError
+from job_search.domain.runtime_policy import RUNTIME_CONFIG_KEYS
 from job_search.observability import record_exception
 
 DEFAULT_APP_DIR = Path(__file__).resolve().parent.parent
 
-RUNTIME_CONFIG_KEYS = (
-    "CODEX_CLI_PATH",
-    "CODEX_MODEL",
-    "JOB_SEARCH_ENABLE_GPT_SCORING",
-    "JOB_SEARCH_USE_CAPTURE_CACHE",
-)
-_BOOLEAN_RUNTIME_KEYS = ("JOB_SEARCH_ENABLE_GPT_SCORING", "JOB_SEARCH_USE_CAPTURE_CACHE")
 _INT_PATTERN = re.compile(r"^\s*-?\d+\s*$")
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 # Scheduled searches are disabled in code, independent of JOB_SEARCH_AUTORUN:
 # the scheduler has known bugs and consumes Codex credits unattended. Remove
@@ -178,51 +171,35 @@ class AppConfig:
         )
 
 
-CODEX_EXECUTABLE_NAME = "codex"
-
-
-def validate_codex_cli_path(value):
-    """Accept only ``codex`` on PATH or an absolute path to an executable named ``codex``.
-
-    The value is executed as a subprocess, so the web UI must not be able to point it
-    at an arbitrary program.
-    """
-    if value == CODEX_EXECUTABLE_NAME:
-        if shutil.which(value) is None:
-            raise ValidationError("CODEX_CLI_PATH 'codex' was not found on PATH.", "config_codex_not_on_path")
-        return value
-    path = Path(value)
-    if not path.is_absolute():
-        raise ValidationError(
-            "CODEX_CLI_PATH must be 'codex' or an absolute path to the codex executable.",
-            "config_codex_path_not_absolute",
-        )
-    if path.name != CODEX_EXECUTABLE_NAME:
-        raise ValidationError(
-            "CODEX_CLI_PATH must point to an executable named 'codex'.", "config_codex_path_wrong_name"
-        )
-    if not path.is_file() or not os.access(path, os.X_OK):
-        raise ValidationError("CODEX_CLI_PATH must be an existing executable file.", "config_codex_path_not_executable")
-    return value
-
-
 class RuntimeSettings:
-    """Settings editable from the UI, backed by the process environment."""
+    """In-memory, thread-safe runtime settings, seeded once from the environment at startup.
 
-    def __init__(self, env_file, default_codex_cli_path, default_codex_model="", environ=None):
-        self._env_file = env_file
+    The UI can change these values while the app runs; persistence to ``.env`` is the
+    caller's job. The process environment is never modified.
+    """
+
+    def __init__(self, values, default_codex_cli_path, default_codex_model=""):
+        self._values = {key: str(values[key]) for key in RUNTIME_CONFIG_KEYS if values.get(key) is not None}
         self._default_codex_cli_path = default_codex_cli_path
         self._default_codex_model = default_codex_model
-        self._environ = os.environ if environ is None else environ
+        self._lock = threading.Lock()
+
+    def _get(self, key, default=""):
+        with self._lock:
+            return self._values.get(key, default)
+
+    def update(self, updates):
+        with self._lock:
+            self._values.update({key: str(value) for key, value in updates.items() if key in RUNTIME_CONFIG_KEYS})
 
     def gpt_scoring_enabled(self):
-        return self._environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1"
+        return self._get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1"
 
     def capture_cache_enabled(self):
-        return self._environ.get("JOB_SEARCH_USE_CAPTURE_CACHE", "1") != "0"
+        return self._get("JOB_SEARCH_USE_CAPTURE_CACHE", "1") != "0"
 
     def codex_cli_path(self):
-        return self._environ.get("CODEX_CLI_PATH") or self._default_codex_cli_path
+        return self._get("CODEX_CLI_PATH") or self._default_codex_cli_path
 
     def codex_cli_available(self):
         path = self.codex_cli_path()
@@ -233,10 +210,10 @@ class RuntimeSettings:
         return shutil.which(path) is not None
 
     def codex_model(self, stored_model=None):
-        """Environment override first, then the stored setting, then the startup default."""
-        env_model = self._environ.get("CODEX_MODEL", "").strip()
-        if env_model:
-            return env_model
+        """Configured override first, then the stored setting, then the startup default."""
+        configured = self._get("CODEX_MODEL").strip()
+        if configured:
+            return configured
         if stored_model is not None:
             return stored_model.strip()
         return self._default_codex_model
@@ -244,7 +221,7 @@ class RuntimeSettings:
     def masked(self):
         config = {}
         for key in RUNTIME_CONFIG_KEYS:
-            value = self._environ.get(key, "")
+            value = self._get(key)
             if not value:
                 config[key] = {"configured": False, "masked": ""}
             elif len(value) <= 8:
@@ -252,28 +229,3 @@ class RuntimeSettings:
             else:
                 config[key] = {"configured": True, "masked": f"{value[:4]}...{value[-4:]}"}
         return config
-
-    @staticmethod
-    def validate_updates(payload):
-        """Return the subset of runtime config keys to persist, validated."""
-        updates = {}
-        for key in RUNTIME_CONFIG_KEYS:
-            if key not in payload:
-                continue
-            value = str(payload.get(key) if payload.get(key) is not None else "").strip()
-            if _CONTROL_CHARS.search(value):
-                raise ValidationError(f"{key} must not contain control characters.", "config_value_control_chars")
-            if len(value) > 1024:
-                raise ValidationError(f"{key} must be at most 1024 characters.", "config_value_too_long")
-            if key in _BOOLEAN_RUNTIME_KEYS and value not in ("", "0", "1"):
-                raise ValidationError(f"{key} must be 0 or 1.", "config_value_not_boolean")
-            if key == "CODEX_CLI_PATH" and value:
-                validate_codex_cli_path(value)
-            if value or key == "CODEX_MODEL":
-                updates[key] = value
-        return updates
-
-    def apply(self, updates):
-        self._env_file.update(updates)
-        for key, value in updates.items():
-            self._environ[key] = value
