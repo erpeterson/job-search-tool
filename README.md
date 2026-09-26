@@ -180,6 +180,12 @@ search can replay the saved response instead of repeatedly hitting LinkedIn or
 Indeed. Codex CLI request/response payloads use the same capture mechanism for
 scoring and search refinement when Codex scoring is enabled.
 
+Only successful outcomes are replayed: a `2xx` HTTP response, or a Codex call
+that exited `0`. Failed calls are still written to `captures/` as evidence, but
+the next request makes a live call. Captures are written atomically, and a
+failed capture write is logged (`capture_write_failed`) without affecting the
+request.
+
 Manual searches include a `Force refresh` checkbox. When checked, the search
 bypasses replay and makes live LinkedIn, Indeed, and Codex CLI requests, then
 writes the fresh responses back to captures. Scheduled searches always force

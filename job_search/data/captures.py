@@ -3,6 +3,8 @@
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from datetime import UTC, datetime
 
 from job_search.observability import log_event, record_exception
@@ -22,7 +24,12 @@ class CaptureStore:
         digest = hashlib.sha256(stable_json(request_payload).encode("utf-8")).hexdigest()
         return self._capture_dir / service / operation / f"{digest}.json"
 
-    def read(self, service, operation, request_payload, force_refresh=False):
+    def read(self, service, operation, request_payload, force_refresh=False, is_success=None):
+        """Return a replayable capture, or None.
+
+        ``is_success(response_payload)`` decides whether a capture may be replayed;
+        failed outcomes are kept on disk as evidence but trigger a live call.
+        """
         if force_refresh:
             log_event("capture_bypass", service=service, operation=operation, reason="force_refresh")
             return None
@@ -46,12 +53,15 @@ class CaptureStore:
                 path=str(path),
             )
             return None
+        if is_success is not None and not is_success(capture.get("response") or {}):
+            log_event("capture_replay_skipped_failed", service=service, operation=operation, path=str(path))
+            return None
         log_event("capture_replay", service=service, operation=operation, path=str(path))
         return capture
 
     def write(self, service, operation, request_payload, response_payload, metadata=None):
+        """Atomically write a capture. Never raises for I/O errors, so it cannot mask a caller's error."""
         path = self.path_for(service, operation, request_payload)
-        path.parent.mkdir(parents=True, exist_ok=True)
         capture = {
             "captured_at": datetime.now(UTC).isoformat(),
             "service": service,
@@ -60,6 +70,30 @@ class CaptureStore:
             "response": response_payload,
             "metadata": metadata or {},
         }
-        path.write_text(json.dumps(capture, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        content = json.dumps(capture, indent=2, sort_keys=True, default=str) + "\n"
+        temp_name = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp", delete=False
+            ) as handle:
+                temp_name = handle.name
+                handle.write(content)
+            os.replace(temp_name, path)
+        except OSError as exc:
+            record_exception(
+                "capture_write_failed",
+                "data.captures",
+                "write",
+                exc,
+                level=logging.WARNING,
+                recovery="Continuing without a capture; the caller's own outcome is unaffected.",
+                service=service,
+                capture_operation=operation,
+                path=str(path),
+            )
+            if temp_name and os.path.exists(temp_name):
+                os.unlink(temp_name)
+            return None
         log_event("capture_write", service=service, operation=operation, path=str(path))
         return path

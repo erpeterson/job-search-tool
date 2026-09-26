@@ -42,6 +42,10 @@ def parse_model_json(output_text):
     return json.loads(cleaned)
 
 
+def _codex_succeeded(response):
+    return response.get("returncode") == 0 and not response.get("error_type")
+
+
 class CodexClient:
     def __init__(self, runtime, captures, workspace_root, timeout_seconds, runner=subprocess.run):
         self._runtime = runtime
@@ -57,7 +61,9 @@ class CodexClient:
         """
         cli_path = self._runtime.codex_cli_path()
         request_payload = {"adapter_version": ADAPTER_VERSION, "cli_path": cli_path, "model": model, "prompt": prompt}
-        cached = self._captures.read("codex_cli", operation, request_payload, force_refresh=force_refresh)
+        cached = self._captures.read(
+            "codex_cli", operation, request_payload, force_refresh=force_refresh, is_success=_codex_succeeded
+        )
         if cached:
             response = cached["response"]
             return CodexResult(response.get("output_text", ""), response.get("effective_model", ""))
