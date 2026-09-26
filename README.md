@@ -81,7 +81,10 @@ Run scheduled searches through a separately supervised scheduler invocation:
 ```
 
 Both processes use SQLite leases. A live lease prevents duplicate work; an
-expired lease makes interrupted work retryable.
+expired lease makes work from a crashed or stopped worker retryable. Supervise
+each command with your process manager and run exactly one scheduler per
+database; use `--poll-seconds` on the worker and `--lease-seconds` on the
+scheduler to tune local operations.
 
 The API validates JSON request shapes, bounded text fields, allowed workflow
 values, score ranges, and manually submitted URLs. Manual URLs must use HTTP(S)
@@ -101,11 +104,11 @@ all configured. Set `JOB_SEARCH_TRUSTED_PROXY_CIDRS` to the exact proxy IP/CIDR
 range; forwarding headers from every other peer are rejected, even if they claim
 HTTPS. Do not expose the application port directly to the public internet.
 
-Bulk Codex work uses a bounded, single-worker local-development dispatcher.
-Task status and individual job results are durable in SQLite. If the process
-stops, queued/running tasks become `interrupted` at the next startup; select
-their jobs again to retry them. For production deployment, run the worker in a
-separate managed process backed by the same task repository.
+Task status and individual job results are durable in SQLite. The web process
+only queues work; a separately supervised worker claims leased items from the
+same task repository. An item becomes retryable only after its worker lease
+expires, preserving protection against duplicate processing while a worker is
+still healthy.
 
 | Data | Location | Lifecycle |
 | --- | --- | --- |

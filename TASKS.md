@@ -294,7 +294,7 @@ closure criteria.
 
 ### P2 — documentation accuracy
 
-- [ ] **REOPEN: reconcile operations documentation with the implemented worker
+- [x] **REOPEN: reconcile operations documentation with the implemented worker
   model.** The new managed-worker section is correct, but the later Operations
   section still states that bulk work uses a "bounded, single-worker
   local-development dispatcher" and that queued/running tasks become
