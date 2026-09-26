@@ -5,7 +5,13 @@ import logging
 from urllib.parse import urlparse
 
 from job_search.domain.clock import now
-from job_search.domain.errors import DuplicateJobError, NotFoundError, ValidationError, public_error_code
+from job_search.domain.errors import (
+    CapacityError,
+    DuplicateJobError,
+    NotFoundError,
+    ValidationError,
+    public_error_code,
+)
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.rules import RUBRIC_FIELDS
 from job_search.domain.text import append_note_text
@@ -136,7 +142,19 @@ class JobService:
         if unavailable:
             log_event("manual_job_auto_score_skipped", job_id=job_id, reason=unavailable)
             return f"Automatic Codex scoring skipped: {unavailable}", None
-        return None, self._background.start_auto_score(job_id)
+        try:
+            return None, self._background.start_auto_score(job_id)
+        except CapacityError as exc:
+            record_exception(
+                "manual_job_auto_score_deferred",
+                "domain.jobs",
+                "auto_score",
+                exc,
+                level=logging.WARNING,
+                recovery="The job is saved; it can be scored from the UI once a task slot frees up.",
+                job_id=job_id,
+            )
+            return f"Automatic Codex scoring skipped: {exc.message}", None
 
     @traced("job_rescrape", "domain.jobs", id_arg="job_id")
     def rescrape(self, job_id, force_refresh=True):
