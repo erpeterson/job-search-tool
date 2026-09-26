@@ -2,6 +2,7 @@
 
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.rules import DEFAULT_SETTINGS
+from job_search.domain.runtime_policy import RuntimeSettingsPolicy
 from job_search.observability import traced
 
 
@@ -28,6 +29,10 @@ class SettingsService:
                 uow.settings.set(key, value)
             apply_job_filters(uow, self._runtime.gpt_scoring_enabled())
             return uow.settings.all(), uow.jobs.list(include_filtered=True)
+
+    def apply_runtime_config(self, payload):
+        """Validate a runtime config payload and apply it. Returns settings, or None when nothing changed."""
+        return self.update_runtime_config(RuntimeSettingsPolicy.validate(payload))
 
     @traced("runtime_config_update", "domain.settings")
     def update_runtime_config(self, updates):

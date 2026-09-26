@@ -143,6 +143,16 @@ class ScoringService:
             raise ExternalServiceError("Codex CLI response was not valid JSON.", "codex_score_invalid_json") from exc
         return validate_score_payload(parsed)
 
+    def score_tracked_job(self, job_id, force_refresh=False):
+        """Score a tracked job on request. Returns ``(updated_job, validated_score)``."""
+        with self._db.unit_of_work() as uow:
+            if not uow.jobs.exists(job_id):
+                raise NotFoundError("Job not found", "score_request_job_not_found")
+        self.ensure_available()
+        score = self.populate_score(job_id, force_refresh=force_refresh)
+        with self._db.unit_of_work() as uow:
+            return uow.jobs.get(job_id), score
+
     def populate_score(self, job_id, force_refresh=False):
         """Score a tracked job and persist the result, re-applying visibility filters."""
         with operation("codex_score", "domain.scoring", job_id=job_id):
