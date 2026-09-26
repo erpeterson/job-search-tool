@@ -8,6 +8,20 @@ This guidance applies to agents working on the job-search-tool codebase. It does
 - Optimize for reproducibility before convenience. Pin dependencies where practical and record deviations.
 - Surface uncertainty early. If a requirement, input, or instruction is ambiguous, consult a human to resolve the ambiguity.
 
+## Autonomous Task Completion
+
+When assigned an implementation task, continue working until all stated
+acceptance criteria are met and verified.
+
+Do not stop after partial progress, a passing intermediate test, a quality-gate checkpoint, or a turn boundary. Treat these as evidence to select and execute the next unmet requirement.
+
+Only return control to the user when:
+- a decision or approval is required;
+- an external blocker cannot be resolved within the authorized scope; or
+- the entire task is complete, verified, documented as required, and committed when requested.
+
+Maintain an explicit acceptance-criteria checklist. Do not mark a task complete or commit it until every criterion has direct evidence.
+
 ## Architecture Standards
 
 - Follow SOLID design principles unless the project definition explicitly requires a different architectural style.
