@@ -8,6 +8,7 @@ from job_search.domain.discovery_filters import first_rejection
 from job_search.domain.errors import AppError, NotFoundError
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.levels import level_assessment_from_equivalency, lookup_level_equivalency
+from job_search.domain.model_output import validate_refinement_payload
 from job_search.domain.rules import (
     DEFAULT_SEARCH_QUERIES,
     DOWNLEVEL_HIGH_SCORE_EXCEPTION,
@@ -421,17 +422,15 @@ class SearchService:
                 response_excerpt=output_text[:1000],
             )
             return
-        if not isinstance(refined, dict):
-            log_event("query_refinement_not_object", level=logging.WARNING, query_id=query_id)
-            return
-        keywords = clean_text(refined.get("keywords") or query.get("keywords"))
+        refined = validate_refinement_payload(refined)
+        keywords = clean_text(refined["keywords"] or query.get("keywords"))
         if not keywords:
             return
         with self._db.unit_of_work() as uow:
             uow.search.apply_refinement(
                 query_id,
                 keywords,
-                clean_text(refined.get("location") or query.get("location") or "Remote"),
-                clean_text(refined.get("criteria") or query.get("criteria") or ""),
-                clean_text(refined.get("refinement_notes") or ""),
+                clean_text(refined["location"] or query.get("location") or "Remote"),
+                clean_text(refined["criteria"] or query.get("criteria") or ""),
+                clean_text(refined["refinement_notes"]),
             )

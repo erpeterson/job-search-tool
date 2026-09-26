@@ -298,6 +298,11 @@ Discovery rule:
 ## Product Rules
 
 - The rubric is based on `supporting-documents/20260731-job-search-guidance.md`.
+- Codex output is schema-validated before it is saved: `total_score` is clamped
+  to 0-100, rubric values to 0-10, unknown rubric keys are dropped, and text is
+  truncated (each adjustment is logged as `codex_output_normalized`). Unusable
+  payloads, such as a non-object scorecard or non-string refinement keywords,
+  are rejected with a specific error code and nothing is persisted.
 - Codex score threshold defaults to `40`.
 - User score threshold defaults to `60`.
 - A job is filtered when it is downlevel, when user score is below threshold, or when Codex scoring is enabled and Codex score is below threshold.
