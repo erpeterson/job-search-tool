@@ -14,6 +14,7 @@ from job_search.domain.errors import (
     ExternalServiceError,
     ForbiddenError,
     NotFoundError,
+    UnsupportedMediaTypeError,
     ValidationError,
 )
 from job_search.observability import (
@@ -25,6 +26,7 @@ from job_search.observability import (
     reset_correlation_id,
 )
 from job_search.web.routes import bp
+from job_search.web.validation import require_json_content_type
 
 REQUEST_ID_HEADER = "X-Request-ID"
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -35,6 +37,7 @@ STATUS_BY_ERROR = (
     (ForbiddenError, 403),
     (NotFoundError, 404),
     (ConflictError, 409),
+    (UnsupportedMediaTypeError, 415),
     (DependencyUnavailableError, 409),
     (ExternalServiceError, 502),
 )
@@ -61,6 +64,7 @@ def check_request_origin(allowed_hosts):
 
 def create_app(container):
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = container.config.max_request_bytes
     app.extensions["job_search"] = container
     app.register_blueprint(bp)
     allowed_hosts = frozenset(container.config.allowed_hosts)
@@ -72,6 +76,8 @@ def create_app(container):
         g.correlation_token = bind_correlation_id(request_id)
         g.request_started = time.monotonic()
         check_request_origin(allowed_hosts)
+        if request.method in STATE_CHANGING_METHODS:
+            require_json_content_type()
 
     @app.after_request
     def log_request(response):
