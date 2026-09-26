@@ -1,0 +1,181 @@
+"""Pure business rules: text normalization, discovery filters, job visibility, and levels."""
+
+import pytest
+
+from job_search.domain.discovery_filters import (
+    compensation_filter_decision,
+    extract_annual_compensation_values,
+    first_rejection,
+    location_filter_decision,
+    sales_role_filter_decision,
+)
+from job_search.domain.errors import ExternalServiceError
+from job_search.domain.job_filter import filter_decision, thresholds
+from job_search.domain.levels import estimate_level_equivalency, level_assessment_from_equivalency
+from job_search.domain.packets import application_packet_slug, has_model_attribution, validate_packet_payload
+from job_search.domain.scoring import score_total
+from job_search.domain.text import (
+    append_note_text,
+    clean_url,
+    dedupe_results,
+    normalize_lookup_text,
+    normalize_pipeline,
+    with_sales_role_exclusion_criteria,
+    with_sales_role_exclusion_keywords,
+)
+
+
+class TestText:
+    def test_clean_url_strips_linkedin_tracking(self):
+        assert clean_url(" https://x.com/job?trk=abc ") == "https://x.com/job", "tracking suffix should be removed"
+
+    def test_normalize_lookup_text_collapses_punctuation(self):
+        assert normalize_lookup_text("Sr. Principal—Engineer!") == "sr principal engineer"
+
+    @pytest.mark.parametrize(
+        ("existing", "addition", "expected"),
+        [("", "new", "new"), ("old", "", "old"), ("old  text", "new", "old text new")],
+    )
+    def test_append_note_text(self, existing, addition, expected):
+        assert append_note_text(existing, addition) == expected
+
+    def test_dedupe_results_keeps_first_by_url_then_source_id(self):
+        results = [{"url": "a"}, {"url": "a"}, {"source_job_id": "s"}, {"source_job_id": "s"}, {}]
+        assert dedupe_results(results) == [{"url": "a"}, {"source_job_id": "s"}], "duplicates and keyless rows drop"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("Executive IC", "Executive IC"),
+            (" Wildcards ", "Wildcards"),
+            ("Nope", "fallback"),
+            (["Nope", "Office of the CTO"], "Office of the CTO"),
+            (None, "fallback"),
+        ],
+    )
+    def test_normalize_pipeline(self, value, expected):
+        assert normalize_pipeline(value, "fallback") == expected
+
+    def test_sales_exclusion_is_appended_once(self):
+        once = with_sales_role_exclusion_keywords("Chief Architect")
+        assert '-"Account Executive"' in once, "exclusion should be appended"
+        assert with_sales_role_exclusion_keywords(once) == once, "exclusion should not be appended twice"
+        criteria = with_sales_role_exclusion_criteria("Architects.")
+        assert with_sales_role_exclusion_criteria(criteria) == criteria
+
+
+class TestDiscoveryFilters:
+    @pytest.mark.parametrize(
+        ("result", "allowed"),
+        [
+            ({"location": "Seattle, WA"}, True),
+            ({"location": "Remote", "snippet": ""}, True),
+            ({"location": "Remote - United States"}, True),
+            ({"location": "", "snippet": "fully remote role"}, True),
+            ({"location": "Remote - Canada"}, False),
+            ({"location": "New York, NY"}, False),
+        ],
+    )
+    def test_location(self, result, allowed):
+        assert location_filter_decision(result)[0] is allowed, f"unexpected decision for {result}"
+
+    def test_compensation_annualizes_hourly_and_monthly(self):
+        assert extract_annual_compensation_values("$100/hour") == [208000]
+        assert extract_annual_compensation_values("$15,000 per month") == [180000]
+        assert extract_annual_compensation_values("$150k - $190k") == [150000, 190000]
+
+    def test_compensation_rejects_explicit_low_pay(self):
+        allowed, reason = compensation_filter_decision({"snippet": "Pay: $150,000 - $180,000 per year"})
+        assert not allowed, "a range entirely below $200k should be rejected"
+        assert "$180,000" in reason
+
+    def test_compensation_allows_missing_or_high_pay(self):
+        assert compensation_filter_decision({"snippet": "Great benefits"})[0]
+        assert compensation_filter_decision({"snippet": "$250k - $300k"})[0]
+
+    def test_sales_titles_are_rejected(self):
+        assert not sales_role_filter_decision({"title": "Enterprise Account Executive"})[0]
+        assert sales_role_filter_decision({"title": "Chief Architect"})[0]
+
+    def test_first_rejection_stops_at_first_failing_filter(self):
+        result = {"title": "Account Executive", "location": "Paris, France"}
+        assert first_rejection(result)[0] == "sales_role", "sales filter runs before location"
+        assert first_rejection({"title": "Architect", "location": "Seattle"}) is None
+
+
+class TestJobFilter:
+    def job(self, **overrides):
+        return {"downlevel": 0, "gpt_score": None, "user_score": None, **overrides}
+
+    def test_downlevel_is_always_filtered(self):
+        assert filter_decision(self.job(downlevel=1), 40, 60, False)[0]
+
+    def test_gpt_threshold_only_applies_when_enabled(self):
+        low = self.job(gpt_score=10)
+        assert not filter_decision(low, 40, 60, False)[0], "disabled Codex scoring must not filter"
+        assert filter_decision(low, 40, 60, True)[0]
+
+    def test_user_threshold(self):
+        filtered, reasons = filter_decision(self.job(user_score=50), 40, 60, False)
+        assert filtered and "user_score 50 below threshold 60" in reasons
+
+    def test_thresholds_fall_back_to_defaults_for_bad_values(self):
+        assert thresholds({"gpt_threshold": "abc", "user_threshold": "70"}) == (40, 70)
+
+
+class TestLevels:
+    @pytest.mark.parametrize(
+        ("title", "level"),
+        [
+            ("Senior Software Engineer", "BELOW_IC6"),
+            ("Staff Engineer", "BELOW_IC6"),
+            ("Senior Principal Software Engineer", "IC6+"),
+            ("Chief Architect", "IC6+"),
+            ("Principal Engineer", None),
+            ("", None),
+        ],
+    )
+    def test_estimate(self, title, level):
+        estimate = estimate_level_equivalency(title)
+        assert (estimate["oracle_level"] if estimate else None) == level, f"unexpected level for {title!r}"
+
+    def test_assessment_text(self):
+        text = level_assessment_from_equivalency(
+            {
+                "company": "Co",
+                "source_level_title": "Staff Engineer",
+                "title_pattern": "",
+                "source_level": "L6",
+                "oracle_level": "BELOW_IC6",
+                "oracle_title": "Below",
+            }
+        )
+        assert text == "Co Staff Engineer L6 maps to Oracle BELOW_IC6 Below per cached level calibration."
+        assert level_assessment_from_equivalency(None) == ""
+
+
+class TestScoringAndPacketRules:
+    @pytest.mark.parametrize(
+        ("value", "expected"), [(85, 85), ("72", 72), (88.9, 88), ("n/a", 0), (None, 0), (True, 0)]
+    )
+    def test_score_total(self, value, expected):
+        assert score_total({"total_score": value}) == expected
+
+    def test_packet_payload_requires_all_markdown(self):
+        with pytest.raises(ExternalServiceError, match="resume_markdown"):
+            validate_packet_payload({"job_brief_markdown": "x", "cover_letter_markdown": "y"})
+        with pytest.raises(ExternalServiceError):
+            validate_packet_payload(["not", "an", "object"])
+
+    def test_model_attribution(self):
+        assert has_model_attribution({"a": "made by m1", "b": "m1"}, "m1")
+        assert not has_model_attribution({"a": "made by m1", "b": "none"}, "m1")
+
+    def test_packet_slug_is_filesystem_safe(self):
+        from datetime import datetime
+
+        slug = application_packet_slug(
+            {"company": "Acme, Inc.", "title": "Chief Architect / AI", "source_job_id": "linkedin:ABC"},
+            today=datetime(2026, 9, 1),
+        )
+        assert slug == "2026-09-acme-inc-chief-architect-ai-linkedin-abc"

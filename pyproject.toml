@@ -1,0 +1,26 @@
+[project]
+name = "job-search-tool"
+version = "0.2.0"
+description = "Local CRM and scoring tool for a job search."
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+# Deviation from PEP 8's 79 columns: prompt text and SQL read more clearly at 120.
+line-length = 120
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, bugbear, pyupgrade, pep8-naming, simplify
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=job_search --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = ["job_search"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
