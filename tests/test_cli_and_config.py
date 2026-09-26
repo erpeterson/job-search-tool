@@ -254,3 +254,23 @@ def test_cli_does_not_mutate_the_environment(workspace):
     environ = {"CODEX_MODEL": "m"}
     cli.main(["--host", "localhost"], environ=environ, serve=lambda *a: None, out=io.StringIO(), app_dir=app_dir)
     assert environ == {"CODEX_MODEL": "m"}, f".env values and CLI args must not be written into environ: {environ}"
+
+
+def test_every_log_line_carries_the_process_run_id(tmp_path):
+    from job_search.observability import configure_file_logging, log_api_call, process_run_id
+
+    events, api = tmp_path / "events.log", tmp_path / "api.log"
+    configure_file_logging(events, api, 1024 * 1024)
+    try:
+        log_event("unit_event_outside_request")
+        log_api_call("svc", "GET", "https://example.com", error=RuntimeError("boom"), elapsed_ms=1)
+    finally:
+        for name in ("job_search.events", "job_search.api"):
+            logger = logging.getLogger(name)
+            for handler in [h for h in logger.handlers if getattr(h, "_job_search_file", False)]:
+                logger.removeHandler(handler)
+                handler.close()
+    lines = [json.loads(line) for path in (events, api) for line in path.read_text().splitlines()]
+    assert lines, "expected log lines to be written"
+    missing = [line["event"] for line in lines if line.get("process_run_id") != process_run_id()]
+    assert not missing, f"every line needs the process run id; missing on: {missing}"

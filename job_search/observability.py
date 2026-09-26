@@ -29,6 +29,8 @@ API_LOGGER_NAME = "job_search.api"
 MAX_CAUSE_CHARS = 1000
 
 _correlation_id = ContextVar("correlation_id", default=None)
+# Identifies one process lifetime so events from separate app runs can be told apart.
+_process_run_id = uuid.uuid4().hex
 
 
 class Metrics:
@@ -59,6 +61,10 @@ def new_correlation_id():
     return uuid.uuid4().hex
 
 
+def process_run_id():
+    return _process_run_id
+
+
 def current_correlation_id():
     return _correlation_id.get()
 
@@ -87,6 +93,7 @@ def _event_payload(event_type, level, fields):
         "ts": datetime.now(UTC).isoformat(),
         "level": logging.getLevelName(level),
         "event": event_type,
+        "process_run_id": _process_run_id,
         **fields,
     }
     correlation_id = current_correlation_id()
@@ -259,8 +266,10 @@ def configure_file_logging(event_log_path, api_log_path, max_bytes):
     for name, path in ((EVENT_LOGGER_NAME, event_log_path), (API_LOGGER_NAME, api_log_path)):
         logger = logging.getLogger(name)
         logger.setLevel(logging.INFO)
-        if any(getattr(handler, "_job_search_file", False) for handler in logger.handlers):
-            continue
+        # Replace earlier file handlers so reconfiguring points logs at the new paths.
+        for handler in [h for h in logger.handlers if getattr(h, "_job_search_file", False)]:
+            logger.removeHandler(handler)
+            handler.close()
         handler = ArchivingRotatingFileHandler(path, max_bytes)
         handler.setFormatter(logging.Formatter("%(message)s"))
         handler._job_search_file = True

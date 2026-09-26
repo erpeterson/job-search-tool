@@ -33,7 +33,7 @@ P3 = hygiene or completeness.
 | T-14 | Do not replay failed captures as successes; make capture writes safe | Integrity | P1 | Done |
 | T-15 | Add a timeout and error handling to the Pandoc subprocess | Errors / Performance | P2 | Done |
 | T-16 | Emit start, success, and failure events for all major operations | Observability | P2 | Done |
-| T-17 | Tag non-request events with a process run ID | Observability | P3 | Open |
+| T-17 | Tag non-request events with a process run ID | Observability | P3 | Done |
 | T-18 | Map `DependencyUnavailableError` to a correct HTTP status | Errors | P3 | Open |
 | T-19 | Split `RuntimeSettings` and stop mutating `os.environ` | Architecture | P2 | Done |
 | T-20 | Move orchestration out of Flask routes | Architecture | P2 | Done |

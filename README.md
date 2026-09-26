@@ -191,6 +191,9 @@ evidence. `JOB_SEARCH_LOG_BACKUP_COUNT` was removed with this change.
   search the logs for its `request_id`.
 - Every response carries `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,
   `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
+- Every log line carries a `process_run_id` that identifies one app run
+  (logged with the PID in `app_started`), so events from separate runs can be
+  told apart in the rotated logs.
 - Every response has an `X-Request-ID` header. Search runs and bulk tasks log a
   `correlation_id` of `search-run-<id>` or `task-<id>`.
 - Major operations (search runs, scoring, packet generation and attach, manual
