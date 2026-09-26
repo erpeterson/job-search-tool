@@ -5,13 +5,13 @@ import subprocess
 
 import pytest
 import requests
-from conftest import FakeCodexRunner, FakeHttp
+from conftest import FakeCodexRunner, FakeHttp, FakeResolver
 
 from job_search.config import RuntimeSettings
 from job_search.data.captures import CaptureStore
 from job_search.data.codex_client import CodexClient, extract_codex_reported_model, parse_model_json
 from job_search.data.env_file import EnvFile
-from job_search.data.http_client import CapturedResponse, HttpClient
+from job_search.data.http_client import HttpClient, HttpResponse
 from job_search.data.job_boards import IndeedBoard, JobBoardClient, extract_job_json_ld, location_from_json_ld
 from job_search.data.packet_store import PandocConverter
 from job_search.domain.errors import (
@@ -90,11 +90,11 @@ class TestHttpAndCaptures:
     def test_request_errors_are_logged_captured_and_raised(self, captures):
         http = FakeHttp()
         http.route("x.com", error=requests.ConnectionError("down"))
-        client = HttpClient(captures, get=http)
+        client = HttpClient(captures, get=http, resolve=FakeResolver())
         with pytest.raises(requests.ConnectionError):
             client.fetch("svc", "https://x.com/a")
         replay = client.fetch("svc", "https://x.com/a")
-        assert isinstance(replay, CapturedResponse)
+        assert isinstance(replay, HttpResponse), type(replay)
         with pytest.raises(requests.HTTPError, match="replayed from capture"):
             replay.raise_for_status()
 
@@ -135,7 +135,7 @@ class TestJobBoards:
 
     def test_search_rejects_unknown_board(self, captures):
         with pytest.raises(ValidationError):
-            JobBoardClient(HttpClient(captures, get=FakeHttp())).search("monster", "x", "y")
+            JobBoardClient(HttpClient(captures, get=FakeHttp(), resolve=FakeResolver())).search("monster", "x", "y")
 
     def test_scrape_uses_selectors_when_json_ld_invalid(self, captures):
         http = FakeHttp()
@@ -145,7 +145,9 @@ class TestJobBoards:
             '<meta property="og:site_name" content="ExampleCo"></head>'
             '<body><h1>Staff Architect</h1><div id="jobDescriptionText">Design <b>systems</b>.</div></body></html>',
         )
-        posting = JobBoardClient(HttpClient(captures, get=http)).scrape_posting("https://jobs.example.com/1")
+        posting = JobBoardClient(HttpClient(captures, get=http, resolve=FakeResolver())).scrape_posting(
+            "https://jobs.example.com/1"
+        )
         assert (posting["title"], posting["company"], posting["posting_text"]) == (
             "Staff Architect",
             "ExampleCo",
