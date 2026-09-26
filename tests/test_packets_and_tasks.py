@@ -208,3 +208,61 @@ class TestBulkTasks:
         remaining = {task["id"] for task in registry.list()}
         assert ids[-1] in remaining and len(remaining) <= 3, "finished tasks beyond the cap are evicted"
         assert registry.update("missing") is None and registry.update_item("missing", 1) is None
+
+
+class TestBackgroundCrashHandling:
+    def test_worker_crash_marks_task_error_and_records_blame(self, container, monkeypatch, enable_scoring):
+        from job_search.observability import METRICS
+
+        job_id = insert_job(container)
+        original_update = container.tasks.update
+
+        def failing_update(task_id, **updates):
+            if updates.get("status") == "running":
+                raise RuntimeError("registry broken")
+            return original_update(task_id, **updates)
+
+        monkeypatch.setattr(container.tasks, "update", failing_update)
+        before = METRICS.snapshot().get("blame.background_task_crashed", 0)
+        task = container.bulk.start_scoring([job_id])
+        final = container.tasks.get(task["id"])
+        assert final["status"] == "error", f"a crashed worker must end the task in error: {final}"
+        assert "registry broken" not in final["message"], "internal details stay in logs"
+        assert METRICS.snapshot()["blame.background_task_crashed"] == before + 1, "crash must be recorded"
+
+    def test_scheduler_loop_survives_tick_crash(self, container, monkeypatch):
+        from job_search.domain.scheduler import SearchScheduler
+        from job_search.observability import METRICS
+
+        scheduler = SearchScheduler(container.db, None, 60, True, poll_seconds=0)
+        calls = []
+
+        def crashing_tick():
+            calls.append(1)
+            if len(calls) == 2:
+                scheduler.stop()
+            raise RuntimeError("tick blew up")
+
+        monkeypatch.setattr(scheduler, "tick", crashing_tick)
+        before = METRICS.snapshot().get("blame.scheduler_loop_crashed", 0)
+        scheduler._loop()
+        assert len(calls) == 2, "the loop keeps polling after a crash"
+        assert METRICS.snapshot()["blame.scheduler_loop_crashed"] == before + 2, "each crash is recorded"
+
+    def test_thread_excepthook_records_unhandled_exceptions(self, monkeypatch):
+        import threading
+
+        from job_search.observability import METRICS, install_thread_excepthook
+
+        monkeypatch.setattr(threading, "excepthook", threading.excepthook)
+        install_thread_excepthook()
+        before = METRICS.snapshot().get("blame.thread_unhandled_exception", 0)
+
+        def boom():
+            raise ValueError("unhandled in thread")
+
+        thread = threading.Thread(target=boom, name="test-thread")
+        thread.start()
+        thread.join()
+        after = METRICS.snapshot().get("blame.thread_unhandled_exception", 0)
+        assert after == before + 1, "uncaught thread exceptions must be recorded"
