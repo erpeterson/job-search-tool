@@ -82,6 +82,7 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_LOG_MAX_BYTES` / `JOB_SEARCH_LOG_BACKUP_COUNT` | `1048576` / `5` | Log rotation. |
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
 | `JOB_SEARCH_ALLOW_REMOTE` | `0` | Set `1` to allow a non-loopback `JOB_SEARCH_HOST`. The API has no authentication, so only do this on a trusted network. |
+| `JOB_SEARCH_MAX_REQUEST_BYTES` | `1048576` | Largest accepted request body; larger requests get `413`. |
 | `JOB_SEARCH_DEBUG` | `0` | Flask debug mode. Refused with a non-loopback host because the debugger allows remote code execution. |
 
 Invalid values stop startup with exit code `2` and a message naming the variable.
@@ -92,8 +93,11 @@ single-user use only. It refuses to bind to a non-loopback address unless
 
 ## Errors, Logs, And Troubleshooting
 
+- State-changing requests must send JSON (`Content-Type: application/json`) or
+  no body at all; malformed JSON returns `400`.
 - API errors return JSON `{"error": ..., "request_id": ...}` with `400`
-  (validation), `403` (disallowed host or cross-origin request), `404`, `409` (conflict or Codex/scoring unavailable), `502`
+  (validation), `403` (disallowed host or cross-origin request), `404`, `409` (conflict or Codex/scoring unavailable), `413` (body too large),
+  `415` (non-empty body that is not `application/json`), `502`
   (Codex/Pandoc failure), or `500`. A `500` never includes internal details;
   search the logs for its `request_id`.
 - Every response has an `X-Request-ID` header. Search runs and bulk tasks log a

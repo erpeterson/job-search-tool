@@ -26,6 +26,10 @@ class ForbiddenError(AppError):
     """The request is not allowed from its origin or host."""
 
 
+class UnsupportedMediaTypeError(AppError):
+    """A request body was sent with an unsupported content type."""
+
+
 class ConflictError(AppError):
     """The request conflicts with current state."""
 
