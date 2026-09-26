@@ -6,6 +6,7 @@ caught exception is reported through ``record_exception`` which emits both a
 stable error code.
 """
 
+import functools
 import json
 import logging
 import sys
@@ -156,6 +157,16 @@ def operation(name, component, **fields):
     try:
         yield
     except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        log_event(
+            f"{name}_failed",
+            level=logging.WARNING,
+            component=component,
+            elapsed_ms=elapsed_ms,
+            error_type=type(exc).__name__,
+            error_code=getattr(exc, "error_code", None),
+            **fields,
+        )
         record_exception(
             f"{name}_failed",
             component,
@@ -184,6 +195,24 @@ def install_thread_excepthook():
 
     threading.excepthook = hook
     return hook
+
+
+def traced(name, component, id_arg=None):
+    """Decorate a method so each call emits ``<name>_started/_succeeded/_failed`` events.
+
+    ``id_arg`` names the first positional argument after ``self`` to include in the events.
+    """
+
+    def decorate(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            fields = {id_arg: args[0] if args else kwargs.get(id_arg)} if id_arg else {}
+            with operation(name, component, **fields):
+                return func(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
 
 
 class _BelowLevelFilter(logging.Filter):

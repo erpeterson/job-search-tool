@@ -9,7 +9,7 @@ from job_search.domain.errors import AppError, DuplicateJobError, NotFoundError,
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.rules import RUBRIC_FIELDS
 from job_search.domain.text import append_note_text
-from job_search.observability import log_event, record_exception
+from job_search.observability import log_event, record_exception, traced
 
 _BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "metadata.google.internal"}
 
@@ -68,6 +68,7 @@ class JobService:
         with self._db.unit_of_work() as uow:
             return uow.jobs.list(include_filtered=include_filtered)
 
+    @traced("manual_job_create", "domain.jobs")
     def create_manual(self, fields, force_refresh=False):
         """Scrape and track a job from a URL, then score it when Codex is available.
 
@@ -142,6 +143,7 @@ class JobService:
             return exc.message
         return None
 
+    @traced("job_rescrape", "domain.jobs", id_arg="job_id")
     def rescrape(self, job_id, force_refresh=True):
         job = self.get(job_id)
         if not job.get("url"):
@@ -172,6 +174,7 @@ class JobService:
         )
         return self.get(job_id), scraped
 
+    @traced("job_delete", "domain.jobs", id_arg="job_id")
     def delete(self, job_id):
         with self._db.unit_of_work() as uow:
             job = uow.jobs.get(job_id)
@@ -181,6 +184,7 @@ class JobService:
             uow.jobs.delete(job_id)
         log_event("manual_job_deleted", job_id=job_id, company=job["company"], title=job["title"], url=job["url"])
 
+    @traced("jobs_purge", "domain.jobs")
     def purge_all(self):
         with self._db.unit_of_work() as uow:
             uow.discoveries.detach_all_jobs()
