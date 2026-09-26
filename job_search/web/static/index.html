@@ -356,6 +356,14 @@
     }
     :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     tr[tabindex]:focus-visible { outline-offset: -2px; }
+    .score-label { font-size: 12px; color: var(--muted); }
+    .link-button { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+    .link-button:hover { text-decoration: underline; }
+    .error-banner { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin: 12px 24px 0; padding: 10px 14px; border: 1px solid var(--danger); border-radius: 8px; background: #fff; color: var(--danger); }
+    .error-banner[hidden] { display: none; }
+    dialog { border: 1px solid var(--line); border-radius: 10px; padding: 20px; max-width: 460px; }
+    dialog::backdrop { background: rgba(0, 0, 0, .35); }
+    .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -363,14 +371,30 @@
     <div class="header-inner">
       <h1>Job Search Console</h1>
       <div class="subtitle">Score opportunities against the ideal problem set, track applications like a CRM, and preserve learning from every conversation.</div>
-      <nav>
-        <button id="jobs_nav" onclick="showPage('jobs')">Jobs</button>
+      <nav aria-label="Pages">
+        <button id="jobs_nav" onclick="showPage('jobs')" aria-current="page">Jobs</button>
         <button id="companies_nav" class="secondary" onclick="showPage('companies')">Companies</button>
         <button id="queries_nav" class="secondary" onclick="showPage('queries')">Queries</button>
       </nav>
       <div id="global_activity" class="activity-pill" role="status" aria-live="polite"></div>
     </div>
   </header>
+  <div id="error_region" class="error-banner" role="alert" aria-live="assertive" hidden>
+    <span id="error_text"></span>
+    <button type="button" class="secondary" onclick="dismissNotice()">Dismiss</button>
+  </div>
+  <dialog id="confirm_dialog" aria-labelledby="confirm_title" aria-describedby="confirm_message">
+    <form method="dialog">
+      <h2 id="confirm_title">Confirm</h2>
+      <p id="confirm_message"></p>
+      <label for="confirm_input">Type <strong id="confirm_word"></strong> to confirm</label>
+      <input id="confirm_input" autocomplete="off">
+      <div class="dialog-actions">
+        <button type="button" class="secondary" onclick="document.getElementById('confirm_dialog').close('cancel')">Cancel</button>
+        <button type="submit" value="confirm" class="danger">Confirm</button>
+      </div>
+    </form>
+  </dialog>
   <main>
     <aside>
       <section>
@@ -582,6 +606,11 @@
       return value.length > 100 ? `${value.slice(0, 97).trim()}...` : value;
     };
     const scoreText = value => value == null ? "n/a" : value;
+    const scoreLabel = n => n >= 70 ? "strong" : n >= 40 ? "borderline" : "weak";
+    // Colour plus a text label, so fit is never conveyed by colour alone.
+    const scoreBadge = n => n == null
+      ? "n/a"
+      : `<b class="${scoreClass(n)}">${escapeHtml(n)}</b> <span class="score-label">${scoreLabel(n)}</span>`;
     const fieldValue = (object, field, fallback) => object && object[field] != null ? object[field] : fallback;
     const elementValue = (id, fallback = "") => {
       const element = document.getElementById(id);
@@ -921,14 +950,14 @@
           </thead>
           <tbody>
             ${visibleJobs.map(job => `
-              <tr class="${job.filtered ? "filtered" : ""} ${job.id === selectedId ? "active" : ""}" onclick="selectJob(${job.id})" tabindex="0" onkeydown="activateOnKey(event)">
+              <tr class="${job.filtered ? "filtered" : ""} ${job.id === selectedId ? "active" : ""}" onclick="selectJob(${job.id})" ${job.id === selectedId ? 'aria-current="true"' : ""}>
                 <td class="select-cell"><input type="checkbox" aria-label="Select ${escapeAttr(job.company)} ${escapeAttr(job.title)}" ${bulkSelectedJobIds.has(job.id) ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleBulkJobSelection(${job.id}, this.checked)"></td>
-                <td><b>${escapeHtml(job.company)}</b><div class="small">${escapeHtml(job.location || "")}</div></td>
+                <td><button type="button" class="link-button" onclick="event.stopPropagation(); selectJob(${job.id})"><b>${escapeHtml(job.company)}</b></button><div class="small">${escapeHtml(job.location || "")}</div></td>
                 <td><span class="job-title">${escapeHtml(job.title)}</span>${job.url ? `<div class="small"><a href="${safeHref(job.url)}" target="_blank" rel="noopener noreferrer">posting</a></div>` : ""}</td>
                 <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
                 <td>${escapeHtml(job.status || "")}${job.application_packet_path ? '<div class="small">packet attached</div>' : ""}${job.filtered ? '<div class="small">filtered/downlevel hidden by default</div>' : ""}</td>
-                <td><b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></td>
-                <td><b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></td>
+                <td>${scoreBadge(job.gpt_score)}</td>
+                <td>${scoreBadge(job.user_score)}</td>
                 <td class="level-cell" title="${escapeAttr(levelStatus(job))}"><span class="level-preview">${escapeHtml(levelPreview(job))}</span>${job.downlevel ? '<div class="small">downlevel</div>' : ""}</td>
                 <td>${escapeHtml(job.source_board || "manual")}</td>
               </tr>
@@ -994,10 +1023,10 @@
           </thead>
           <tbody>
             ${companies.map(company => `
-              <tr class="${company.id === selectedCompanyId ? "active" : ""}" onclick="selectCompany(${company.id})" tabindex="0" onkeydown="activateOnKey(event)">
-                <td><b>${escapeHtml(company.company)}</b><div class="small">${escapeHtml(company.contacts || "")}</div></td>
+              <tr class="${company.id === selectedCompanyId ? "active" : ""}" onclick="selectCompany(${company.id})" ${company.id === selectedCompanyId ? 'aria-current="true"' : ""}>
+                <td><button type="button" class="link-button" onclick="event.stopPropagation(); selectCompany(${company.id})"><b>${escapeHtml(company.company)}</b></button><div class="small">${escapeHtml(company.contacts || "")}</div></td>
                 <td>${escapeHtml(company.status || "")}</td>
-                <td><b class="${scoreClass(company.interest_score)}">${scoreText(company.interest_score)}</b></td>
+                <td>${scoreBadge(company.interest_score)}</td>
                 <td>${company.tracked_job_count || 0}</td>
                 <td>${escapeHtml(company.next_step || "")}</td>
               </tr>
@@ -1041,8 +1070,8 @@
             <table>
               <thead><tr><th>Role</th><th>Status</th><th>Pipeline</th><th>Scores</th></tr></thead>
               <tbody>${company.jobs.map(job => `
-                <tr onclick="showPage('jobs'); selectJob(${job.id})" tabindex="0" onkeydown="activateOnKey(event)">
-                  <td>${escapeHtml(job.title)}${job.url ? `<div class="small"><a href="${safeHref(job.url)}" target="_blank" rel="noopener noreferrer">posting</a></div>` : ""}</td>
+                <tr onclick="showPage('jobs'); selectJob(${job.id})">
+                  <td><button type="button" class="link-button" onclick="event.stopPropagation(); showPage('jobs'); selectJob(${job.id})">${escapeHtml(job.title)}</button>${job.url ? `<div class="small"><a href="${safeHref(job.url)}" target="_blank" rel="noopener noreferrer">posting</a></div>` : ""}</td>
                   <td>${escapeHtml(job.status || "")}${job.downlevel ? '<div class="small">downlevel</div>' : ""}${job.filtered ? '<div class="small">filtered</div>' : ""}</td>
                   <td>${escapeHtml(job.pipeline || "Unassigned")}</td>
                   <td>Codex ${scoreText(job.gpt_score)} · Mine ${scoreText(job.user_score)}</td>
@@ -1095,8 +1124,8 @@
           </div>
           <div class="chips">
             <span class="chip">Pipeline: ${escapeHtml(job.pipeline || "Unassigned")}</span>
-            <span class="chip">Codex: <b class="${scoreClass(job.gpt_score)}">${scoreText(job.gpt_score)}</b></span>
-            <span class="chip">Mine: <b class="${scoreClass(job.user_score)}">${scoreText(job.user_score)}</b></span>
+            <span class="chip">Codex: ${scoreBadge(job.gpt_score)}</span>
+            <span class="chip">Mine: ${scoreBadge(job.user_score)}</span>
             <span class="chip">Level: ${escapeHtml(levelStatus(job))}</span>
             ${job.application_packet_path ? `<span class="chip">Packet: ${escapeHtml(job.application_packet_path)}</span>` : '<span class="chip">No packet</span>'}
             ${job.downlevel ? '<span class="chip">Downlevel</span>' : ""}
@@ -1191,7 +1220,7 @@
               <div class="meta">${escapeHtml(d.board)} · ${escapeHtml(d.location || "")} · ${d.url ? `<a href="${safeHref(d.url)}" target="_blank" rel="noopener noreferrer">posting</a>` : ""}</div>
               <div class="chips">
                 <span class="chip">Decision: ${escapeHtml(d.decision)}</span>
-                <span class="chip">Codex: <b class="${scoreClass(d.gpt_score)}">${scoreText(d.gpt_score)}</b></span>
+                <span class="chip">Codex: ${scoreBadge(d.gpt_score)}</span>
                 <span class="chip">Level: ${escapeHtml(levelStatus(d))}</span>
                 ${d.downlevel ? '<span class="chip">Downlevel</span>' : ""}
               </div>
@@ -1229,11 +1258,11 @@
         });
         const finished = await waitForTask(task, "Generating application packet");
         const packet = finished.result && finished.result.packet;
-        if (packet && packet.warning) alert(packet.warning);
+        if (packet && packet.warning) notify(packet.warning);
         selectedId = id;
         await load();
       } catch (err) {
-        alert(err.message);
+        notify(err.message);
       }
     }
 
@@ -1251,7 +1280,7 @@
         selectedJob = job;
         await load();
       } catch (err) {
-        alert(err.message);
+        notify(err.message);
       }
     }
 
@@ -1272,12 +1301,12 @@
       document.getElementById("url").value = "";
       document.getElementById("manual_force_refresh").checked = false;
       await load();
-      if (scoreError) alert(scoreError);
+      if (scoreError) notify(scoreError);
       if (scoreTask) {
         try {
           await waitForTask(scoreTask, "Scoring new job with Codex");
         } catch (err) {
-          alert(`Automatic Codex scoring failed: ${err.message}`);
+          notify(`Automatic Codex scoring failed: ${err.message}`);
         }
         await load();
       }
@@ -1348,13 +1377,13 @@
         await waitForTask(task, "Scoring with Codex");
         await load();
       } catch (err) {
-        alert(err.message);
+        notify(err.message);
       }
     }
 
     async function startBulkScorecards() {
       const ids = selectedJobIds();
-      if (!ids.length) return alert("Select at least one job first.");
+      if (!ids.length) return notify("Select at least one job first.");
       try {
         const { task } = await api("/api/jobs/bulk/score-gpt", {
           method: "POST",
@@ -1363,13 +1392,13 @@
         });
         startBulkTaskPolling(task.id);
       } catch (err) {
-        alert(err.message);
+        notify(err.message);
       }
     }
 
     async function startBulkApplicationPackets() {
       const ids = selectedJobIds();
-      if (!ids.length) return alert("Select at least one job first.");
+      if (!ids.length) return notify("Select at least one job first.");
       try {
         const { task } = await api("/api/jobs/bulk/application-packets/generate", {
           method: "POST",
@@ -1378,7 +1407,7 @@
         });
         startBulkTaskPolling(task.id);
       } catch (err) {
-        alert(err.message);
+        notify(err.message);
       }
     }
 
@@ -1393,16 +1422,15 @@
         selectedJob = job;
         await load();
       } catch (err) {
-        alert(err.message);
+        notify(err.message);
       }
     }
 
     async function deleteJob(id) {
-      const confirmText = prompt("Type DELETE to remove this tracked job and its CRM notes/interactions.");
-      if (confirmText !== "DELETE") return;
+      if (!(await confirmTyped("DELETE", "This removes the tracked job and its CRM notes and interactions."))) return;
       await api(`/api/jobs/${id}`, {
         method: "DELETE",
-        body: JSON.stringify({ confirm: confirmText }),
+        body: JSON.stringify({ confirm: "DELETE" }),
         activityLabel: "Deleting job",
       });
       selectedId = null;
@@ -1473,11 +1501,10 @@
     }
 
     async function purgeTrackedJobs() {
-      const confirmText = prompt("Type PURGE to delete all tracked jobs and their CRM notes/interactions.");
-      if (confirmText !== "PURGE") return;
+      if (!(await confirmTyped("PURGE", "This deletes all tracked jobs and their CRM notes and interactions."))) return;
       await api("/api/admin/purge-jobs", {
         method: "POST",
-        body: JSON.stringify({ confirm: confirmText })
+        body: JSON.stringify({ confirm: "PURGE" })
       });
       selectedId = null;
       selectedJob = null;
@@ -1499,7 +1526,7 @@
       } catch (err) {
         searchRunning = false;
         renderSearchState();
-        alert(err.message);
+        notify(err.message);
       }
     }
 
@@ -1535,6 +1562,11 @@
       document.getElementById("jobs_nav").classList.toggle("secondary", page !== "jobs");
       document.getElementById("companies_nav").classList.toggle("secondary", page !== "companies");
       document.getElementById("queries_nav").classList.toggle("secondary", page !== "queries");
+      ["jobs", "companies", "queries"].forEach(name => {
+        const button = document.getElementById(`${name}_nav`);
+        if (name === page) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      });
       if (page === "jobs") requestAnimationFrame(() => {
         syncJobsPageHeight();
         initializeJobSplit();
@@ -1623,6 +1655,30 @@
     function escapeHtml(s) {
       return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
     }
+    // Accessible replacement for alert(): announced assertively and dismissible.
+    function notify(message) {
+      document.getElementById("error_text").textContent = String(message || "");
+      document.getElementById("error_region").hidden = false;
+    }
+    function dismissNotice() {
+      document.getElementById("error_region").hidden = true;
+    }
+
+    // Accessible replacement for prompt(): resolves true only when the typed word matches.
+    function confirmTyped(word, message) {
+      const dialog = document.getElementById("confirm_dialog");
+      const input = document.getElementById("confirm_input");
+      document.getElementById("confirm_word").textContent = word;
+      document.getElementById("confirm_message").textContent = message;
+      input.value = "";
+      dialog.returnValue = "";
+      return new Promise(resolve => {
+        dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm" && input.value === word), { once: true });
+        dialog.showModal();
+        input.focus();
+      });
+    }
+
     function escapeAttr(s) { return escapeHtml(s).replace(/`/g, "&#96;"); }
     // Only absolute http(s) URLs become links; anything else (e.g. javascript:) renders as "#".
     function safeHref(url) {
@@ -1633,14 +1689,6 @@
         // Not an absolute URL; fall through to the inert placeholder.
       }
       return "#";
-    }
-    // Lets keyboard users activate clickable table rows; ignores keys aimed at controls inside the row.
-    function activateOnKey(event) {
-      if (event.target !== event.currentTarget) return;
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        event.currentTarget.click();
-      }
     }
     configureJobSplitDrag();
     load().then(() => {
