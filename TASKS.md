@@ -188,7 +188,7 @@ complete every acceptance criterion listed with it.
   functions); dependency fakes can construct services without importing Flask;
   and tests preserve current API behavior.
 
-- [ ] **REOPEN: make the quality gate cover all production code and run in CI.**
+- [x] **REOPEN: make the quality gate cover all production code and run in CI.**
   `pyproject.toml` measures only `source = ["job_search"]`, excluding the
   5,162-line production `app.py`; no repository CI workflow is present, despite
   the README claiming CI runs `./quality.sh`.  Configure coverage to include
