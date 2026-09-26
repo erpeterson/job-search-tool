@@ -23,21 +23,31 @@ class TestState:
     def test_state_lists_seeded_searches_and_masks_config(self, client):
         response = client.get("/api/state?include_filtered=1")
         body = response.get_json()
-        assert response.status_code == 200
+        assert response.status_code == 200, (
+            f"expected HTTP 200, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
         assert len(body["search_queries"]) == 8, "four pipelines x two boards should be seeded"
-        assert body["settings"]["gpt_threshold"] == "40"
-        assert body["config"]["JOB_SEARCH_ENABLE_GPT_SCORING"]["masked"] == "********"
-        assert body["search_schedule"]["autorun_enabled"] is False
+        assert body["settings"]["gpt_threshold"] == "40", f"expected '40', got {body['settings']['gpt_threshold']!r}"
+        assert body["config"]["JOB_SEARCH_ENABLE_GPT_SCORING"]["masked"] == "********", (
+            "expected body['config'][...][...] to be '********'"
+        )
+        assert body["search_schedule"]["autorun_enabled"] is False, (
+            f"expected False, got {body['search_schedule']['autorun_enabled']!r}"
+        )
         assert response.headers["X-Request-ID"], "every response carries a correlation id"
 
     def test_index_serves_ui(self, client):
         response = client.get("/")
-        assert response.status_code == 200
-        assert b"<!doctype html>" in response.data.lower()
+        assert response.status_code == 200, (
+            f"expected HTTP 200, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert b"<!doctype html>" in response.data.lower(), "expected b'<!doctype html>' in response.data.lower()"
 
     def test_supplied_request_id_is_echoed(self, client):
         response = client.get("/api/state", headers={"X-Request-ID": "abc-123"})
-        assert response.headers["X-Request-ID"] == "abc-123"
+        assert response.headers["X-Request-ID"] == "abc-123", (
+            f"expected 'abc-123', got {response.headers['X-Request-ID']!r}"
+        )
 
 
 class TestCreateJob:
@@ -49,23 +59,28 @@ class TestCreateJob:
 
         body = response.get_json()
         assert response.status_code == 201, body
-        assert body["score_error"] is None
+        assert body["score_error"] is None, f"expected None, got {body['score_error']!r}"
         job = body["job"]
-        assert (job["company"], job["title"], job["location"]) == ("Acme", "Chief Architect", "Seattle, WA")
-        assert job["gpt_score"] == 85
+        scraped = (job["company"], job["title"], job["location"])
+        assert scraped == ("Acme", "Chief Architect", "Seattle, WA"), f"JSON-LD fields should be scraped: {scraped}"
+        assert job["gpt_score"] == 85, f"expected 85, got {job['gpt_score']!r}"
         assert job["pipeline"] == "Executive IC", "list pipeline from the model is normalized to its first valid entry"
 
     def test_scoring_disabled_reports_skip(self, client, http):
         http.route("example.com", POSTING_HTML)
         body = post(client, "/api/jobs", {"url": "https://example.com/jobs/2", "pipeline": "Wildcards"}).get_json()
-        assert body["score_error"] == "Automatic Codex scoring skipped: Codex scoring is disabled."
+        assert body["score_error"] == "Automatic Codex scoring skipped: Codex scoring is disabled.", (
+            f"expected 'Automatic Codex scoring skipped: C...', got {body['score_error']!r}"
+        )
 
     def test_scrape_failure_falls_back_and_still_saves(self, client, http):
         http.route("example.com", status_code=403)
         response = post(client, "/api/jobs", {"url": "https://www.example.com/jobs/3", "pipeline": "Wildcards"})
         body = response.get_json()
-        assert response.status_code == 201
-        assert body["job"]["company"] == "example.com"
+        assert response.status_code == 201, (
+            f"expected HTTP 201, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert body["job"]["company"] == "example.com", f"expected 'example.com', got {body['job']['company']!r}"
         assert "manual_job_scrape_failed" in body["scrape_error"], body["scrape_error"]
         assert "403 Error" not in body["scrape_error"], "raw exception text must not be returned"
         assert "403 Error" not in body["job"]["notes"], "raw exception text must not be saved in notes"
@@ -92,44 +107,76 @@ class TestCreateJob:
         assert after == before + 1, "the duplicate must be recorded as a blame metric"
 
     def test_validation_errors(self, client):
-        assert post(client, "/api/jobs", {"pipeline": "Wildcards"}).get_json()["error"] == "URL is required."
-        assert post(client, "/api/jobs", {"url": "https://x.com"}).get_json()["error"] == "Pipeline is required."
+        assert post(client, "/api/jobs", {"pipeline": "Wildcards"}).get_json()["error"] == "URL is required.", (
+            "expected post(...).get_json(...)[...] to be 'URL is required.'"
+        )
+        assert post(client, "/api/jobs", {"url": "https://x.com"}).get_json()["error"] == "Pipeline is required.", (
+            "expected post(...).get_json(...)[...] to be 'Pipeline is required.'"
+        )
         response = post(client, "/api/jobs", {"url": "https://x.com", "pipeline": "Bogus"})
-        assert response.status_code == 400
+        assert response.status_code == 400, (
+            f"expected HTTP 400, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
         response = post(client, "/api/jobs", {"url": "http://127.0.0.1:5050/api/state", "pipeline": "Wildcards"})
         assert response.status_code == 400, "local addresses must be rejected to prevent SSRF"
 
     def test_non_object_body_is_rejected(self, client):
         response = client.post("/api/jobs", data="[1, 2]", content_type="application/json")
-        assert response.status_code == 400
-        assert response.get_json()["error"] == "Request body must be a JSON object."
+        assert response.status_code == 400, (
+            f"expected HTTP 400, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert response.get_json()["error"] == "Request body must be a JSON object.", (
+            f"expected 'Request body must be a JSON object.', got {response.get_json()['error']!r}"
+        )
 
 
 class TestJobCrm:
     def test_get_missing_job_is_404(self, client):
         response = client.get("/api/jobs/999")
-        assert response.status_code == 404
-        assert response.get_json()["error"] == "Job not found"
+        assert response.status_code == 404, (
+            f"expected HTTP 404, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert response.get_json()["error"] == "Job not found", (
+            f"expected 'Job not found', got {response.get_json()['error']!r}"
+        )
 
     def test_notes_interactions_and_status(self, client, container):
         job_id = insert_job(container)
-        assert post(client, f"/api/jobs/{job_id}/notes", {"note": "Call recruiter"}).status_code == 201
+        assert post(client, f"/api/jobs/{job_id}/notes", {"note": "Call recruiter"}).status_code == 201, (
+            "expected post(...).status_code to be 201"
+        )
         interaction = {"occurred_on": "2026-09-01", "person_name": "Pat", "summary": "Intro call"}
-        assert post(client, f"/api/jobs/{job_id}/interactions", interaction).status_code == 201
+        assert post(client, f"/api/jobs/{job_id}/interactions", interaction).status_code == 201, (
+            "expected post(...).status_code to be 201"
+        )
         job = post(client, f"/api/jobs/{job_id}/status", {"status": "applied"}).get_json()["job"]
-        assert job["status"] == "applied"
-        assert job["notes_list"][0]["note"] == "Call recruiter"
-        assert job["interactions"][0]["person_name"] == "Pat"
+        assert job["status"] == "applied", f"expected 'applied', got {job['status']!r}"
+        assert job["notes_list"][0]["note"] == "Call recruiter", (
+            f"expected 'Call recruiter', got {job['notes_list'][0]['note']!r}"
+        )
+        assert job["interactions"][0]["person_name"] == "Pat", (
+            f"expected 'Pat', got {job['interactions'][0]['person_name']!r}"
+        )
 
     def test_crm_writes_on_missing_job_are_404(self, client):
-        assert post(client, "/api/jobs/999/notes", {"note": "x"}).status_code == 404
-        assert post(client, "/api/jobs/999/interactions", {"occurred_on": "2026-09-01"}).status_code == 404
-        assert post(client, "/api/jobs/999/status", {"status": "applied"}).status_code == 404
+        assert post(client, "/api/jobs/999/notes", {"note": "x"}).status_code == 404, (
+            "expected post(...).status_code to be 404"
+        )
+        assert post(client, "/api/jobs/999/interactions", {"occurred_on": "2026-09-01"}).status_code == 404, (
+            "expected post(...).status_code to be 404"
+        )
+        assert post(client, "/api/jobs/999/status", {"status": "applied"}).status_code == 404, (
+            "expected post(...).status_code to be 404"
+        )
 
     def test_invalid_status_and_empty_note_are_400(self, client, container):
         job_id = insert_job(container)
-        assert post(client, f"/api/jobs/{job_id}/status", {"status": "hired!"}).status_code == 400
-        assert post(client, f"/api/jobs/{job_id}/notes", {"note": "  "}).status_code == 400
+        assert post(client, f"/api/jobs/{job_id}/status", {"status": "hired!"}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert post(client, f"/api/jobs/{job_id}/notes", {"note": "  "}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
 
     def test_user_score_computes_total_and_filters_low_scores(self, client, container):
         job_id = insert_job(container)
@@ -142,32 +189,46 @@ class TestJobCrm:
     def test_user_score_rejects_non_numeric(self, client, container):
         job_id = insert_job(container)
         response = post(client, f"/api/jobs/{job_id}/score-user", {"scorecard": {"mission": "great"}})
-        assert response.status_code == 400
+        assert response.status_code == 400, (
+            f"expected HTTP 400, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
 
     def test_rescrape_updates_posting(self, client, container, http):
         job_id = insert_job(container, url="https://example.com/jobs/9", notes="Original.")
         http.route("example.com/jobs/9", POSTING_HTML)
         body = post(client, f"/api/jobs/{job_id}/scrape", {}).get_json()
-        assert body["job"]["company"] == "Acme"
-        assert body["job"]["notes"] == "Original. Re-scraped posting URL."
+        assert body["job"]["company"] == "Acme", f"expected 'Acme', got {body['job']['company']!r}"
+        assert body["job"]["notes"] == "Original. Re-scraped posting URL.", (
+            f"expected 'Original. Re-scraped posting URL.', got {body['job']['notes']!r}"
+        )
 
     def test_delete_requires_confirmation(self, client, container):
         job_id = insert_job(container)
-        assert post(client, f"/api/jobs/{job_id}", {"confirm": "nope"}, method="delete").status_code == 400
+        assert post(client, f"/api/jobs/{job_id}", {"confirm": "nope"}, method="delete").status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
         response = post(client, f"/api/jobs/{job_id}", {"confirm": "DELETE"}, method="delete")
-        assert response.get_json()["deleted_job_id"] == job_id
-        assert client.get(f"/api/jobs/{job_id}").status_code == 404
+        assert response.get_json()["deleted_job_id"] == job_id, (
+            f"expected job_id, got {response.get_json()['deleted_job_id']!r}"
+        )
+        assert client.get(f"/api/jobs/{job_id}").status_code == 404, (
+            "expected client.get(f'/api/jobs/{job_id}').status_code to be 404"
+        )
 
     def test_purge_requires_confirmation(self, client, container):
         insert_job(container)
-        assert post(client, "/api/admin/purge-jobs", {}).status_code == 400
-        assert post(client, "/api/admin/purge-jobs", {"confirm": "PURGE"}).get_json()["deleted_jobs"] == 1
+        assert post(client, "/api/admin/purge-jobs", {}).status_code == 400, "expected post(...).status_code to be 400"
+        assert post(client, "/api/admin/purge-jobs", {"confirm": "PURGE"}).get_json()["deleted_jobs"] == 1, (
+            "expected post(...).get_json(...)[...] to be 1"
+        )
 
     def test_score_gpt_requires_enabled_scoring(self, client, container):
         job_id = insert_job(container)
         response = post(client, f"/api/jobs/{job_id}/score-gpt")
-        assert response.status_code == 409
-        assert "disabled" in response.get_json()["error"]
+        assert response.status_code == 409, (
+            f"expected HTTP 409, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert "disabled" in response.get_json()["error"], f"expected 'disabled' in {response.get_json()['error']!r}"
 
     def test_score_gpt_persists_score(self, client, container, codex_runner, enable_scoring):
         job_id = insert_job(container)
@@ -186,36 +247,50 @@ class TestCompanies:
         insert_job(container, company="Acme")
         created = post(client, "/api/companies", {"company": "Acme", "interest_score": "80", "status": "target"})
         company = created.get_json()["company"]
-        assert created.status_code == 201
-        assert (company["interest_score"], len(company["jobs"])) == (80, 1)
+        assert created.status_code == 201, (
+            f"expected HTTP 201, got {created.status_code}: {created.get_data(as_text=True)[:200]}"
+        )
+        assert (company["interest_score"], len(company["jobs"])) == (80, 1), "expected the result to be (80, 1)"
 
         updated = post(client, f"/api/companies/{company['id']}", {"notes": "Warm intro"}).get_json()["company"]
-        assert updated["notes"] == "Warm intro"
+        assert updated["notes"] == "Warm intro", f"expected 'Warm intro', got {updated['notes']!r}"
         assert updated["status"] == "target", "omitted fields are preserved on update"
-        assert client.get(f"/api/companies/{company['id']}").status_code == 200
+        assert client.get(f"/api/companies/{company['id']}").status_code == 200, (
+            "expected client.get(...).status_code to be 200"
+        )
 
     def test_validation_and_not_found(self, client):
-        assert post(client, "/api/companies", {"company": "A", "interest_score": 101}).status_code == 400
-        assert post(client, "/api/companies", {"company": "A", "status": "bogus"}).status_code == 400
-        assert client.get("/api/companies/42").status_code == 404
-        assert post(client, "/api/companies/42", {}).status_code == 404
+        assert post(client, "/api/companies", {"company": "A", "interest_score": 101}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert post(client, "/api/companies", {"company": "A", "status": "bogus"}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert client.get("/api/companies/42").status_code == 404, (
+            "expected client.get('/api/companies/42').status_code to be 404"
+        )
+        assert post(client, "/api/companies/42", {}).status_code == 404, "expected post(...).status_code to be 404"
 
 
 class TestSettingsAndConfig:
     def test_threshold_update_refilters_jobs(self, client, container):
         insert_job(container, user_score=65)
         body = post(client, "/api/settings", {"user_threshold": "70", "codex_model": "m"}).get_json()
-        assert body["settings"]["user_threshold"] == "70"
+        assert body["settings"]["user_threshold"] == "70", f"expected '70', got {body['settings']['user_threshold']!r}"
         assert body["jobs"][0]["filtered"] == 1, "raising the threshold hides the 65-scored job"
 
     def test_threshold_must_be_integer_in_range(self, client):
-        assert post(client, "/api/settings", {"gpt_threshold": "abc"}).status_code == 400
-        assert post(client, "/api/settings", {"gpt_threshold": 101}).status_code == 400
+        assert post(client, "/api/settings", {"gpt_threshold": "abc"}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
+        assert post(client, "/api/settings", {"gpt_threshold": 101}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
 
     def test_config_update_persists_to_env_file(self, client, container, environ):
         body = post(client, "/api/config", {"JOB_SEARCH_ENABLE_GPT_SCORING": "1", "CODEX_MODEL": "gpt-x"}).get_json()
-        assert body["gpt_scoring_enabled"] is True
-        assert body["settings"]["codex_model"] == "gpt-x"
+        assert body["gpt_scoring_enabled"] is True, f"expected True, got {body['gpt_scoring_enabled']!r}"
+        assert body["settings"]["codex_model"] == "gpt-x", f"expected 'gpt-x', got {body['settings']['codex_model']!r}"
         assert container.runtime.codex_model() == "gpt-x", "the new model applies in memory"
         assert "CODEX_MODEL" not in environ, "the process environment is never modified"
         from job_search.data.env_file import EnvFile
@@ -225,13 +300,18 @@ class TestSettingsAndConfig:
 
     def test_config_without_updates_returns_current_config(self, client):
         body = post(client, "/api/config", {}).get_json()
-        assert "settings" not in body and "config" in body
+        assert "settings" not in body, f"expected 'settings' not in {body!r}"
+        assert "config" in body, f"expected 'config' in {body!r}"
 
     def test_config_rejects_env_injection(self, client, container):
         response = post(client, "/api/config", {"CODEX_CLI_PATH": "codex\nJOB_SEARCH_AUTORUN=1"})
-        assert response.status_code == 400
+        assert response.status_code == 400, (
+            f"expected HTTP 400, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
         assert not container.config.env_path.exists(), "nothing is written when validation fails"
-        assert post(client, "/api/config", {"JOB_SEARCH_USE_CAPTURE_CACHE": "yes"}).status_code == 400
+        assert post(client, "/api/config", {"JOB_SEARCH_USE_CAPTURE_CACHE": "yes"}).status_code == 400, (
+            "expected post(...).status_code to be 400"
+        )
 
 
 class TestErrorHandling:
@@ -242,19 +322,23 @@ class TestErrorHandling:
         monkeypatch.setattr(container.jobs, "list", explode)
         response = client.get("/api/state")
         body = response.get_json()
-        assert response.status_code == 500
+        assert response.status_code == 500, (
+            f"expected HTTP 500, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
         assert "secret" not in body["error"], "internal details must stay in logs"
-        assert body["request_id"] in body["error"]
+        assert body["request_id"] in body["error"], f"expected body['request_id'] in {body['error']!r}"
 
     def test_unknown_api_route_is_json_404(self, client):
         response = client.get("/api/nope")
-        assert response.status_code == 404
-        assert "error" in response.get_json()
+        assert response.status_code == 404, (
+            f"expected HTTP 404, got {response.status_code}: {response.get_data(as_text=True)[:200]}"
+        )
+        assert "error" in response.get_json(), f"expected 'error' in {response.get_json()!r}"
 
     def test_metrics_count_blame_events(self, client):
         client.get("/api/jobs/999")
         counters = client.get("/api/metrics").get_json()["counters"]
-        assert counters.get("blame.job_not_found", 0) >= 1
+        assert counters.get("blame.job_not_found", 0) >= 1, "expected counters.get('blame.job_not_found', 0) to be >= 1"
 
 
 class TestValidationBoundaries:

@@ -29,8 +29,12 @@ def reset_console_logging():
 class TestConfig:
     def test_defaults(self, tmp_path):
         config = AppConfig.from_env({}, app_dir=tmp_path / "app")
-        assert (config.host, config.port, config.codex_cli_timeout_seconds) == ("127.0.0.1", 5050, 270)
-        assert config.workspace_root == tmp_path.resolve()
+        assert (config.host, config.port, config.codex_cli_timeout_seconds) == ("127.0.0.1", 5050, 270), (
+            "expected the result to be ('127.0.0.1', 5050, 270)"
+        )
+        assert config.workspace_root == tmp_path.resolve(), (
+            f"expected tmp_path.resolve(), got {config.workspace_root!r}"
+        )
         assert config.autorun is False, "the scheduler stays disabled until its known bugs are fixed"
         app, root = (tmp_path / "app").resolve(), tmp_path.resolve()
         expected = {
@@ -64,11 +68,17 @@ class TestConfig:
         assert config.db_path == app / "data" / "jobs.db", "app paths resolve against the app directory"
         assert config.log_dir == (tmp_path / "elsewhere" / "logs").resolve(), "absolute paths are used as given"
         assert config.api_log_path.parent == config.log_dir, "log files follow the log directory"
-        assert config.capture_dir == app / "cap"
+        assert config.capture_dir == app / "cap", f"expected app / 'cap', got {config.capture_dir!r}"
         assert config.guidance_path == root / "docs" / "guide.md", "document paths resolve against the workspace"
-        assert config.career_manual_path == root / "docs" / "manual.md"
-        assert config.master_resume_path == root / "docs" / "resume.md"
-        assert (config.http_timeout_seconds, config.db_timeout_seconds, config.max_retained_tasks) == (12, 7, 5)
+        assert config.career_manual_path == root / "docs" / "manual.md", (
+            f"expected root / 'docs' / 'manual.md', got {config.career_manual_path!r}"
+        )
+        assert config.master_resume_path == root / "docs" / "resume.md", (
+            f"expected root / 'docs' / 'resume.md', got {config.master_resume_path!r}"
+        )
+        assert (config.http_timeout_seconds, config.db_timeout_seconds, config.max_retained_tasks) == (12, 7, 5), (
+            "expected the result to be (12, 7, 5)"
+        )
 
     @pytest.mark.parametrize(
         ("environ", "code"),
@@ -98,12 +108,18 @@ class TestConfig:
     def test_runtime_settings(self, tmp_path):
         environ = {"CODEX_MODEL": "", "CODEX_CLI_PATH": "a-very-long-path"}
         runtime = RuntimeSettings(environ, "codex", "startup-model")
-        assert runtime.codex_model() == "startup-model"
-        assert runtime.codex_model(" stored ") == "stored"
-        assert runtime.masked()["CODEX_CLI_PATH"]["masked"] == "a-ve...path"
-        assert runtime.masked()["CODEX_MODEL"] == {"configured": False, "masked": ""}
-        assert runtime.codex_cli_available() is False
-        assert RuntimeSettingsPolicy.validate({"CODEX_MODEL": None, "CODEX_CLI_PATH": ""}) == {"CODEX_MODEL": ""}
+        assert runtime.codex_model() == "startup-model", "expected runtime.codex_model() to be 'startup-model'"
+        assert runtime.codex_model(" stored ") == "stored", "expected runtime.codex_model(' stored ') to be 'stored'"
+        assert runtime.masked()["CODEX_CLI_PATH"]["masked"] == "a-ve...path", (
+            "expected runtime.masked()['CODEX_CLI_PATH']['masked'] to be 'a-ve...path'"
+        )
+        assert runtime.masked()["CODEX_MODEL"] == {"configured": False, "masked": ""}, (
+            "expected runtime.masked()['CODEX_MODEL'] to be {'configured': False, 'masked': ''}"
+        )
+        assert runtime.codex_cli_available() is False, "expected runtime.codex_cli_available() to be False"
+        assert RuntimeSettingsPolicy.validate({"CODEX_MODEL": None, "CODEX_CLI_PATH": ""}) == {"CODEX_MODEL": ""}, (
+            "expected RuntimeSettingsPolicy.validate(...) to be {'CODEX_MODEL': ''}"
+        )
         with pytest.raises(ValidationError):
             RuntimeSettingsPolicy.validate({"CODEX_MODEL": "x" * 2000})
         runtime.update({"CODEX_MODEL": "new", "UNRELATED": "ignored"})
@@ -122,9 +138,11 @@ class TestCli:
             out=out,
             app_dir=workspace / "job-search-tool",
         )
-        assert code == cli.EXIT_OK
-        assert served == [5050]
-        assert "Job Search Console running at http://127.0.0.1:5050" in out.getvalue()
+        assert code == cli.EXIT_OK, f"expected cli.EXIT_OK, got {code!r}"
+        assert served == [5050], f"expected [5050], got {served!r}"
+        assert "Job Search Console running at http://127.0.0.1:5050" in out.getvalue(), (
+            "expected 'Job Search Console running at http://127.0...' in out.getvalue()"
+        )
 
     def test_args_and_env_file_override_defaults(self, workspace):
         app_dir = workspace / "job-search-tool"
@@ -147,8 +165,10 @@ class TestCli:
             out=io.StringIO(),
             app_dir=workspace / "job-search-tool",
         )
-        assert code == cli.EXIT_CONFIG_ERROR
-        assert "JOB_SEARCH_PORT must be an integer" in capsys.readouterr().err
+        assert code == cli.EXIT_CONFIG_ERROR, f"expected cli.EXIT_CONFIG_ERROR, got {code!r}"
+        assert "JOB_SEARCH_PORT must be an integer" in capsys.readouterr().err, (
+            "expected 'JOB_SEARCH_PORT must be an integer' in capsys.readouterr().err"
+        )
 
     def test_unexpected_error_exits_1_and_logs_to_stderr(self, workspace, capsys):
         def boom(app, config):
@@ -156,16 +176,18 @@ class TestCli:
 
         code = cli.main([], environ={}, serve=boom, out=io.StringIO(), app_dir=workspace / "job-search-tool")
         captured = capsys.readouterr()
-        assert code == cli.EXIT_FAILURE
+        assert code == cli.EXIT_FAILURE, f"expected cli.EXIT_FAILURE, got {code!r}"
         assert "cli_unhandled_exception" in captured.err, "ERROR logs go to stderr"
-        assert "cli_unhandled_exception" not in captured.out
+        assert "cli_unhandled_exception" not in captured.out, (
+            f"expected 'cli_unhandled_exception' not in {captured.out!r}"
+        )
 
     def test_interrupt_exits_130(self, workspace):
         def interrupt(app, config):
             raise KeyboardInterrupt
 
         code = cli.main([], environ={}, serve=interrupt, out=io.StringIO(), app_dir=workspace / "job-search-tool")
-        assert code == cli.EXIT_INTERRUPTED
+        assert code == cli.EXIT_INTERRUPTED, f"expected cli.EXIT_INTERRUPTED, got {code!r}"
 
 
 class TestConsoleLogging:
@@ -175,12 +197,13 @@ class TestConsoleLogging:
         log_event("quiet_event")
         log_event("loud_event", level=logging.ERROR)
         assert out.getvalue() == "", "non-error logs are suppressed without --verbose"
-        assert "loud_event" in err.getvalue()
+        assert "loud_event" in err.getvalue(), "expected 'loud_event' in err.getvalue()"
 
         out, err = io.StringIO(), io.StringIO()
         configure_console_logging(verbose=True, stdout=out, stderr=err)
         log_event("chatty_event")
-        assert "chatty_event" in out.getvalue() and "chatty_event" not in err.getvalue()
+        assert "chatty_event" in out.getvalue(), "expected 'chatty_event' in out.getvalue()"
+        assert "chatty_event" not in err.getvalue(), "expected 'chatty_event' not in err.getvalue()"
 
 
 class TestObservability:
@@ -192,18 +215,24 @@ class TestObservability:
         with pytest.raises(ValueError), operation("unit_op", "tests"):
             raise ValueError("bad")
         events = [json.loads(line)["event"] for line in out.getvalue().splitlines()]
-        assert events[:3] == ["unit_op_started", "unit_op_succeeded", "unit_op_started"]
-        assert "blame_metric" in events
-        assert METRICS.snapshot()["blame.unit_op_failed"] >= 1
+        assert events[:3] == ["unit_op_started", "unit_op_succeeded", "unit_op_started"], (
+            f"events[:3] did not match; got {events[:3]!r}"
+        )
+        assert "blame_metric" in events, f"expected 'blame_metric' in {events!r}"
+        assert METRICS.snapshot()["blame.unit_op_failed"] >= 1, (
+            f"expected >= 1, got {METRICS.snapshot()['blame.unit_op_failed']!r}"
+        )
 
     def test_correlation_scope_tags_events(self):
         out = io.StringIO()
         configure_console_logging(verbose=True, stdout=out, stderr=io.StringIO())
         with correlation_scope("run-7"):
-            assert current_correlation_id() == "run-7"
+            assert current_correlation_id() == "run-7", "expected current_correlation_id() to be 'run-7'"
             log_event("tagged")
-        assert current_correlation_id() is None
-        assert json.loads(out.getvalue().splitlines()[-1])["correlation_id"] == "run-7"
+        assert current_correlation_id() is None, "expected current_correlation_id() to be None"
+        assert json.loads(out.getvalue().splitlines()[-1])["correlation_id"] == "run-7", (
+            "expected json.loads(out.getvalue().splitlines()[-1])[...] to be 'run-7'"
+        )
 
 
 def test_record_exception_logs_detail_but_message_stays_generic():

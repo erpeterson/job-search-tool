@@ -38,15 +38,17 @@ def codex(tmp_path, captures, environ):
 class TestCodexClient:
     def test_extracts_exact_model_from_cli_banner(self):
         stderr = "OpenAI Codex v0.147.0 -------- model: gpt-5.6-terra provider: openai --------"
-        assert extract_codex_reported_model(stderr) == "gpt-5.6-terra"
-        assert extract_codex_reported_model(None) == ""
+        assert extract_codex_reported_model(stderr) == "gpt-5.6-terra", (
+            "expected extract_codex_reported_model(stderr) to be 'gpt-5.6-terra'"
+        )
+        assert extract_codex_reported_model(None) == "", "expected extract_codex_reported_model(None) to be ''"
 
     @pytest.mark.parametrize(
         "text",
         ['{"a": 1}', '```json\n{"a": 1}\n```', 'Here you go: {"a": 1} thanks'],
     )
     def test_parse_model_json_tolerates_wrapping(self, text):
-        assert parse_model_json(text) == {"a": 1}
+        assert parse_model_json(text) == {"a": 1}, "expected parse_model_json(text) to be {'a': 1}"
 
     def test_parse_model_json_rejects_empty(self):
         with pytest.raises(json.JSONDecodeError):
@@ -57,17 +59,23 @@ class TestCodexClient:
         runner.respond({"ok": True}, model="gpt-x")
         first = client.call_json("gpt-x", {"q": 1}, "score_job")
         second = client.call_json("gpt-x", {"q": 1}, "score_job")
-        assert (first.output_text, first.effective_model) == ('{"ok": true}', "gpt-x")
+        assert (first.output_text, first.effective_model) == ('{"ok": true}', "gpt-x"), (
+            f"expected ('{{\"ok\": true}}', 'gpt-x'), got {(first.output_text, first.effective_model)!r}"
+        )
         assert second == first, "identical prompts replay from capture"
-        assert len(runner.calls) == 1
-        assert runner.calls[0]["command"][:4] == [client._runtime.codex_cli_path(), "exec", "-m", "gpt-x"]
+        assert len(runner.calls) == 1, f"expected 1, got {len(runner.calls)!r}"
+        assert runner.calls[0]["command"][:4] == [client._runtime.codex_cli_path(), "exec", "-m", "gpt-x"], (
+            f"runner.calls[0]['command'][:4] did not match; got {runner.calls[0]['command'][:4]!r}"
+        )
 
     def test_force_refresh_bypasses_capture(self, codex):
         client, runner = codex
         runner.respond({"n": 1})
         runner.respond({"n": 2})
         client.call_json("", {"q": 1}, "op")
-        assert client.call_json("", {"q": 1}, "op", force_refresh=True).output_text == '{"n": 2}'
+        assert client.call_json("", {"q": 1}, "op", force_refresh=True).output_text == '{"n": 2}', (
+            "expected client.call_json(...).output_text to be '{\"n\": 2}'"
+        )
         assert "-m" not in runner.calls[0]["command"], "blank model uses the Codex CLI default"
 
     def test_failed_codex_capture_is_not_replayed(self, codex):
@@ -103,9 +111,10 @@ class TestHttpAndCaptures:
         client = HttpClient(captures, get=http, resolve=FakeResolver())
         with pytest.raises(requests.ConnectionError):
             client.fetch("svc", "https://x.com/a")
-        assert captures.path_for(
+        capture = captures.path_for(
             "svc", "http_get", {"method": "GET", "url": "https://x.com/a", "headers": REQUEST_HEADERS}
-        ).exists(), "failure captures are kept as evidence"
+        )
+        assert capture.exists(), "failure captures are kept as evidence"
         with pytest.raises(requests.ConnectionError):
             client.fetch("svc", "https://x.com/a")
         assert len(http.calls) == 2, "a failed capture must not be replayed; the client retries live"
@@ -152,12 +161,12 @@ class TestHttpAndCaptures:
         path = captures.path_for("svc", "op", {"a": 1})
         path.parent.mkdir(parents=True)
         path.write_text("{not json", encoding="utf-8")
-        assert captures.read("svc", "op", {"a": 1}) is None
+        assert captures.read("svc", "op", {"a": 1}) is None, "expected captures.read('svc', 'op', {'a': 1}) to be None"
 
     def test_disabled_cache_never_replays(self, tmp_path):
         store = CaptureStore(tmp_path, lambda: False)
         store.write("svc", "op", {"a": 1}, {"text": "x"})
-        assert store.read("svc", "op", {"a": 1}) is None
+        assert store.read("svc", "op", {"a": 1}) is None, "expected store.read('svc', 'op', {'a': 1}) to be None"
 
 
 INDEED_HTML = """
@@ -171,17 +180,16 @@ INDEED_HTML = """
 class TestJobBoards:
     def test_indeed_parse(self):
         jobs = IndeedBoard().parse(INDEED_HTML, "Remote")
-        assert jobs == [
-            {
-                "board": "indeed",
-                "source_job_id": "abc123",
-                "company": "Acme",
-                "title": "Principal Architect",
-                "location": "Remote",
-                "url": "https://www.indeed.com/viewjob?jk=abc123",
-                "snippet": "Principal Architect view Acme Remote",
-            }
-        ]
+        expected = {
+            "board": "indeed",
+            "source_job_id": "abc123",
+            "company": "Acme",
+            "title": "Principal Architect",
+            "location": "Remote",
+            "url": "https://www.indeed.com/viewjob?jk=abc123",
+            "snippet": "Principal Architect view Acme Remote",
+        }
+        assert jobs == [expected], f"only the linked card should parse, with these fields; got {jobs!r}"
 
     def test_search_rejects_unknown_board(self, captures):
         with pytest.raises(ValidationError):
@@ -202,8 +210,8 @@ class TestJobBoards:
             "Staff Architect",
             "ExampleCo",
             "Design systems .",
-        )
-        assert posting["source_board"] == "manual"
+        ), "the result did not match the expected value"
+        assert posting["source_board"] == "manual", f"expected 'manual', got {posting['source_board']!r}"
 
     def test_json_ld_graph_and_location_variants(self):
         from bs4 import BeautifulSoup
@@ -212,13 +220,19 @@ class TestJobBoards:
             '<script type="application/ld+json">[{"@graph": [{"@type": ["JobPosting"], "title": "T"}]}]</script>',
             "html.parser",
         )
-        assert extract_job_json_ld(soup)["title"] == "T"
-        assert location_from_json_ld({"jobLocation": [{"name": "Seattle"}]}) == "Seattle"
-        assert location_from_json_ld({"jobLocation": []}) == ""
+        assert extract_job_json_ld(soup)["title"] == "T", "expected extract_job_json_ld(soup)['title'] to be 'T'"
+        assert location_from_json_ld({"jobLocation": [{"name": "Seattle"}]}) == "Seattle", (
+            "expected location_from_json_ld(...) to be 'Seattle'"
+        )
+        assert location_from_json_ld({"jobLocation": []}) == "", (
+            "expected location_from_json_ld({'jobLocation': []}) to be ''"
+        )
 
     def test_fallback_posting_uses_host(self):
         posting = JobBoardClient.fallback_posting("https://www.linkedin.com/jobs/view/1")
-        assert (posting["company"], posting["source_board"]) == ("linkedin.com", "linkedin")
+        assert (posting["company"], posting["source_board"]) == ("linkedin.com", "linkedin"), (
+            f"expected ('linkedin.com', 'linkedin'), got {(posting['company'], posting['source_board'])!r}"
+        )
 
 
 class TestFileStores:
@@ -280,16 +294,24 @@ class TestMarkdown:
         html = markdown_to_html(
             "# Title\n- **bold** `code`\n- [ok](https://x.com)\n\n```\n<b>raw</b>\n```\n---\n[js](javascript:alert(1))"
         )
-        assert "<h1>Title</h1>" in html
-        assert "<li><strong>bold</strong> <code>code</code></li>" in html
-        assert '<a href="https://x.com" target="_blank" rel="noopener">ok</a>' in html
-        assert "<pre><code>&lt;b&gt;raw&lt;/b&gt;</code></pre>" in html
-        assert "<hr>" in html
+        assert "<h1>Title</h1>" in html, f"expected '<h1>Title</h1>' in {html!r}"
+        assert "<li><strong>bold</strong> <code>code</code></li>" in html, (
+            f"expected '<li><strong>bold</strong> <code>code</code...' in {html!r}"
+        )
+        assert '<a href="https://x.com" target="_blank" rel="noopener">ok</a>' in html, (
+            f'expected \'<a href="https://x.com" target="_blank" re...\' in {html!r}'
+        )
+        assert "<pre><code>&lt;b&gt;raw&lt;/b&gt;</code></pre>" in html, (
+            f"expected '<pre><code>&lt;b&gt;raw&lt;/b&gt;</code></pre>' in {html!r}"
+        )
+        assert "<hr>" in html, f"expected '<hr>' in {html!r}"
         assert "javascript:" not in html, "unsafe link schemes are rendered as plain text"
 
     def test_unterminated_code_and_list_are_closed(self):
-        assert markdown_to_html("- a\n```\ncode").endswith("<pre><code>code</code></pre>")
-        assert markdown_to_html("- a").endswith("</ul>")
+        assert markdown_to_html("- a\n```\ncode").endswith("<pre><code>code</code></pre>"), (
+            "expected markdown_to_html('- a\\n```\\ncode').endswith('<pre><code>code</code></pre>')"
+        )
+        assert markdown_to_html("- a").endswith("</ul>"), "expected markdown_to_html('- a').endswith('</ul>')"
 
 
 def test_job_insert_rejects_unknown_columns(container):
