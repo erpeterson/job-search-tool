@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from conftest import SCORE_RESPONSE, insert_job
 
 POSTING_HTML = """
@@ -120,7 +121,7 @@ class TestJobCrm:
 
     def test_crm_writes_on_missing_job_are_404(self, client):
         assert post(client, "/api/jobs/999/notes", {"note": "x"}).status_code == 404
-        assert post(client, "/api/jobs/999/interactions", {}).status_code == 404
+        assert post(client, "/api/jobs/999/interactions", {"occurred_on": "2026-09-01"}).status_code == 404
         assert post(client, "/api/jobs/999/status", {"status": "applied"}).status_code == 404
 
     def test_invalid_status_and_empty_note_are_400(self, client, container):
@@ -130,9 +131,9 @@ class TestJobCrm:
 
     def test_user_score_computes_total_and_filters_low_scores(self, client, container):
         job_id = insert_job(container)
-        scorecard = {"mission": 10, "compensation": "5", "work_life_balance": 99}
+        scorecard = {"mission": 10, "compensation": "5", "work_life_balance": 9.6}
         job = post(client, f"/api/jobs/{job_id}/score-user", {"scorecard": scorecard}).get_json()["job"]
-        assert job["user_scorecard"]["work_life_balance"] == 10, "rubric values clamp to 0-10"
+        assert job["user_scorecard"]["work_life_balance"] == 10, "fractional rubric values round"
         assert job["user_score"] == 31, "total is the rubric sum scaled to 100"
         assert job["filtered"] == 1, "a user score below 60 hides the job"
 
@@ -248,3 +249,44 @@ class TestErrorHandling:
         client.get("/api/jobs/999")
         counters = client.get("/api/metrics").get_json()["counters"]
         assert counters.get("blame.job_not_found", 0) >= 1
+
+
+class TestValidationBoundaries:
+    def test_explicit_zero_total_score_is_stored(self, client, container):
+        job_id = insert_job(container)
+        body = post(
+            client, f"/api/jobs/{job_id}/score-user", {"scorecard": {"mission": 10}, "total_score": 0}
+        ).get_json()
+        assert body["job"]["user_score"] == 0, (
+            f"total_score=0 must be stored, not recomputed: {body['job']['user_score']}"
+        )
+
+    @pytest.mark.parametrize(("value", "code"), [(11, 400), (-1, 400), (10, 200), (0, 200)])
+    def test_scorecard_range_boundaries(self, client, container, value, code):
+        job_id = insert_job(container)
+        response = post(client, f"/api/jobs/{job_id}/score-user", {"scorecard": {"mission": value}})
+        assert response.status_code == code, f"mission={value}: expected {code}, got {response.get_json()}"
+        if code == 400:
+            assert "scorecard.mission" in response.get_json()["error"], "the error must name the field"
+
+    def test_unknown_rubric_key_is_rejected(self, client, container):
+        job_id = insert_job(container)
+        response = post(client, f"/api/jobs/{job_id}/score-user", {"scorecard": {"vibes": 5}})
+        assert response.status_code == 400, response.get_json()
+        assert "vibes" in response.get_json()["error"], "the error must name the unknown field"
+
+    @pytest.mark.parametrize("occurred_on", ["", "2026-13-01", "09/01/2026", "2026-9-1"])
+    def test_interaction_date_must_be_iso(self, client, container, occurred_on):
+        job_id = insert_job(container)
+        response = post(client, f"/api/jobs/{job_id}/interactions", {"occurred_on": occurred_on})
+        assert response.status_code == 400, f"occurred_on={occurred_on!r} must be rejected: {response.get_json()}"
+
+    def test_company_name_is_required_on_create(self, client):
+        response = post(client, "/api/companies", {"company": "  "})
+        assert response.status_code == 400, f"blank company must be rejected: {response.get_json()}"
+
+    def test_packet_file_parameter_is_length_limited(self, client, container):
+        job_id = insert_job(container)
+        name = "a" * 256 + ".md"
+        response = client.get(f"/api/jobs/{job_id}/application-packet/content?file={name}")
+        assert response.status_code == 400, f"a 259-character file name must be rejected: {response.get_json()}"
