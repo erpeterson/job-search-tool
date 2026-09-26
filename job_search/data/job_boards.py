@@ -10,7 +10,6 @@ from urllib.parse import quote_plus, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from job_search.domain.errors import ValidationError
 from job_search.domain.text import clean_text, clean_url, dedupe_results, source_id
 from job_search.observability import record_exception
 
@@ -45,6 +44,10 @@ def is_http_url(url):
     """True for absolute http(s) URLs; board markup could otherwise inject ``javascript:`` links."""
     parsed = urlparse(url or "")
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+class UnsupportedBoardError(ValueError):
+    """The adapter has no parser for the requested job board."""
 
 
 def posting_service_from_url(url):
@@ -213,15 +216,14 @@ class JobBoardClient:
     def search(self, board_name, keywords, location, force_refresh=False):
         board = self._boards.get((board_name or "").lower())
         if board is None:
-            raise ValidationError(f"Unsupported board: {board_name}", "search_board_unsupported")
+            raise UnsupportedBoardError(f"Unsupported board: {board_name}")
         response = self._http.fetch(board.name, board.search_url(keywords, location), force_refresh=force_refresh)
         response.raise_for_status()
         return dedupe_results(board.parse(response.text, location))
 
     def scrape_posting(self, url, force_refresh=False):
+        """Return scraped fields; any field not found on the page is an empty string."""
         cleaned_url = clean_url(url)
-        if not cleaned_url:
-            raise ValidationError("URL is required.", "scrape_url_missing")
         service = posting_service_from_url(cleaned_url)
         response = self._http.fetch(service, cleaned_url, force_refresh=force_refresh)
         response.raise_for_status()
@@ -247,8 +249,8 @@ class JobBoardClient:
         )
         posting_text = clean_text(BeautifulSoup(description or "", "html.parser").get_text(" "))
         return {
-            "company": clean_text(company) or "Unknown company",
-            "title": clean_text(title) or "Unknown title",
+            "company": clean_text(company),
+            "title": clean_text(title),
             "location": clean_text(location),
             "url": cleaned_url,
             "posting_text": posting_text[:12000],
@@ -257,15 +259,7 @@ class JobBoardClient:
         }
 
     @staticmethod
-    def fallback_posting(url):
-        host = urlparse(url).netloc.replace("www.", "")
+    def describe_url(url):
+        """Source identifiers derivable from a posting URL alone, without fetching it."""
         service = posting_service_from_url(url)
-        return {
-            "company": host or "Unknown company",
-            "title": f"Job posting from {host}" if host else "Unknown title",
-            "location": "",
-            "url": clean_url(url),
-            "posting_text": "",
-            "source_board": _source_board(service),
-            "source_job_id": source_id(service, url),
-        }
+        return {"url": clean_url(url), "source_board": _source_board(service), "source_job_id": source_id(service, url)}

@@ -18,7 +18,6 @@ from job_search.domain.errors import (
     CodexCliError,
     DependencyUnavailableError,
     ExternalServiceError,
-    ValidationError,
 )
 from job_search.web.markdown import markdown_to_html
 
@@ -192,8 +191,18 @@ class TestJobBoards:
         assert jobs == [expected], f"only the linked card should parse, with these fields; got {jobs!r}"
 
     def test_search_rejects_unknown_board(self, captures):
-        with pytest.raises(ValidationError):
+        from job_search.data.job_boards import UnsupportedBoardError
+
+        with pytest.raises(UnsupportedBoardError):
             JobBoardClient(HttpClient(captures, get=FakeHttp(), resolve=FakeResolver())).search("monster", "x", "y")
+
+    def test_scrape_returns_empty_fields_when_not_found(self, captures):
+        http = FakeHttp()
+        http.route("bare.example", "<html><body></body></html>")
+        posting = JobBoardClient(HttpClient(captures, get=http, resolve=FakeResolver())).scrape_posting(
+            "https://bare.example/1"
+        )
+        assert (posting["company"], posting["title"]) == ("", ""), f"the adapter must not invent defaults: {posting}"
 
     def test_scrape_uses_selectors_when_json_ld_invalid(self, captures):
         http = FakeHttp()
@@ -228,8 +237,8 @@ class TestJobBoards:
             "expected location_from_json_ld({'jobLocation': []}) to be ''"
         )
 
-    def test_fallback_posting_uses_host(self):
-        posting = JobBoardClient.fallback_posting("https://www.linkedin.com/jobs/view/1")
+    def test_fallback_posting_uses_host(self, container):
+        posting = container.jobs.fallback_posting("https://www.linkedin.com/jobs/view/1")
         assert (posting["company"], posting["source_board"]) == ("linkedin.com", "linkedin"), (
             f"expected ('linkedin.com', 'linkedin'), got {(posting['company'], posting['source_board'])!r}"
         )

@@ -102,7 +102,7 @@ class JobService:
                 f"Posting could not be scraped ({public_error_code(exc, 'manual_job_scrape_failed')}); "
                 "saved with URL-derived details. See logs for the cause."
             )
-            scraped = self._boards.fallback_posting(url)
+            scraped = self.fallback_posting(url)
         final_url = scraped.get("url") or url
         ts = now()
         with self._db.unit_of_work() as uow:
@@ -134,6 +134,17 @@ class JobService:
             "scrape_error": scrape_error,
             "score_error": score_error,
             "score_task": score_task,
+        }
+
+    def fallback_posting(self, url):
+        """Metadata for a job whose posting could not be scraped, derived from the URL."""
+        host = (urlparse(url).hostname or "").removeprefix("www.")
+        return {
+            **self._boards.describe_url(url),
+            "company": host or "Unknown company",
+            "title": f"Job posting from {host}" if host else "Unknown title",
+            "location": "",
+            "posting_text": "",
         }
 
     def _start_auto_score(self, job_id):
