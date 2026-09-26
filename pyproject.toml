@@ -10,8 +10,13 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-# pycodestyle, pyflakes, isort, bugbear, pyupgrade, pep8-naming, simplify
-select = ["E", "F", "W", "I", "B", "UP", "N", "SIM"]
+# pycodestyle, pyflakes, isort, bugbear, pyupgrade, pep8-naming, simplify, bandit (security), builtins
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "S", "A"]
+
+[tool.ruff.lint.per-file-ignores]
+# S101: pytest's assertion rewriting relies on bare assert statements.
+# S104: tests pass "0.0.0.0" deliberately to verify the remote-bind guard rejects it.
+"tests/**" = ["S101", "S104"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

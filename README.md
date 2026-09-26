@@ -60,7 +60,11 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest          # runs tests with coverage; fails below 80%
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
+.venv/bin/pip-audit -r requirements.txt  # known-vulnerability check for runtime deps
 ```
+
+Ruff includes the `S` (bandit security) and `A` (builtin shadowing) rules; any
+suppression is line-level and states its reason.
 
 Tests run without network access, Codex, or Pandoc; those are replaced by fakes
 in `tests/conftest.py`.
