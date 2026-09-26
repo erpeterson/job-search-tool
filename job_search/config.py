@@ -151,7 +151,6 @@ class AppConfig:
     autorun: bool
     search_interval_seconds: int
     log_max_bytes: int
-    log_backup_count: int
     codex_cli_timeout_seconds: int
     default_codex_model: str
     default_codex_cli_path: str
@@ -214,7 +213,6 @@ class AppConfig:
             autorun=SCHEDULER_SUPPORTED and environ.get("JOB_SEARCH_AUTORUN", "1") != "0",
             search_interval_seconds=_int_env(environ, "JOB_SEARCH_INTERVAL_SECONDS", 24 * 60 * 60, 60, 365 * 86400),
             log_max_bytes=_int_env(environ, "JOB_SEARCH_LOG_MAX_BYTES", 1024 * 1024, 1024, 1024**3),
-            log_backup_count=_int_env(environ, "JOB_SEARCH_LOG_BACKUP_COUNT", 5, 0, 1000),
             codex_cli_timeout_seconds=_int_env(environ, "CODEX_CLI_TIMEOUT_SECONDS", 270, 1, 24 * 3600),
             default_codex_model=environ.get("CODEX_MODEL", ""),
             default_codex_cli_path=environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex",

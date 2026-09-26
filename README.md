@@ -33,6 +33,13 @@ Command-line options (also accepted by `python app.py` or `python -m job_search`
 | `--host HOST` | Bind address; overrides `JOB_SEARCH_HOST`. |
 | `--port PORT` | Port; overrides `JOB_SEARCH_PORT`. |
 
+Subcommand:
+
+```bash
+.venv/bin/python app.py prune-captures --older-than 30        # list captures older than 30 days
+.venv/bin/python app.py prune-captures --older-than 30 --yes  # delete them
+```
+
 Exit codes: `0` success, `1` unexpected failure, `2` invalid configuration,
 `130` interrupted.
 
@@ -91,7 +98,7 @@ Values are read from the environment and `job-search-tool/.env`.
 | `JOB_SEARCH_HOST` / `JOB_SEARCH_PORT` | `127.0.0.1` / `5050` | Bind address. |
 | `JOB_SEARCH_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>` | Comma-separated `Host` header values the app accepts. Other hosts get `403` (DNS-rebinding protection); state-changing requests with a foreign `Origin` also get `403`. |
 | `JOB_SEARCH_INTERVAL_SECONDS` | `86400` | Scheduled search cadence (scheduler currently disabled). |
-| `JOB_SEARCH_LOG_MAX_BYTES` / `JOB_SEARCH_LOG_BACKUP_COUNT` | `1048576` / `5` | Log rotation. |
+| `JOB_SEARCH_LOG_MAX_BYTES` | `1048576` | Size at which a log is rotated into a timestamped `.gz` archive. |
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
 | `JOB_SEARCH_PROFILE_PATH` | `<workspace>/job-search-profile.json`, else `profile.example.json` | Search profile JSON (see below). An explicit path must exist. |
 | `JOB_SEARCH_DB_PATH` | `job-search-tool/job_search.sqlite3` | SQLite database file. Relative paths resolve against `job-search-tool/`. |
@@ -142,6 +149,22 @@ the only outbound call made inside a request is the posting scrape in
 deadline of `JOB_SEARCH_HTTP_TIMEOUT_SECONDS x 6` (initial request plus up to 5
 redirects; 180 seconds by default), after which it fails with
 `http_fetch_deadline_exceeded`.
+
+## Data
+
+All generated data is local and owned by the user running the app. Nothing
+is uploaded except the Codex prompts sent through your Codex CLI.
+
+| Location | Contents | Sensitivity | Retention |
+| --- | --- | --- | --- |
+| `job_search.sqlite3` (`JOB_SEARCH_DB_PATH`) | Tracked jobs, CRM notes and interactions, company interest, searches, discoveries, settings | Personal job-search data | Kept until you delete jobs in the UI (single delete or the confirmed `PURGE`). |
+| `captures/` (`JOB_SEARCH_CAPTURE_DIR`) | Replayable HTTP responses and Codex requests/responses. Codex prompts include your master resume and Career Manual excerpts. `Set-Cookie`, `Cookie`, and `Authorization` headers are never stored. | Personal (resume content) | Grows until pruned with `prune-captures --older-than DAYS --yes`; the command is a dry run without `--yes`. |
+| `logs/` (`JOB_SEARCH_LOG_DIR`) | Structured event and API logs | Operational; contains job URLs and titles | Rotated at `JOB_SEARCH_LOG_MAX_BYTES` into timestamped `.gz` archives that the app never deletes. Remove old archives manually if disk space matters. |
+| `<workspace>/applications/` | Generated application packets (Markdown and DOCX) | Personal | Kept indefinitely; manage the folders yourself. |
+| `.env` | Local configuration | May contain local paths | Kept; edited by `run.sh` and the Configuration panel. |
+
+Decision (T-31): rotated logs are archived, not deleted, because logs are
+evidence. `JOB_SEARCH_LOG_BACKUP_COUNT` was removed with this change.
 
 ## Errors, Logs, And Troubleshooting
 

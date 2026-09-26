@@ -20,6 +20,8 @@ REQUEST_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 MAX_REDIRECTS = 5
+# Credentials and session cookies are never written to captures.
+SENSITIVE_HEADERS = frozenset({"set-cookie", "cookie", "authorization", "proxy-authorization"})
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 _CHUNK_BYTES = 64 * 1024
@@ -185,7 +187,11 @@ class HttpClient:
             log_api_call(service, "GET", url, response=response, error=error, elapsed_ms=elapsed_ms)
             response_payload = {
                 "status_code": getattr(response, "status_code", None),
-                "headers": dict(getattr(response, "headers", {}) or {}),
+                "headers": {
+                    name: value
+                    for name, value in dict(getattr(response, "headers", {}) or {}).items()
+                    if name.lower() not in SENSITIVE_HEADERS
+                },
                 "text": getattr(response, "text", None),
                 "error_type": type(error).__name__ if error else None,
                 "error_message": str(error) if error else None,
