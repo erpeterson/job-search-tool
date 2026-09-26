@@ -26,7 +26,7 @@ P3 = hygiene or completeness.
 | T-7 | Add HTTP security headers | Security | P2 | Done |
 | T-8 | Stop returning raw exception text and internal paths to clients | Security / Errors | P2 | Done |
 | T-9 | Add security linting and a dependency vulnerability audit | Tooling | P2 | Done |
-| T-10 | Pin transitive dependencies | Dependencies | P2 | Open |
+| T-10 | Pin transitive dependencies | Dependencies | P2 | Done |
 | T-11 | Record the swallowed `ConflictError` in `api_create_job` | Telemetry | P1 | Done |
 | T-12 | Stop leaving search runs stuck in `running` after a failure | Errors / Integrity | P1 | Done |
 | T-13 | Add top-level exception handling to background threads | Errors / Telemetry | P1 | Done |

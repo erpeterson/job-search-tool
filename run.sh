@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 ENV_FILE="${SCRIPT_DIR}/.env"
 ENV_EXAMPLE="${SCRIPT_DIR}/.env.example"
-REQUIREMENTS="${SCRIPT_DIR}/requirements.txt"
+REQUIREMENTS="${SCRIPT_DIR}/requirements.lock"
 INSTALL_MARKER="${VENV_DIR}/.requirements-installed"
 PYTHON_BIN="${VENV_DIR}/bin/python"
 PIP_BIN="${VENV_DIR}/bin/pip"
@@ -126,7 +126,7 @@ setup_venv() {
 
   if [[ ! -f "${INSTALL_MARKER}" || "${REQUIREMENTS}" -nt "${INSTALL_MARKER}" ]]; then
     echo "Installing Python dependencies"
-    "${PIP_BIN}" install -r "${REQUIREMENTS}"
+    "${PIP_BIN}" install --require-hashes -r "${REQUIREMENTS}"
     date > "${INSTALL_MARKER}"
   fi
 }
