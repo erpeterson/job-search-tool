@@ -8,7 +8,7 @@ Run:
 job-search-tool/run.sh
 ```
 
-The script will:
+The script requires Python 3.12+ (it exits with code `2` otherwise) and will:
 
 - create `job-search-tool/.venv` if needed
 - install pinned, hash-verified dependencies from `job-search-tool/requirements.lock` if needed
@@ -22,11 +22,8 @@ To prepare the environment without starting the app:
 job-search-tool/run.sh --setup-only
 ```
 
-Then open:
-
-```text
-http://127.0.0.1:5050
-```
+Then open the address the app prints on startup (by default
+`http://127.0.0.1:5050`).
 
 Command-line options (also accepted by `python app.py` or `python -m job_search`):
 

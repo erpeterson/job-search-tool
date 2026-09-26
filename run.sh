@@ -85,6 +85,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+MIN_PYTHON_MAJOR=3
+MIN_PYTHON_MINOR=12
+
+require_python() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 was not found on PATH; Python ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}+ is required." >&2
+    exit 2
+  fi
+  if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PYTHON_MAJOR}, ${MIN_PYTHON_MINOR}) else 1)"; then
+    local found
+    found="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || echo unknown)"
+    echo "Python ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}+ is required; python3 is ${found}." >&2
+    exit 2
+  fi
+}
+
 ensure_env_file() {
   if [[ ! -f "${ENV_FILE}" ]]; then
     cp "${ENV_EXAMPLE}" "${ENV_FILE}"
@@ -155,11 +171,11 @@ prompt_for_codex_cli_if_needed() {
   fi
 
   if [[ "${NO_PROMPT}" == "1" || ! -t 0 ]]; then
-    echo "CODEX_CLI_PATH is not configured and codex was not found on PATH; Codex scoring will be unavailable."
+    echo "CODEX_CLI_PATH is not configured and codex was not found on PATH; Codex scoring will be unavailable." >&2
     return
   fi
 
-  cat <<'EOF'
+  cat >&2 <<'EOF'
 CODEX_CLI_PATH is not configured and codex was not found on PATH.
 
 The job CRM will work without it, but Codex scorecard generation requires the Codex CLI.
@@ -169,18 +185,19 @@ Install and authenticate the Codex CLI, then either ensure `codex` is on PATH or
 
 Press Enter to skip for now.
 EOF
-  printf "CODEX_CLI_PATH: "
+  printf "CODEX_CLI_PATH: " >&2
   IFS= read -r entered_path
   if [[ -n "${entered_path}" ]]; then
     set_env_value CODEX_CLI_PATH "${entered_path}"
     export CODEX_CLI_PATH="${entered_path}"
     echo "Wrote CODEX_CLI_PATH to ${ENV_FILE}"
   else
-    echo "Skipping Codex CLI setup. Codex scoring will be unavailable."
+    echo "Skipping Codex CLI setup. Codex scoring will be unavailable." >&2
   fi
 }
 
 main() {
+  require_python
   cd "${REPO_ROOT}"
   ensure_env_file
   setup_venv
@@ -192,7 +209,6 @@ main() {
   fi
 
   echo "Starting Job Search Console"
-  echo "Open http://127.0.0.1:5050"
   exec "${PYTHON_BIN}" "${SCRIPT_DIR}/app.py" ${APP_ARGS[@]+"${APP_ARGS[@]}"}
 }
 
