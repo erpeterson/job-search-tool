@@ -428,10 +428,15 @@ class SearchRepository:
             (ts, message, found_count, tracked_count, rejected_count, run_id),
         )
 
-    def record_failed_run(self, trigger, message, ts):
+    def fail_run(self, run_id, message, found_count, tracked_count, rejected_count, ts):
         self._conn.execute(
-            "INSERT INTO search_runs(started_at, completed_at, trigger, status, message) VALUES (?, ?, ?, 'error', ?)",
-            (ts, ts, trigger, message),
+            """
+            UPDATE search_runs
+            SET completed_at = ?, status = 'error', message = ?, found_count = ?, tracked_count = ?,
+                rejected_count = ?
+            WHERE id = ?
+            """,
+            (ts, message, found_count, tracked_count, rejected_count, run_id),
         )
 
     def get_run(self, run_id):

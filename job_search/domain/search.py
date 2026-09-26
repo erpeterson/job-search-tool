@@ -148,8 +148,28 @@ class SearchService:
             correlation_scope(f"search-run-{run_id}"),
             operation("search_run", "domain.search", run_id=run_id, trigger=trigger, force_refresh=force_refresh),
         ):
-            for query in queries:
-                self._run_query(run_id, query, force_refresh, counts, messages)
+            try:
+                for query in queries:
+                    self._run_query(run_id, query, force_refresh, counts, messages)
+            except Exception as exc:
+                record_exception(
+                    "search_run_aborted",
+                    "domain.search",
+                    "run",
+                    exc,
+                    recovery="Marking the run as error so it is not left running, then re-raising.",
+                    run_id=run_id,
+                )
+                with self._db.unit_of_work() as uow:
+                    uow.search.fail_run(
+                        run_id,
+                        "Search run failed unexpectedly (search_run_aborted); see logs for details.",
+                        counts["found"],
+                        counts["tracked"],
+                        counts["rejected"],
+                        now(),
+                    )
+                raise
             with self._db.unit_of_work() as uow:
                 uow.search.complete_run(
                     run_id, "\n".join(messages), counts["found"], counts["tracked"], counts["rejected"], now()
@@ -192,7 +212,7 @@ class SearchService:
             result["pipeline"] = query.get("pipeline") or result.get("pipeline") or ""
             result["criteria"] = query.get("criteria") or ""
             counts["found"] += 1
-            outcome = self._process_result(run_id, query["id"], result, force_refresh)
+            outcome = self._process_result(run_id, query["id"], result, force_refresh, messages)
             if outcome in counts:
                 counts[outcome] += 1
         try:
@@ -212,7 +232,7 @@ class SearchService:
             )
             messages.append(f"{label}: {exc}")
 
-    def _process_result(self, run_id, query_id, result, force_refresh):
+    def _process_result(self, run_id, query_id, result, force_refresh, messages):
         """Filter, deduplicate, score, and track one discovered result. Returns the count bucket."""
         rejection = first_rejection(result)
         if rejection:
@@ -257,6 +277,25 @@ class SearchService:
 
         score = None
         unavailable = self._scoring.unavailable_reason()
+        if not unavailable:
+            try:
+                score = self._scoring.score(
+                    self._discovery_as_job(result), examples, model, force_refresh=force_refresh
+                )
+            except AppError as exc:
+                record_exception(
+                    "search_result_scoring_failed",
+                    "domain.search",
+                    "score_result",
+                    exc,
+                    level=logging.WARNING,
+                    recovery="Tracking the result without a Codex score; the run continues.",
+                    run_id=run_id,
+                    query_id=query_id,
+                    url=result.get("url"),
+                )
+                unavailable = f"Codex scoring failed ({exc.error_code})."
+                messages.append(f"Codex scoring failed for {result.get('url')} ({exc.error_code}); tracked unscored.")
         if unavailable:
             reason = f"{unavailable[:-1]}; discovery tracked without Codex score."
             log_event("discovery_tracked_without_codex", reason=reason, **_result_fields(result))
@@ -266,7 +305,6 @@ class SearchService:
             notes = f"Auto-discovered from job search. {reason}"
         else:
             reason = ""
-            score = self._scoring.score(self._discovery_as_job(result), examples, model, force_refresh=force_refresh)
             downlevel = bool(score.get("downlevel", False)) or bool(result.get("cached_downlevel"))
             level_assessment = (
                 score.get("level_assessment", "")
