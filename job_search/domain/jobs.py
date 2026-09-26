@@ -5,7 +5,7 @@ import logging
 from urllib.parse import urlparse
 
 from job_search.domain.clock import now
-from job_search.domain.errors import AppError, ConflictError, NotFoundError, ValidationError
+from job_search.domain.errors import AppError, DuplicateJobError, NotFoundError, ValidationError
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.rules import RUBRIC_FIELDS
 from job_search.domain.text import append_note_text
@@ -96,7 +96,7 @@ class JobService:
         with self._db.unit_of_work() as uow:
             existing_id = uow.jobs.find_id_by_url(final_url)
             if existing_id:
-                raise ConflictError("This job URL is already tracked.", "job_url_already_tracked")
+                raise DuplicateJobError(uow.jobs.get(existing_id))
             scrape_note = f" Scrape failed: {scrape_error[:500]}" if scrape_error else ""
             job_id = uow.jobs.insert(
                 {
@@ -118,11 +118,6 @@ class JobService:
             apply_job_filters(uow, self._gpt_enabled(), job_id)
         score_error = self._auto_score(job_id)
         return self.get(job_id), scrape_error, score_error
-
-    def existing_job_for_url(self, url):
-        with self._db.unit_of_work() as uow:
-            job_id = uow.jobs.find_id_by_url(url)
-            return uow.jobs.get(job_id) if job_id else None
 
     def _auto_score(self, job_id):
         unavailable = self._scoring.unavailable_reason()

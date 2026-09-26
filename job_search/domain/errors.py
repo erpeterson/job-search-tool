@@ -8,10 +8,12 @@ a user-safe message. Presentation layers map the class to a response code.
 class AppError(Exception):
     """Base class for expected, user-reportable failures."""
 
-    def __init__(self, message, error_code):
+    def __init__(self, message, error_code, response_fields=None):
         super().__init__(message)
         self.message = message
         self.error_code = error_code
+        # Extra user-safe fields presentation layers may include in the error response.
+        self.response_fields = response_fields or {}
 
 
 class ValidationError(AppError):
@@ -32,6 +34,14 @@ class UnsupportedMediaTypeError(AppError):
 
 class ConflictError(AppError):
     """The request conflicts with current state."""
+
+
+class DuplicateJobError(ConflictError):
+    """A job with the same URL is already tracked; carries the existing job."""
+
+    def __init__(self, existing_job):
+        super().__init__("This job URL is already tracked.", "job_url_already_tracked", {"job": existing_job})
+        self.existing_job = existing_job
 
 
 class DependencyUnavailableError(AppError):

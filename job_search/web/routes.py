@@ -2,7 +2,7 @@
 
 from flask import Blueprint, current_app, jsonify, render_template, request, send_from_directory
 
-from job_search.domain.errors import ConflictError, NotFoundError
+from job_search.domain.errors import NotFoundError
 from job_search.domain.packets import validate_markdown_filename
 from job_search.domain.rules import JOB_STATUSES, PIPELINES, RUBRIC_FIELDS
 from job_search.observability import METRICS
@@ -72,11 +72,9 @@ def api_job(job_id):
 def api_create_job():
     payload = v.json_body()
     fields = v.manual_job(payload)
-    c = services()
-    try:
-        job, scrape_error, score_error = c.jobs.create_manual(fields, force_refresh=v.boolean(payload, "force_refresh"))
-    except ConflictError as exc:
-        return jsonify({"error": exc.message, "job": c.jobs.existing_job_for_url(fields["url"])}), 409
+    job, scrape_error, score_error = services().jobs.create_manual(
+        fields, force_refresh=v.boolean(payload, "force_refresh")
+    )
     return jsonify({"job": job, "scrape_error": scrape_error, "score_error": score_error}), 201
 
 
