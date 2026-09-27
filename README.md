@@ -199,6 +199,8 @@ rationales, and scorecards come from `GET /api/jobs/<id>`. Job listings accept
   `415` (non-empty body that is not `application/json`), `503` (Codex CLI, Codex scoring, or Pandoc unavailable), `502`
   (Codex/Pandoc failure), or `500`. A `500` never includes internal details;
   search the logs for its `request_id`.
+- The UI is `static/index.html` plus `static/app.js` and `static/app.css`, with no
+  inline script or event-handler attributes, so the CSP uses `script-src 'self'`.
 - Every response carries `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,
   `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`.
 - Every log line carries a `process_run_id` that identifies one app run
