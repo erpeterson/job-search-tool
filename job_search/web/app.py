@@ -30,11 +30,10 @@ from job_search.web.routes import bp
 from job_search.web.validation import require_json_content_type
 
 REQUEST_ID_HEADER = "X-Request-ID"
-# 'unsafe-inline' for scripts is required until the inline UI script and handlers are extracted (T-35).
+# Scripts load only from same-origin files; inline style attributes remain in rendered markup.
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-        "frame-ancestors 'none'"
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
     ),
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
