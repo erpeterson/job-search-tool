@@ -162,7 +162,12 @@ class BackgroundTaskRegistry:
         )
 
     def _guarded(self, worker, task_id, job_ids):
-        """Thread entry point: a crash outside per-item handling still ends the task in ``error``."""
+        """Thread entry point: binds ``task-<id>`` as the correlation ID for every event the task emits
+        (threads do not inherit the request's context), and ends a crashed task in ``error``."""
+        with correlation_scope(f"task-{task_id}"):
+            self._run_guarded(worker, task_id, job_ids)
+
+    def _run_guarded(self, worker, task_id, job_ids):
         try:
             worker(task_id, job_ids)
         except Exception as exc:
