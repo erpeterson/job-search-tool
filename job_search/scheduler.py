@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from job_search.data_access.scheduler_repository import SchedulerLeaseRepository
+from job_search.composition import scheduler_process_dependencies
 
 
 def main() -> int:
@@ -29,12 +29,10 @@ def _main() -> int:
     parser.add_argument("--lease-seconds", type=int, default=900)
     args = parser.parse_args()
     owner = f"{socket.gethostname()}:{os.getpid()}"
-    lease = SchedulerLeaseRepository(args.database)
-    if not lease.acquire(owner, int(time.time()), args.lease_seconds):
+    process = scheduler_process_dependencies(args.database)
+    if not process.lease.acquire(owner, int(time.time()), args.lease_seconds):
         return 0
-    from job_search.presentation.legacy import run_job_search
-
-    run_job_search(trigger="scheduled", force_refresh=True)
+    process.search.run(trigger="scheduled", force_refresh=True)
     return 0
 
 

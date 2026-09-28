@@ -270,7 +270,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   using the CLI's `--database` path; make `worker.py` call the application
   processor without importing presentation. Preserve claim, heartbeat, and
   durable completion semantics.
-- [ ] **1.5b — Rewire the scheduler.** Build a search runner from composition
+- [x] **1.5b — Rewire the scheduler.** Build a search runner from composition
   using the CLI's `--database` path; make `scheduler.py` invoke the application
   runner after lease acquisition without importing presentation.
 - [ ] **1.5c — Verify and commit.** Test both CLI entry points with a temporary
