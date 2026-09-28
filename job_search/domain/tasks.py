@@ -5,7 +5,7 @@ import threading
 import uuid
 
 from job_search.domain.clock import now
-from job_search.domain.errors import AppError, CapacityError, ConflictError
+from job_search.domain.errors import AppError, CapacityError, ConflictError, TaskStartError
 from job_search.domain.scoring import score_total
 from job_search.observability import correlation_scope, log_event, record_exception
 
@@ -119,8 +119,22 @@ class BackgroundTaskRegistry:
             self._evict_finished()
             self._tasks[task_id] = task
         log_event("background_task_started", task_id=task_id, operation=operation_name, job_ids=job_ids)
-        thread = self._thread_factory(target=self._guarded, args=(worker, task_id, job_ids), daemon=True)
-        thread.start()
+        try:
+            thread = self._thread_factory(target=self._guarded, args=(worker, task_id, job_ids), daemon=True)
+            thread.start()
+        except Exception as exc:
+            record_exception(
+                "background_task_thread_start_failed",
+                "domain.tasks",
+                operation_name,
+                exc,
+                recovery="Marked the task as error so its slot is released.",
+                task_id=task_id,
+            )
+            self._mark_crashed(task_id, "Task could not start (background_task_thread_start_failed).")
+            raise TaskStartError(
+                "The background task could not be started; try again shortly.", "background_task_thread_start_failed"
+            ) from exc
         return _snapshot(task)
 
     def start_call(self, operation_name, call, job_ids=(), exclusive=False):
@@ -185,7 +199,7 @@ class BackgroundTaskRegistry:
             )
             self._mark_crashed(task_id)
 
-    def _mark_crashed(self, task_id):
+    def _mark_crashed(self, task_id, message=None):
         # Writes the dict directly: the regular update path may be what failed.
         with self._lock:
             task = self._tasks.get(task_id)
@@ -195,7 +209,7 @@ class BackgroundTaskRegistry:
                     current_job_id=None,
                     completed_at=now(),
                     updated_at=now(),
-                    message="Task stopped unexpectedly (background_task_crashed); see logs for details.",
+                    message=message or "Task stopped unexpectedly (background_task_crashed); see logs for details.",
                 )
 
 

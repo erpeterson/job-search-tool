@@ -59,6 +59,10 @@ class DuplicateUrlError(ConflictError):
     """A job with this URL was inserted concurrently (the unique URL index rejected the insert)."""
 
 
+class TaskStartError(AppError):
+    """A background task could not be started (maps to HTTP 500 with this message)."""
+
+
 class DependencyUnavailableError(AppError):
     """A required local dependency (Codex CLI, feature flag) is unavailable."""
 
