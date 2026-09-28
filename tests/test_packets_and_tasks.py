@@ -426,3 +426,44 @@ class TestTaskConcurrency:
         body = response.get_json()
         assert response.status_code == 201, f"the job must still be saved: {body}"
         assert body["score_task"] is None and "already running" in body["score_error"], body
+
+
+def test_failed_thread_start_releases_the_slot():
+    from job_search.domain.errors import TaskStartError
+    from job_search.domain.tasks import BackgroundTaskRegistry
+    from job_search.observability import METRICS
+
+    attempts = []
+
+    class FlakyThread:
+        def __init__(self, target, args=(), daemon=None, name=None):
+            self.target, self.args = target, args
+
+        def start(self):
+            attempts.append(1)
+            if len(attempts) <= 2:
+                raise RuntimeError("can't start new thread")
+            self.target(*self.args)
+
+    registry = BackgroundTaskRegistry(max_running=2, thread_factory=FlakyThread)
+    before = METRICS.snapshot().get("blame.background_task_thread_start_failed", 0)
+    for _ in range(2):
+        with pytest.raises(TaskStartError):
+            registry.start("op", [], lambda *_: None)
+    statuses = [task["status"] for task in registry.list()]
+    assert statuses == ["error", "error"], f"failed starts must end in error: {statuses}"
+    assert METRICS.snapshot()["blame.background_task_thread_start_failed"] == before + 2, "each failure is recorded"
+    task = registry.start("op", [], lambda task_id, _ids: registry.update(task_id, status="complete"))
+    assert registry.get(task["id"])["status"] == "complete", "a later task can still start"
+
+
+def test_thread_start_failure_returns_500_with_message(client, container, monkeypatch):
+    from job_search.domain.errors import TaskStartError
+
+    def fail(*_args, **_kwargs):
+        raise TaskStartError("The background task could not be started; try again shortly.", "x")
+
+    monkeypatch.setattr(container.tasks, "start", fail)
+    response = post(client, "/api/search/run")
+    assert response.status_code == 500, f"expected 500, got {response.status_code}"
+    assert "could not be started" in response.get_json()["error"], response.get_json()
