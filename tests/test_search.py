@@ -169,23 +169,21 @@ def test_seeding_is_idempotent(container):
 
 
 def test_level_equivalency_cache_is_populated_without_network(container):
-    from job_search.domain.levels import lookup_level_equivalency
+    from job_search.domain.levels import LevelCalibrationCache
 
+    target = container.profile.target_level
     with container.db.unit_of_work() as uow:
         assert uow.levels.count() == 0, "no level equivalencies are seeded"
-        target = container.profile.target_level
-        ambiguous = lookup_level_equivalency(uow.levels, "Atlassian", "Principal Engineer", target)
+        cache = LevelCalibrationCache(uow.levels, target, ["Atlassian", "ExampleCo"])
+        ambiguous = cache.lookup("Atlassian", "Principal Engineer")
         assert ambiguous is None, f"an ambiguous title should stay unknown; got {ambiguous}"
-        first = lookup_level_equivalency(
-            uow.levels, "ExampleCo", "Senior Software Engineer", container.profile.target_level
-        )
-        second = lookup_level_equivalency(
-            uow.levels, "ExampleCo", "Senior Software Engineer II", container.profile.target_level
-        )
+        first = cache.lookup("ExampleCo", "Senior Software Engineer")
+        second = cache.lookup("ExampleCo", "Senior Software Engineer II")
         assert uow.levels.count() == 1, "ambiguous titles are not cached; matching prefixes reuse the cache"
-    assert first["oracle_level"] == second["oracle_level"] == "BELOW_IC6", (
-        "expected first['oracle_level'] == second['oracle_level'] == 'BELOW_IC6'"
-    )
+        preloaded = LevelCalibrationCache(uow.levels, target, ["ExampleCo"]).lookup("ExampleCo", "Staff Engineer")
+    levels = {first["oracle_level"], second["oracle_level"]}
+    assert levels == {"BELOW_IC6"}, f"both titles map below the target level: {levels}"
+    assert preloaded["oracle_level"] == "BELOW_IC6", "a new cache instance estimates an uncached title"
 
 
 class TestScheduler:

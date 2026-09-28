@@ -97,6 +97,7 @@ def run(args, environ, serve, out, app_dir):
         outcome = "interrupted"
         raise
     finally:
+        container.scheduler.stop()
         log_event("app_stopped", outcome=outcome)
 
 

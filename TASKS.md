@@ -73,7 +73,7 @@ P3 = hygiene or completeness.
 | T-47 | Accept IPv6 loopback in the default Host allowlist | Security / Configuration | P3 | Done |
 | T-48 | Warn about removed or unknown `JOB_SEARCH_*` variables | Configuration | P3 | Done |
 | T-49 | Test the real company query and confirm the matching change | Tests | P3 | Done |
-| T-50 | Remove dead code left by the refactors | Code standards | P3 | Open |
+| T-50 | Remove dead code left by the refactors | Code standards | P3 | Done |
 | T-51 | Finish removing profile-specific names and defaults | Configuration | P3 | Open |
 
 ---
