@@ -264,6 +264,11 @@ class ApplicationWorkflowTests(unittest.TestCase):
             self.assertEqual(refined["refinement_notes"], "narrowed")
             self.assertEqual(decision[0], "tracked")
             self.assertEqual(decision[3]["total_score"], 85)
+            with workflow_app.connect() as connection:
+                saved = connection.execute(
+                    "SELECT company, gpt_score FROM jobs WHERE id = ?", (decision[2],)
+                ).fetchone()
+            self.assertEqual((saved["company"], saved["gpt_score"]), ("ExampleCo", 85))
         finally:
             (
                 workflow_app.gpt_scoring_enabled,
@@ -271,6 +276,44 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 workflow_app.call_codex_json,
                 workflow_app.score_discovery_with_codex,
             ) = originals
+
+    def test_invalid_refinement_model_output_is_observed_without_query_update(self):
+        originals = (
+            workflow_app.gpt_scoring_enabled,
+            workflow_app.codex_cli_available,
+            workflow_app.call_codex_json,
+            workflow_app.telemetry.event,
+        )
+        events = []
+        workflow_app.gpt_scoring_enabled = lambda: True
+        workflow_app.codex_cli_available = lambda: True
+        workflow_app.call_codex_json = lambda *_args, **_kwargs: "not-json"
+        workflow_app.telemetry.event = lambda name, **fields: events.append((name, fields))
+        try:
+            with workflow_app.connect() as connection:
+                query_id = connection.execute(
+                    """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
+                       VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
+                ).lastrowid
+                connection.execute(
+                    """INSERT INTO discovered_jobs(created_at, board, decision, query_id, company, title)
+                       VALUES (1, 'indeed', 'tracked', ?, 'ExampleCo', 'Architect')""",
+                    (query_id,),
+                )
+                workflow_app.discovery_service().refine_query(connection, query_id, force_refresh=False)
+                keywords = connection.execute(
+                    "SELECT keywords FROM search_queries WHERE id = ?", (query_id,)
+                ).fetchone()[0]
+        finally:
+            (
+                workflow_app.gpt_scoring_enabled,
+                workflow_app.codex_cli_available,
+                workflow_app.call_codex_json,
+                workflow_app.telemetry.event,
+            ) = originals
+
+        self.assertEqual(keywords, "architect", "Invalid model output must not replace the query")
+        self.assertEqual(events[0][1]["error_code"], "QUERY_REFINEMENT_INVALID_JSON")
 
     def test_codex_scoring_persists_a_valid_fake_scorecard(self):
         job_id = self.create_job()

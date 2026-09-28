@@ -196,7 +196,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 - [x] **1.3c — Move search runs.** Replace `_SearchRunAdapter` with explicit
   application ports for query selection, board calls, persistence, and run
   status. Test deduplication, filters, and failed board calls with fakes.
-- [ ] **1.3d — Move discovery.** Replace `_DiscoveryAdapter` with explicit
+- [x] **1.3d — Move discovery.** Replace `_DiscoveryAdapter` with explicit
   ports for refinement, classification, level assessment, and persistence.
   Test discovered-job creation and failed model output with fakes.
 - [ ] **1.3e — Move scoring.** Move Codex scoring orchestration, score

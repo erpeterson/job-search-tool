@@ -469,13 +469,74 @@ def codex_scoring_workflow(
 
 
 class _DiscoveryOperations:
-    def __init__(self, **operations: Any) -> None:
-        self.__dict__.update(operations)
+    def __init__(
+        self,
+        database_path: Path,
+        telemetry: Telemetry,
+        scoring_enabled: Callable[[], bool],
+        scorer_available: Callable[[], bool],
+        scorer_path: Callable[[], str],
+        score: Callable[..., Any],
+        apply_filter: Callable[..., Any],
+        normalize_pipeline: Callable[..., str],
+        refine: Callable[..., Any],
+        clean_text: Callable[..., str],
+    ) -> None:
+        self.scoring_enabled = scoring_enabled
+        self.scorer_available = scorer_available
+        self.scorer_path = scorer_path
+        self.log = telemetry.event
+        self.score = score
+        self.create = SqliteSearchMutations.create_discovery_job
+        self.apply_filter = apply_filter
+        self.normalize_pipeline = normalize_pipeline
+        self.refinement_context = SqliteReadModels.query_refinement_context
+        self.refine = refine
+        self.parse_model_json = parse_model_json
+        self.clean_text = clean_text
+        self.update_query = SqliteSearchMutations.update_query
+        self.lookup_level = lambda connection, company, title: level_service(database_path, connection).lookup(
+            company, title
+        )
+        self.level_assessment = LevelService.assessment
+
+    @staticmethod
+    def now() -> int:
+        return int(time.time())
 
 
-def discovery_service(unknown_level_assessment: str, **operations: Any) -> DiscoveryService:
+def discovery_service(
+    database_path: Path,
+    telemetry: Telemetry,
+    unknown_level_assessment: str,
+    level_reference: str,
+    *,
+    scoring_enabled: Callable[[], bool],
+    scorer_available: Callable[[], bool],
+    scorer_path: Callable[[], str],
+    score: Callable[..., Any],
+    apply_filter: Callable[..., Any],
+    normalize_pipeline: Callable[..., str],
+    refine: Callable[..., Any],
+    clean_text: Callable[..., str],
+) -> DiscoveryService:
     """Compose discovery workflow ports outside the presentation layer."""
-    return DiscoveryService(_DiscoveryOperations(**operations), unknown_level_assessment)
+    return DiscoveryService(
+        _DiscoveryOperations(
+            database_path,
+            telemetry,
+            scoring_enabled,
+            scorer_available,
+            scorer_path,
+            score,
+            apply_filter,
+            normalize_pipeline,
+            refine,
+            clean_text,
+        ),
+        unknown_level_assessment,
+        level_reference,
+    )
 
 
 class _SearchRunOperations:

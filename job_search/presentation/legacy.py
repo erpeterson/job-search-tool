@@ -192,25 +192,6 @@ JOB_STATUSES = {
 COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_interested"}
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
 
-PIPELINE_CRITERIA = {
-    "Executive IC": {
-        "description": "Distinguished Engineer, Chief Architect, Technical Fellow, Principal Architect, Senior Principal Engineer roles at cloud, infrastructure, enterprise software, and AI platform companies.",
-        "keywords": '("Distinguished Engineer" OR "Chief Architect" OR "Technical Fellow" OR "Principal Architect" OR "Senior Principal Engineer") (cloud OR infrastructure OR platform OR enterprise OR AI)',
-    },
-    "Office of the CTO": {
-        "description": "Office of CTO, technical strategy, engineering strategy, CTO advisor, strategic initiatives, technical incubation, emerging technology roles hidden inside executive descriptions.",
-        "keywords": '("Office of the CTO" OR "Technical Strategy" OR "Engineering Strategy" OR "CTO Advisor" OR "Strategic Initiatives" OR "Technical Incubation" OR "Emerging Technology")',
-    },
-    "Adjacent industries": {
-        "description": "Architectural roles in healthcare, defense, climate, industrial automation, and scientific computing organizations with complicated technical organizations.",
-        "keywords": '("Chief Architect" OR "Principal Architect" OR "Distinguished Engineer" OR "Technical Strategy") (healthcare OR defense OR climate OR "industrial automation" OR "scientific computing")',
-    },
-    "Wildcards": {
-        "description": "Intellectually interesting roles in national labs, Disney Imagineering, Apple Vision, NVIDIA research operations, NASA contractors, AI safety, and robotics platforms.",
-        "keywords": '("AI safety" OR robotics OR "research operations" OR "national lab" OR NASA OR "Apple Vision" OR Imagineering OR NVIDIA) ("Principal Engineer" OR Architect OR "Technical Strategy")',
-    },
-}
-
 ORACLE_IC6_LEVEL_REFERENCE = (
     "Oracle Software Engineer IC-6 is Architect. "
     "Treat IC6-equivalent as Architect / Principal-plus / Staff-plus scope with broad technical influence, "
@@ -1093,119 +1074,24 @@ def populate_codex_score(conn, job_id, force_refresh=False):
     return codex_scoring_workflow().populate(conn, job_id, force_refresh=force_refresh)
 
 
-class _DiscoveryAdapter:
-    @staticmethod
-    def scoring_enabled():
-        return gpt_scoring_enabled()
-
-    @staticmethod
-    def scorer_available():
-        return codex_cli_available()
-
-    @staticmethod
-    def scorer_path():
-        return codex_cli_path()
-
-    @staticmethod
-    def log(event, **fields):
-        log_event(event, **fields)
-
-    @staticmethod
-    def score(connection, result, *, force_refresh):
-        return score_discovery_with_codex(connection, result, force_refresh=force_refresh)
-
-    @staticmethod
-    def create(connection, values):
-        return INFRASTRUCTURE.search_mutations.create_discovery_job(connection, values)
-
-    @staticmethod
-    def apply_filter(connection, job_id):
-        apply_filter(connection, job_id)
-
-    @staticmethod
-    def now():
-        return now()
-
-    @staticmethod
-    def normalize_pipeline(value, fallback):
-        return normalize_pipeline(value, fallback)
-
-    @staticmethod
-    def refinement_context(connection, query_id):
-        return INFRASTRUCTURE.read_models.query_refinement_context(connection, query_id)
-
-    @staticmethod
-    def refinement_prompt(query, recent):
-        return {
-            "task": "Refine a job-board search query for Eric Peterson.",
-            "instructions": [
-                "Return JSON only.",
-                "Keep the same job board and pipeline.",
-                "Improve the keywords for high-scoring roles at IC6-equivalent or higher scope.",
-                "Avoid downlevel, low-score, Account Executive, and other sales results.",
-            ],
-            "level_reference": {
-                "canonical_source": "local Oracle IC6 target definition",
-                "oracle_ic6_definition": ORACLE_IC6_LEVEL_REFERENCE,
-            },
-            "pipeline": query.get("pipeline"),
-            "pipeline_criteria": query.get("criteria")
-            or PIPELINE_CRITERIA.get(query.get("pipeline"), {}).get("description", ""),
-            "current_keywords": query.get("keywords"),
-            "location": query.get("location"),
-            "recent_results": recent,
-            "expected_json_schema": {
-                "keywords": "updated search query string",
-                "location": "updated location string or current location",
-                "criteria": "updated short criteria description",
-                "refinement_notes": "what changed and why",
-            },
-        }
-
-    @staticmethod
-    def refine(connection, prompt, *, force_refresh):
-        output = call_codex_json(codex_model(connection), prompt, "refine_search_query", force_refresh=force_refresh)
-        if not output:
-            return None
-        try:
-            return parse_model_json(output)
-        except json.JSONDecodeError as exc:
-            log_event(
-                "query_refinement_invalid_json",
-                error_code="QUERY_REFINEMENT_INVALID_JSON",
-                component="business.search_refinement",
-                operation="parse_model_json",
-                error_type=type(exc).__name__,
-            )
-            return None
-
-    @staticmethod
-    def clean_text(value):
-        return clean_text(value)
-
-    @staticmethod
-    def update_query(connection, query_id, values):
-        INFRASTRUCTURE.search_mutations.update_query(connection, query_id, values)
-
-
 def discovery_service():
-    adapter = _DiscoveryAdapter()
     return compose_discovery_service(
+        DB_PATH,
+        telemetry,
         UNKNOWN_LEVEL_ASSESSMENT,
-        scoring_enabled=adapter.scoring_enabled,
-        scorer_available=adapter.scorer_available,
-        scorer_path=adapter.scorer_path,
-        log=adapter.log,
-        score=adapter.score,
-        create=adapter.create,
-        apply_filter=adapter.apply_filter,
-        now=adapter.now,
-        normalize_pipeline=adapter.normalize_pipeline,
-        refinement_context=adapter.refinement_context,
-        refinement_prompt=adapter.refinement_prompt,
-        refine=adapter.refine,
-        clean_text=adapter.clean_text,
-        update_query=adapter.update_query,
+        ORACLE_IC6_LEVEL_REFERENCE,
+        scoring_enabled=gpt_scoring_enabled,
+        scorer_available=codex_cli_available,
+        scorer_path=codex_cli_path,
+        score=lambda connection, result, *, force_refresh: score_discovery_with_codex(
+            connection, result, force_refresh=force_refresh
+        ),
+        apply_filter=apply_filter,
+        normalize_pipeline=normalize_pipeline,
+        refine=lambda connection, prompt, *, force_refresh: call_codex_json(
+            codex_model(connection), prompt, "refine_search_query", force_refresh=force_refresh
+        ),
+        clean_text=clean_text,
     )
 
 
@@ -1231,31 +1117,15 @@ def search_rejection_reason(result):
     return None
 
 
-def assess_search_result_level(connection, result):
-    equivalency = lookup_level_equivalency(connection, result.get("company"), result.get("title"))
-    if not equivalency:
-        return
-    result["cached_level_assessment"] = level_assessment_from_equivalency(equivalency)
-    result["cached_downlevel"] = bool(equivalency["downlevel"])
-    log_event(
-        "level_equivalency_matched",
-        company=result.get("company"),
-        title=result.get("title"),
-        oracle_level=equivalency["oracle_level"],
-        oracle_title=equivalency["oracle_title"],
-        downlevel=bool(equivalency["downlevel"]),
-        source_url=equivalency.get("source_url"),
-    )
-
-
 def run_job_search(trigger="manual", force_refresh=False):
     """Run search through the application-layer orchestration service."""
+    discovery = discovery_service()
     return compose_search_run_service(
         DB_PATH,
         OUTBOUND_CLIENTS.search_gateway,
         telemetry,
         reject_reason=search_rejection_reason,
-        level_assessment=assess_search_result_level,
+        level_assessment=discovery.assess_level,
         already_seen_reason=already_seen_reason,
         classify=lambda connection, result, *, force_refresh: classify_discovery(
             connection, result, force_refresh=force_refresh

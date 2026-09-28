@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from job_search.application.discovery_service import PIPELINE_CRITERIA
 from job_search.data_access.read_models import SqliteReadModels
 from job_search.data_access.schema import initialize_schema
 from job_search.data_access.search_mutations import SqliteSearchMutations
@@ -15,25 +16,6 @@ SALES_ROLE_EXCLUSION_QUERY = (
     '-"Account Executive" -"Sales Executive" -"Sales Director" -"Account Manager" -"Business Development" -sales'
 )
 SALES_ROLE_EXCLUSION_CRITERIA = "Exclude Account Executive and other sales roles."
-
-_PIPELINES = {
-    "Executive IC": {
-        "description": "Distinguished Engineer, Chief Architect, Technical Fellow, Principal Architect, Senior Principal Engineer roles at cloud, infrastructure, enterprise software, and AI platform companies.",
-        "keywords": '("Distinguished Engineer" OR "Chief Architect" OR "Technical Fellow" OR "Principal Architect" OR "Senior Principal Engineer") (cloud OR infrastructure OR platform OR enterprise OR AI)',
-    },
-    "Office of the CTO": {
-        "description": "Office of CTO, technical strategy, engineering strategy, CTO advisor, strategic initiatives, technical incubation, emerging technology roles hidden inside executive descriptions.",
-        "keywords": '("Office of the CTO" OR "Technical Strategy" OR "Engineering Strategy" OR "CTO Advisor" OR "Strategic Initiatives" OR "Technical Incubation" OR "Emerging Technology")',
-    },
-    "Adjacent industries": {
-        "description": "Architectural roles in healthcare, defense, climate, industrial automation, and scientific computing organizations with complicated technical organizations.",
-        "keywords": '("Chief Architect" OR "Principal Architect" OR "Distinguished Engineer" OR "Technical Strategy") (healthcare OR defense OR climate OR "industrial automation" OR "scientific computing")',
-    },
-    "Wildcards": {
-        "description": "Intellectually interesting roles in national labs, Disney Imagineering, Apple Vision, NVIDIA research operations, NASA contractors, AI safety, and robotics platforms.",
-        "keywords": '("AI safety" OR robotics OR "research operations" OR "national lab" OR NASA OR "Apple Vision" OR Imagineering OR NVIDIA) ("Principal Engineer" OR Architect OR "Technical Strategy")',
-    },
-}
 
 
 def _default_queries() -> list[dict[str, Any]]:
@@ -46,7 +28,7 @@ def _default_queries() -> list[dict[str, Any]]:
             "criteria": f"{config['description']} {SALES_ROLE_EXCLUSION_CRITERIA}",
             "seeded": 1,
         }
-        for pipeline, config in _PIPELINES.items()
+        for pipeline, config in PIPELINE_CRITERIA.items()
         for board in ("linkedin", "indeed")
     ]
 

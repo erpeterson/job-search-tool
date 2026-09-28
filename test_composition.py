@@ -157,22 +157,23 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual(scoring.called, (3, False))
 
     def test_discovery_workflow_receives_explicit_operations(self):
+        class Telemetry:
+            def event(self, *_args, **_kwargs):
+                return None
+
         service = discovery_service(
+            Path("unused.sqlite3"),
+            Telemetry(),
             "Unknown",
+            "IC6-equivalent",
             scoring_enabled=lambda: False,
             scorer_available=lambda: True,
             scorer_path=lambda: "codex",
-            log=lambda *_args, **_kwargs: None,
             score=lambda *_args, **_kwargs: {},
-            create=lambda *_args, **_kwargs: 1,
             apply_filter=lambda *_args, **_kwargs: None,
-            now=lambda: 1,
             normalize_pipeline=lambda value, fallback: value or fallback,
-            refinement_context=lambda *_args: [],
-            refinement_prompt=lambda *_args: {},
             refine=lambda *_args, **_kwargs: None,
             clean_text=lambda value: value,
-            update_query=lambda *_args, **_kwargs: None,
         )
         self.assertIsNotNone(service)
 
