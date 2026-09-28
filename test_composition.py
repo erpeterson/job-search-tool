@@ -24,6 +24,42 @@ from job_search.presentation.factory import create_app
 
 
 class CompositionTests(unittest.TestCase):
+    def test_injected_api_reads_only_its_temporary_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first_path = Path(directory) / "first.sqlite3"
+            second_path = Path(directory) / "second.sqlite3"
+            first = presentation_dependencies(first_path)
+            second = presentation_dependencies(second_path)
+            try:
+                first.startup_service.initialize()
+                second.startup_service.initialize()
+                with database_session(first_path) as connection:
+                    connection.execute(
+                        "INSERT INTO jobs(created_at, updated_at, company, title, status) VALUES (1, 1, ?, ?, ?)",
+                        ("InjectedCo", "Architect", "researching"),
+                    )
+                first_app = create_app(dependencies=first, route_blueprint=legacy.routes)
+                second_app = create_app(dependencies=second, route_blueprint=legacy.routes)
+
+                first_response = first_app.test_client().get("/api/state")
+                second_response = second_app.test_client().get("/api/state")
+
+                self.assertEqual(first_response.status_code, 200, "First injected API should be available.")
+                self.assertEqual(second_response.status_code, 200, "Second injected API should be available.")
+                self.assertEqual(
+                    [job["company"] for job in first_response.get_json()["jobs"]],
+                    ["InjectedCo"],
+                    "First API must read from its injected database.",
+                )
+                self.assertEqual(
+                    second_response.get_json()["jobs"], [], "Second API must not read the first API's database."
+                )
+            finally:
+                for dependencies in (first, second):
+                    for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
+                        for handler in logger.handlers:
+                            handler.close()
+
     def test_outbound_clients_compose_fake_transport_and_board_parsers(self):
         class FakeResponse:
             status_code = 200

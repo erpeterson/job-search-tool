@@ -13,6 +13,38 @@ PRESENTATION = ROOT / "job_search" / "presentation"
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_presentation_does_not_construct_storage_transport_or_services(self):
+        forbidden_calls = {
+            "infrastructure",
+            "database_session",
+            "open_connection",
+            "outbound_clients",
+            "codex_json_gateway",
+        }
+        forbidden_names = {"INFRASTRUCTURE", "OUTBOUND_HTTP_CLIENT", "OUTBOUND_CLIENTS", "CODEX_JSON_GATEWAY"}
+        for path in PRESENTATION.rglob("*.py"):
+            with self.subTest(module=path.relative_to(ROOT)):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                assigned = {
+                    target.id
+                    for node in ast.walk(tree)
+                    if isinstance(node, (ast.Assign, ast.AnnAssign))
+                    for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                    if isinstance(target, ast.Name)
+                }
+                self.assertFalse(
+                    assigned & forbidden_names,
+                    f"{path.name} must receive concrete dependencies from composition.",
+                )
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                    self.assertFalse(
+                        name in forbidden_calls or name.endswith(("Repository", "Gateway", "Service")),
+                        f"{path.name} must not construct {name} at the presentation boundary.",
+                    )
+
     def test_presentation_dependency_lookups_match_required_named_contract(self):
         contract_fields = {field.name for field in fields(PresentationDependencies)}
         self.assertTrue(contract_fields, "The web contract must declare required named dependencies.")

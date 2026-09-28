@@ -87,7 +87,7 @@ evidence.
 
   - [x] **T-1.1 — Extract presentation-owned configuration, logging, capture,
     HTTP, parsing, and filesystem adapters.**
-  - [ ] **T-1.2 — Assemble every application service in `composition.py` and
+  - [x] **T-1.2 — Assemble every application service in `composition.py` and
     remove presentation-layer infrastructure construction and session access.**
   - [x] **T-1.3 — Extract search, discovery, scoring, packet,
     initialization, and durable-task workflow adapters from `legacy.py`.**
@@ -260,7 +260,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.2c.3 — Remove session and service construction.** Replace the
     presentation session provider and any remaining construction/fallbacks;
     migrate direct-helper tests and verify the entire presentation package.
-- [ ] **1.2d — Verify and commit.** AST-inspect all presentation modules for
+- [x] **1.2d — Verify and commit.** AST-inspect all presentation modules for
   infrastructure/session construction and verify injected API behavior with a
   temporary database. Run `./quality.sh`, check T-1.2, and commit.
 
