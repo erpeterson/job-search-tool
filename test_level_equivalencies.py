@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from job_search.presentation.factory import create_app
+from job_search.security import load_request_security
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("job_search_app", APP_PATH)
@@ -180,7 +181,7 @@ class LevelEquivalencyTests(unittest.TestCase):
     def test_external_binding_rejects_unauthenticated_and_missing_csrf_mutations(self):
         original_security = job_search_app.REQUEST_SECURITY
         try:
-            job_search_app.REQUEST_SECURITY = job_search_app.load_request_security(
+            job_search_app.REQUEST_SECURITY = load_request_security(
                 {
                     "JOB_SEARCH_HOST": "0.0.0.0",
                     "JOB_SEARCH_AUTH_TOKEN": "auth",

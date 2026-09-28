@@ -2,12 +2,15 @@
 
 import logging
 import os
+import shutil
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup
+from dotenv import dotenv_values
 
 from job_search.application.background_task_service import BackgroundTaskService
 from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
@@ -26,6 +29,7 @@ from job_search.application.search_query_service import SearchQueryService
 from job_search.application.search_run_service import SearchRunService
 from job_search.application.settings_service import SettingsService
 from job_search.application.task_execution_service import TaskExecutionService
+from job_search.config import RuntimeConfiguration, RuntimePaths, load_runtime_settings
 from job_search.data_access.application_packet_catalog import ApplicationPacketCatalog
 from job_search.data_access.board_gateway import CallableBoardGateway
 from job_search.data_access.capture_store import CaptureStore  # noqa: F401
@@ -56,12 +60,35 @@ from job_search.data_access.telemetry import StructuredTelemetry, configure_json
 from job_search.data_access.text_file_reader import read_optional_text  # noqa: F401
 from job_search.http_client import SafeHttpClient
 from job_search.presentation.dependencies import PresentationDependencies
+from job_search.security import load_request_security
 from job_search.task_repository import TaskRepository
 
 
 def database_session(database_path: Path):
     """Open a configured database session at the composition boundary."""
     return open_connection(database_path)
+
+
+def runtime_configuration(
+    root: Path | None = None,
+    environment: Mapping[str, str] | None = None,
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    executable: Callable[[str], bool] | None = None,
+) -> RuntimeConfiguration:
+    """Load dotenv defaults without changing the process environment."""
+    paths = RuntimePaths.from_root(root or Path(__file__).resolve().parent.parent)
+    file_values = {key: value for key, value in dotenv_values(paths.environment_file).items() if value is not None}
+    values = {**file_values, **dict(os.environ if environment is None else environment)}
+    return RuntimeConfiguration(
+        paths=paths,
+        settings=load_runtime_settings(values),
+        security=load_request_security(values),
+        environment=values,
+        which=which,
+        executable=executable or (lambda path: os.access(path, os.X_OK)),
+        persist=update_environment_file,
+    )
 
 
 @dataclass(frozen=True)

@@ -2,17 +2,13 @@
 import hashlib
 import json
 import logging
-import os
 import re
-import shutil
 import textwrap
 import time
 import uuid
 from contextlib import nullcontext
 from datetime import UTC, datetime
-from pathlib import Path
 
-from dotenv import load_dotenv
 from flask import (
     Blueprint,
     Response,
@@ -46,7 +42,7 @@ from job_search.composition import (
     infrastructure,
     parse_model_json,
     read_optional_text,
-    update_environment_file,
+    runtime_configuration,
 )
 from job_search.composition import background_task_service as compose_background_task_service
 from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
@@ -69,10 +65,9 @@ from job_search.composition import search_repository as compose_search_repositor
 from job_search.composition import search_run_service as compose_search_run_service
 from job_search.composition import settings_service as compose_settings_service
 from job_search.composition import task_execution_service as compose_task_execution_service
-from job_search.config import load_runtime_settings
 from job_search.errors import ClientInputError, translate_exception
 from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
-from job_search.security import authorized, csrf_valid, load_request_security, trusted_proxy_peer
+from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
     RequestValidationError,
     boolean,
@@ -84,29 +79,27 @@ from job_search.validation import (
     require_json_object,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_CONFIG = runtime_configuration()
+ROOT = RUNTIME_CONFIG.paths.root
 APP_DIR = ROOT
-DB_PATH = APP_DIR / "job_search.sqlite3"
-ENV_PATH = APP_DIR / ".env"
-LOG_DIR = APP_DIR / "logs"
-API_LOG_PATH = LOG_DIR / "api.log"
-APP_LOG_PATH = LOG_DIR / "job-search.log"
-CAPTURE_DIR = APP_DIR / "captures"
-GUIDANCE_PATH = ROOT / "supporting-documents" / "20260731-job-search-guidance.md"
-CAREER_MANUAL_PATH = ROOT / "career-manual" / "Career-Manual.md"
-MASTER_RESUME_PATH = ROOT / "resume" / "Master-Resume.md"
-APPLICATIONS_DIR = ROOT / "applications"
+DB_PATH = RUNTIME_CONFIG.paths.database
+ENV_PATH = RUNTIME_CONFIG.paths.environment_file
+LOG_DIR = RUNTIME_CONFIG.paths.log_dir
+API_LOG_PATH = RUNTIME_CONFIG.paths.api_log
+APP_LOG_PATH = RUNTIME_CONFIG.paths.app_log
+CAPTURE_DIR = RUNTIME_CONFIG.paths.captures
+GUIDANCE_PATH = RUNTIME_CONFIG.paths.guidance
+CAREER_MANUAL_PATH = RUNTIME_CONFIG.paths.career_manual
+MASTER_RESUME_PATH = RUNTIME_CONFIG.paths.master_resume
+APPLICATIONS_DIR = RUNTIME_CONFIG.paths.applications
 
-load_dotenv(ENV_PATH)
-RUNTIME_SETTINGS = load_runtime_settings(os.environ)
-
-DEFAULT_MODEL = os.environ.get("CODEX_MODEL", "")
-DEFAULT_CODEX_CLI_PATH = os.environ.get("CODEX_CLI_PATH") or shutil.which("codex") or "codex"
+RUNTIME_SETTINGS = RUNTIME_CONFIG.settings
+DEFAULT_MODEL = RUNTIME_CONFIG.model()
 CODEX_CLI_TIMEOUT_SECONDS = RUNTIME_SETTINGS.codex_timeout_seconds
 HOST = RUNTIME_SETTINGS.host
 PORT = RUNTIME_SETTINGS.port
 DEBUG = RUNTIME_SETTINGS.debug
-AUTORUN = False  # the scheduler is buggy and eats codex credits.. disable it for now; os.environ.get("JOB_SEARCH_AUTORUN", "1") != "0"
+AUTORUN = False  # the scheduler is buggy and eats codex credits; disable it for now
 SEARCH_INTERVAL_SECONDS = RUNTIME_SETTINGS.search_interval_seconds
 LOG_MAX_BYTES = RUNTIME_SETTINGS.log_max_bytes
 LOG_BACKUP_COUNT = RUNTIME_SETTINGS.log_backup_count
@@ -119,7 +112,7 @@ CONFIG_KEYS = [
 
 
 routes = Blueprint("job_search", __name__)
-REQUEST_SECURITY = load_request_security(os.environ)
+REQUEST_SECURITY = RUNTIME_CONFIG.security
 api_logger = logging.getLogger("job_search.api")
 api_logger.setLevel(logging.INFO)
 api_logger.propagate = False
@@ -504,24 +497,19 @@ def settings(conn):
 
 
 def gpt_scoring_enabled():
-    return os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1"
+    return RUNTIME_CONFIG.enabled("JOB_SEARCH_ENABLE_GPT_SCORING")
 
 
 def codex_cli_path():
-    return os.environ.get("CODEX_CLI_PATH") or DEFAULT_CODEX_CLI_PATH
+    return RUNTIME_CONFIG.cli_path()
 
 
 def codex_cli_available():
-    path = codex_cli_path()
-    if not path:
-        return False
-    if Path(path).is_absolute():
-        return Path(path).exists() and os.access(path, os.X_OK)
-    return shutil.which(path) is not None
+    return RUNTIME_CONFIG.cli_available()
 
 
 def codex_model(conn=None):
-    env_model = os.environ.get("CODEX_MODEL", "").strip()
+    env_model = RUNTIME_CONFIG.model()
     if env_model:
         return env_model
     if conn is not None:
@@ -530,11 +518,11 @@ def codex_model(conn=None):
 
 
 def capture_cache_enabled():
-    return os.environ.get("JOB_SEARCH_USE_CAPTURE_CACHE", "0") == "1"
+    return RUNTIME_CONFIG.enabled("JOB_SEARCH_USE_CAPTURE_CACHE")
 
 
 def full_capture_enabled():
-    return os.environ.get("JOB_SEARCH_ENABLE_FULL_CAPTURE", "0") == "1"
+    return RUNTIME_CONFIG.enabled("JOB_SEARCH_ENABLE_FULL_CAPTURE")
 
 
 def background_task_service():
@@ -569,16 +557,7 @@ def process_background_task_item(claim):
 
 
 def masked_config():
-    config = {}
-    for key in CONFIG_KEYS:
-        value = os.environ.get(key, "")
-        if not value:
-            config[key] = {"configured": False, "masked": ""}
-        elif len(value) <= 8:
-            config[key] = {"configured": True, "masked": "********"}
-        else:
-            config[key] = {"configured": True, "masked": f"{value[:4]}...{value[-4:]}"}
-    return config
+    return RUNTIME_CONFIG.masked(CONFIG_KEYS)
 
 
 telemetry = StructuredTelemetry(
@@ -2056,9 +2035,7 @@ def api_update_config():
                 "capture_cache_enabled": capture_cache_enabled(),
             }
         )
-    update_environment_file(ENV_PATH, updates)
-    for key, value in updates.items():
-        os.environ[key] = value
+    RUNTIME_CONFIG.update(updates)
     if "CODEX_MODEL" in updates:
         settings_service().save({"codex_model": updates["CODEX_MODEL"]})
     return jsonify(

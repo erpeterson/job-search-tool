@@ -157,7 +157,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 - [x] **1.1a — Reconcile the checkpoint.** Review `git status`, the T-1 diff,
   and `./quality.sh`; keep the user-owned `AGENTS.md` edit out of commits. Record
   any failing gate as the first repair target.
-- [ ] **1.1b — Extract runtime configuration.** Move path discovery, dotenv
+- [x] **1.1b — Extract runtime configuration.** Move path discovery, dotenv
   loading, CLI availability, and environment-backed settings out of
   `presentation/legacy.py`. Supply a typed configuration object and an injected
   environment mapping from composition. Test valid/invalid values and `.env`

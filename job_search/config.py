@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
+
+from job_search.security import RequestSecurity
 
 
 class StartupConfigurationError(RuntimeError):
@@ -32,6 +35,79 @@ class RuntimeSettings:
     search_interval_seconds: int
     log_max_bytes: int
     log_backup_count: int
+
+
+@dataclass(frozen=True)
+class RuntimePaths:
+    root: Path
+    database: Path
+    environment_file: Path
+    log_dir: Path
+    api_log: Path
+    app_log: Path
+    captures: Path
+    guidance: Path
+    career_manual: Path
+    master_resume: Path
+    applications: Path
+
+    @classmethod
+    def from_root(cls, root: Path) -> RuntimePaths:
+        root = root.resolve()
+        log_dir = root / "logs"
+        return cls(
+            root=root,
+            database=root / "job_search.sqlite3",
+            environment_file=root / ".env",
+            log_dir=log_dir,
+            api_log=log_dir / "api.log",
+            app_log=log_dir / "job-search.log",
+            captures=root / "captures",
+            guidance=root / "supporting-documents" / "20260731-job-search-guidance.md",
+            career_manual=root / "career-manual" / "Career-Manual.md",
+            master_resume=root / "resume" / "Master-Resume.md",
+            applications=root / "applications",
+        )
+
+
+@dataclass
+class RuntimeConfiguration:
+    """Validated startup settings and a private, updateable environment snapshot."""
+
+    paths: RuntimePaths
+    settings: RuntimeSettings
+    security: RequestSecurity
+    environment: dict[str, str]
+    which: Callable[[str], str | None]
+    executable: Callable[[str], bool]
+    persist: Callable[[Path, Mapping[str, str]], None]
+
+    def enabled(self, key: str) -> bool:
+        return self.environment.get(key, "0") == "1"
+
+    def cli_path(self) -> str:
+        return self.environment.get("CODEX_CLI_PATH") or self.which("codex") or "codex"
+
+    def cli_available(self) -> bool:
+        path = self.cli_path()
+        if Path(path).is_absolute():
+            return Path(path).exists() and self.executable(path)
+        return self.which(path) is not None
+
+    def model(self) -> str:
+        return self.environment.get("CODEX_MODEL", "").strip()
+
+    def masked(self, keys: list[str]) -> dict[str, dict[str, str | bool]]:
+        result: dict[str, dict[str, str | bool]] = {}
+        for key in keys:
+            value = self.environment.get(key, "")
+            masked = "" if not value else "********" if len(value) <= 8 else f"{value[:4]}...{value[-4:]}"
+            result[key] = {"configured": bool(value), "masked": masked}
+        return result
+
+    def update(self, updates: Mapping[str, str]) -> None:
+        self.persist(self.paths.environment_file, updates)
+        self.environment.update(updates)
 
 
 def load_runtime_settings(environment: Mapping[str, str]) -> RuntimeSettings:

@@ -9,6 +9,8 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
+from job_search.composition import runtime_configuration
+from job_search.config import RuntimePaths
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
 
@@ -145,7 +147,7 @@ class AppHelperTests(unittest.TestCase):
             original_capture_dir = helpers_app.CAPTURE_DIR
             helpers_app.CAPTURE_DIR = Path(directory)
             try:
-                with patch.object(helpers_app.os, "environ", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}):
+                with patch.object(helpers_app.RUNTIME_CONFIG, "environment", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}):
                     payload = {"request": "value"}
                     helpers_app.write_capture("test", "operation", payload, {"status_code": 200})
                     replay = helpers_app.read_capture("test", "operation", payload)
@@ -155,20 +157,16 @@ class AppHelperTests(unittest.TestCase):
 
     def test_environment_file_update_preserves_comments_and_replaces_values(self):
         with tempfile.TemporaryDirectory() as directory:
-            original_env_path = helpers_app.ENV_PATH
-            helpers_app.ENV_PATH = Path(directory) / ".env"
-            helpers_app.ENV_PATH.write_text("# local settings\nCODEX_MODEL=old\n\n", encoding="utf-8")
-            try:
-                helpers_app.update_environment_file(
-                    helpers_app.ENV_PATH, {"CODEX_MODEL": "test-model", "CODEX_CLI_PATH": "codex"}
-                )
-                contents = helpers_app.ENV_PATH.read_text(encoding="utf-8")
-            finally:
-                helpers_app.ENV_PATH = original_env_path
+            environment_file = RuntimePaths.from_root(Path(directory)).environment_file
+            environment_file.write_text("# local settings\nCODEX_MODEL=old\n\n", encoding="utf-8")
+            config = runtime_configuration(Path(directory), {})
+            config.update({"CODEX_MODEL": "test-model", "CODEX_CLI_PATH": "codex"})
+            contents = environment_file.read_text(encoding="utf-8")
 
         self.assertIn("# local settings", contents)
         self.assertIn("CODEX_MODEL=test-model", contents)
         self.assertIn("CODEX_CLI_PATH=codex", contents)
+        self.assertEqual(config.model(), "test-model", "Updates should refresh the injected snapshot")
 
     def test_packet_generation_orchestration_uses_fake_draft_and_writer(self):
         with tempfile.TemporaryDirectory() as directory:

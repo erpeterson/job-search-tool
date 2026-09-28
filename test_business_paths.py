@@ -2,6 +2,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,16 +23,22 @@ class BusinessPathTests(unittest.TestCase):
         self.original_applications_dir = app_module.APPLICATIONS_DIR
         self.original_root = app_module.ROOT
         self.original_env_path = app_module.ENV_PATH
+        self.original_runtime_paths = app_module.RUNTIME_CONFIG.paths
+        self.original_runtime_environment = app_module.RUNTIME_CONFIG.environment
+        app_module.RUNTIME_CONFIG.environment = dict(self.original_runtime_environment)
         app_module.CAPTURE_DIR = Path(self.tempdir.name) / "captures"
         app_module.APPLICATIONS_DIR = Path(self.tempdir.name) / "applications"
         app_module.ROOT = Path(self.tempdir.name)
         app_module.ENV_PATH = Path(self.tempdir.name) / ".env"
+        app_module.RUNTIME_CONFIG.paths = replace(self.original_runtime_paths, environment_file=app_module.ENV_PATH)
 
     def tearDown(self):
         app_module.CAPTURE_DIR = self.original_capture_dir
         app_module.APPLICATIONS_DIR = self.original_applications_dir
         app_module.ROOT = self.original_root
         app_module.ENV_PATH = self.original_env_path
+        app_module.RUNTIME_CONFIG.paths = self.original_runtime_paths
+        app_module.RUNTIME_CONFIG.environment = self.original_runtime_environment
         self.tempdir.cleanup()
 
     def test_location_compensation_and_sales_filters_cover_boundary_cases(self):
@@ -62,7 +69,7 @@ class BusinessPathTests(unittest.TestCase):
         self.assertIn("SCORE_VALUE_COERCION_RECOVERED", "\n".join(events))
 
     def test_corrupt_capture_is_recovered_and_emits_telemetry(self):
-        with patch.object(app_module.os, "environ", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}):
+        with patch.object(app_module.RUNTIME_CONFIG, "environment", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}):
             payload = {"url": "https://example.test"}
             path = app_module.capture_path("manual", "http_get", payload)
             path.parent.mkdir(parents=True)
@@ -77,7 +84,7 @@ class BusinessPathTests(unittest.TestCase):
         self.assertEqual(events[0][1]["error_code"], "CAPTURE_CORRUPTION_RECOVERED")
 
     def test_config_endpoint_persists_validated_value(self):
-        with patch.object(app_module.os, "environ", {}):
+        with patch.object(app_module.RUNTIME_CONFIG, "environment", {}):
             response = app_module.app.test_client().post("/api/config", json={"CODEX_MODEL": "test-model"})
 
         self.assertEqual(response.status_code, 200)
@@ -123,7 +130,7 @@ class BusinessPathTests(unittest.TestCase):
         app_module.event_logger.info = app_events.append
         environment = {"JOB_SEARCH_USE_CAPTURE_CACHE": "1", "JOB_SEARCH_ENABLE_FULL_CAPTURE": "0"}
         try:
-            with patch.object(app_module.os, "environ", environment):
+            with patch.object(app_module.RUNTIME_CONFIG, "environment", environment):
                 app_module.fetch_url("manual_posting", f"https://example.test/job?token={sentinels['token']}")
                 app_module.call_codex_json(
                     "test-model", {"prompt": sentinels["prompt"]}, "redaction_test", force_refresh=True
