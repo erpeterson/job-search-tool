@@ -170,7 +170,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   re-exports from presentation. Preserve existing event codes as workflows
   move. Test redaction, capture replay, corrupt capture recovery, permissions,
   and correlation propagation.
-- [ ] **1.1d — Compose outbound clients and parsers.** Have composition build
+- [x] **1.1d — Compose outbound clients and parsers.** Have composition build
   `SafeHttpClient`, `CapturingHttpGateway`, `JobBoardClient`, and posting/board
   parsers with explicit dependencies. Remove presentation-owned HTTP headers,
   gateway/parser construction, and fetch compatibility wrappers. Verify fake

@@ -4,7 +4,7 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,7 +62,7 @@ from job_search.data_access.telemetry import StructuredTelemetry, configure_json
 from job_search.data_access.text_file_reader import read_optional_text  # noqa: F401
 from job_search.http_client import SafeHttpClient
 from job_search.presentation.dependencies import PresentationDependencies
-from job_search.redaction import redact_content_metadata, redact_url, redact_value
+from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
 from job_search.security import load_request_security
 from job_search.task_repository import TaskRepository
 
@@ -276,11 +276,54 @@ def packet_catalog(database_path: Path) -> ApplicationPacketCatalog:
     return ApplicationPacketCatalog(root, root / "applications")
 
 
-def outbound_http_service(
-    client: Any, headers: Any, read_capture: Any, write_capture: Any, log_api_call: Any, redact: Any
-):
-    """Compose the captured outbound HTTP adapter outside presentation."""
-    return CapturingHttpGateway(client, headers, read_capture, write_capture, log_api_call, redact)
+def outbound_headers() -> dict[str, str]:
+    """Stable, non-secret request headers for permitted job-board requests."""
+    return {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+
+@dataclass(frozen=True)
+class OutboundClients:
+    http: Any
+    gateway: CapturingHttpGateway
+    boards: JobBoardClient
+    search_gateway: CallableBoardGateway
+
+
+def outbound_clients(
+    observed: Observability,
+    clean_text: Callable[[str], str],
+    clean_url: Callable[[str], str],
+    source_id: Callable[[str, str], str],
+    deduplicate: Callable[[Sequence[Mapping[str, str]]], Sequence[Mapping[str, str]]],
+    *,
+    client: Any = None,
+    fetch: Callable[..., Any] | None = None,
+) -> OutboundClients:
+    """Compose the safe transport, capture gateway, and parsers in one place."""
+    http = client if client is not None else SafeHttpClient()
+    gateway = CapturingHttpGateway(
+        http,
+        outbound_headers,
+        observed.captures.read,
+        observed.captures.write,
+        observed.telemetry.api_call,
+        redact_headers,
+    )
+    boards = JobBoardClient(
+        fetch or gateway.get,
+        JobBoardParser(clean_text, clean_url, lambda href: source_id("linkedin", href)),
+        JobPostingParser(clean_text, clean_url, source_id),
+        BeautifulSoup,
+        clean_text,
+        clean_url,
+        source_id,
+        deduplicate,
+    )
+    return OutboundClients(http, gateway, boards, CallableBoardGateway(boards.linkedin, boards.indeed))
 
 
 def packet_attachment_service(database_path: Path) -> PacketAttachmentService:

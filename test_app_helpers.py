@@ -10,7 +10,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
-from job_search.composition import runtime_configuration
+from job_search.composition import outbound_clients, runtime_configuration
 from job_search.config import RuntimePaths
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
@@ -80,38 +80,40 @@ class AppHelperTests(unittest.TestCase):
             helpers_app.validate_application_packet_payload([])
 
     def test_scrape_and_board_adapters_use_fake_response(self):
-        original_fetch = helpers_app.fetch_url
-        try:
-
-            def fake_fetch(service, *_args, **_kwargs):
-                pages = {
-                    "manual_posting": """
+        def fake_fetch(service, *_args, **_kwargs):
+            pages = {
+                "manual_posting": """
                     <title>Principal Engineer - ExampleCo</title>
                     <h1>Principal Engineer</h1><div class='topcard__org-name-link'>ExampleCo</div>
                     <div class='topcard__flavor--bullet'>Seattle, WA</div><div id='job-details'>Architecture work</div>
                     """,
-                    "linkedin": """
+                "linkedin": """
                     <li><a class='base-card__full-link' href='https://linkedin.com/jobs/view/1'>Role</a>
                     <h3 class='base-search-card__title'>Architect</h3><h4 class='base-search-card__subtitle'>ExampleCo</h4>
                     <span class='job-search-card__location'>Remote</span></li>
                     """,
-                    "indeed": """
+                "indeed": """
                     <div data-jk='abc'><a href='/viewjob?jk=abc'>Role</a><h2><span title='Architect'>Architect</span></h2>
                     <span data-testid='company-name'>ExampleCo</span><div data-testid='text-location'>Remote</div></div>
                     """,
-                }
-                return CapturedResponse({"status_code": 200, "text": pages[service]})
+            }
+            return CapturedResponse({"status_code": 200, "text": pages[service]})
 
-            helpers_app.fetch_url = fake_fetch
-            scraped = helpers_app.scrape_job_from_url("https://jobs.example.test/123")
-            linkedin = helpers_app.fetch_linkedin_jobs("architect", "Remote")
-            indeed = helpers_app.fetch_indeed_jobs("architect", "Remote")
-            self.assertEqual(scraped["title"], "Principal Engineer")
-            self.assertEqual(scraped["company"], "ExampleCo")
-            self.assertEqual(linkedin[0]["company"], "ExampleCo")
-            self.assertEqual(indeed[0]["source_job_id"], "abc")
-        finally:
-            helpers_app.fetch_url = original_fetch
+        boards = outbound_clients(
+            helpers_app.OBSERVABILITY,
+            helpers_app.clean_text,
+            helpers_app.clean_url,
+            helpers_app.source_id,
+            helpers_app.dedupe_results,
+            fetch=fake_fetch,
+        ).boards
+        scraped = boards.scrape("https://jobs.example.test/123")
+        linkedin = boards.linkedin("architect", "Remote")
+        indeed = boards.indeed("architect", "Remote")
+        self.assertEqual(scraped["title"], "Principal Engineer")
+        self.assertEqual(scraped["company"], "ExampleCo")
+        self.assertEqual(linkedin[0]["company"], "ExampleCo")
+        self.assertEqual(indeed[0]["source_job_id"], "abc")
 
     def test_document_writer_creates_markdown_and_invokes_fake_pandoc(self):
         with tempfile.TemporaryDirectory() as directory:

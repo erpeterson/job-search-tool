@@ -305,7 +305,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_rescrape_and_manual_job_creation_handle_fake_success_and_failure(self):
         job_id = self.create_job()
-        original_scrape = workflow_app.scrape_job_from_url
+        original_scrape = workflow_app.OUTBOUND_CLIENTS.boards.scrape
         calls = []
 
         def fake_scrape(url, force_refresh=False):
@@ -322,7 +322,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 "source_job_id": "abc",
             }
 
-        workflow_app.scrape_job_from_url = fake_scrape
+        workflow_app.OUTBOUND_CLIENTS.boards.scrape = fake_scrape
         try:
             rescraped = self.client.post(f"/api/jobs/{job_id}/scrape", json={"force_refresh": True})
             created = self.client.post(
@@ -334,7 +334,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 json={"url": "https://example.com/failure", "pipeline": "Executive IC"},
             )
         finally:
-            workflow_app.scrape_job_from_url = original_scrape
+            workflow_app.OUTBOUND_CLIENTS.boards.scrape = original_scrape
 
         self.assertEqual(rescraped.get_json()["job"]["company"], "RefreshedCo")
         self.assertEqual(created.status_code, 201)

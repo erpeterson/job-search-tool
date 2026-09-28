@@ -8,6 +8,8 @@ from typing import Any
 
 import requests
 
+from job_search.http_client import OutboundRequestError
+
 
 class CapturedResponse:
     def __init__(self, payload: Mapping[str, Any]) -> None:
@@ -52,7 +54,7 @@ class CapturingHttpGateway:
         try:
             response = self._client.get(service, url, headers=headers, timeout=30)
             return response
-        except requests.RequestException as exc:
+        except (requests.RequestException, OutboundRequestError) as exc:
             error = exc
             raise
         finally:

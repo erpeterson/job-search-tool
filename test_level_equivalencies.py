@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from job_search.presentation.factory import create_app
 from job_search.security import load_request_security
@@ -17,9 +18,8 @@ class LevelEquivalencyTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.original_db_path = job_search_app.DB_PATH
-        self.original_fetch_url = job_search_app.fetch_url
         self.original_log_event = job_search_app.log_event
-        self.original_scrape_job_from_url = job_search_app.scrape_job_from_url
+        self.original_scrape_job_from_url = job_search_app.OUTBOUND_CLIENTS.boards.scrape
         self.original_gpt_scoring_enabled = job_search_app.gpt_scoring_enabled
         self.original_codex_cli_available = job_search_app.codex_cli_available
         self.original_codex_model = job_search_app.codex_model
@@ -29,9 +29,8 @@ class LevelEquivalencyTests(unittest.TestCase):
 
     def tearDown(self):
         job_search_app.DB_PATH = self.original_db_path
-        job_search_app.fetch_url = self.original_fetch_url
         job_search_app.log_event = self.original_log_event
-        job_search_app.scrape_job_from_url = self.original_scrape_job_from_url
+        job_search_app.OUTBOUND_CLIENTS.boards.scrape = self.original_scrape_job_from_url
         job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
         job_search_app.codex_cli_available = self.original_codex_cli_available
         job_search_app.codex_model = self.original_codex_model
@@ -45,22 +44,19 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertEqual(count, 0)
 
     def test_ambiguous_title_is_unknown_and_does_not_fetch_or_cache(self):
-        calls = []
         events = []
-
-        def fake_fetch_url(service, url, force_refresh=False):
-            calls.append((service, url, force_refresh))
-            raise AssertionError("level lookup should not fetch external services")
 
         def fake_log_event(event_type, **fields):
             events.append((event_type, fields))
 
-        job_search_app.fetch_url = fake_fetch_url
         job_search_app.log_event = fake_log_event
 
-        with job_search_app.connect() as conn:
-            result = job_search_app.lookup_level_equivalency(conn, "Atlassian", "Principal Engineer")
-            count = conn.execute("SELECT COUNT(*) FROM level_equivalencies").fetchone()[0]
+        with patch.object(
+            job_search_app.OUTBOUND_CLIENTS.boards, "scrape", side_effect=AssertionError("unexpected fetch")
+        ):
+            with job_search_app.connect() as conn:
+                result = job_search_app.lookup_level_equivalency(conn, "Atlassian", "Principal Engineer")
+                count = conn.execute("SELECT COUNT(*) FROM level_equivalencies").fetchone()[0]
 
         self.assertIsNone(result)
         self.assertEqual(count, 0)
@@ -72,22 +68,15 @@ class LevelEquivalencyTests(unittest.TestCase):
                 for event_type, fields in events
             )
         )
-        self.assertEqual(calls, [])
 
     def test_downlevel_title_estimate_is_cached_and_reused(self):
-        calls = []
+        with patch.object(
+            job_search_app.OUTBOUND_CLIENTS.boards, "scrape", side_effect=AssertionError("unexpected fetch")
+        ):
+            with job_search_app.connect() as conn:
+                first = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
+                second = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
 
-        def fake_fetch_url(service, url, force_refresh=False):
-            calls.append((service, url, force_refresh))
-            raise AssertionError("level lookup should not fetch external services")
-
-        job_search_app.fetch_url = fake_fetch_url
-
-        with job_search_app.connect() as conn:
-            first = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
-            second = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
-
-        self.assertEqual(calls, [])
         self.assertEqual(first["oracle_level"], "BELOW_IC6")
         self.assertEqual(first["oracle_title"], "Below Architect-equivalent")
         self.assertEqual(first["downlevel"], 1)
@@ -126,7 +115,7 @@ class LevelEquivalencyTests(unittest.TestCase):
             job_search_app.score_with_codex_cli = original_score
 
     def test_manually_added_job_is_automatically_scored(self):
-        job_search_app.scrape_job_from_url = lambda url, force_refresh=False: {
+        job_search_app.OUTBOUND_CLIENTS.boards.scrape = lambda url, force_refresh=False: {
             "url": url,
             "company": "ExampleCo",
             "title": "Principal Engineer",

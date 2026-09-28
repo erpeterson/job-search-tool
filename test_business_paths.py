@@ -104,7 +104,6 @@ class BusinessPathTests(unittest.TestCase):
         api_events = []
         app_events = []
         originals = (
-            app_module.OUTBOUND_HTTP_CLIENT,
             codex_cli.subprocess.run,
             app_module.api_logger.info,
             app_module.event_logger.info,
@@ -126,21 +125,27 @@ class BusinessPathTests(unittest.TestCase):
             stdout = sentinels["model"]
             stderr = f"model: test-model {sentinels['stderr']}"
 
-        app_module.OUTBOUND_HTTP_CLIENT = HttpClient()
         codex_cli.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
         app_module.api_logger.info = api_events.append
         app_module.event_logger.info = app_events.append
         environment = {"JOB_SEARCH_USE_CAPTURE_CACHE": "1", "JOB_SEARCH_ENABLE_FULL_CAPTURE": "0"}
         try:
             with patch.object(app_module.RUNTIME_CONFIG, "environment", environment):
-                app_module.fetch_url("manual_posting", f"https://example.test/job?token={sentinels['token']}")
+                gateway = app_module.compose_outbound_clients(
+                    app_module.OBSERVABILITY,
+                    app_module.clean_text,
+                    app_module.clean_url,
+                    app_module.source_id,
+                    app_module.dedupe_results,
+                    client=HttpClient(),
+                ).gateway
+                gateway.get("manual_posting", f"https://example.test/job?token={sentinels['token']}")
                 app_module.call_codex_json(
                     "test-model", {"prompt": sentinels["prompt"]}, "redaction_test", force_refresh=True
                 )
                 captures = [path.read_text(encoding="utf-8") for path in app_module.CAPTURE_DIR.rglob("*.json")]
         finally:
             (
-                app_module.OUTBOUND_HTTP_CLIENT,
                 codex_cli.subprocess.run,
                 app_module.api_logger.info,
                 app_module.event_logger.info,

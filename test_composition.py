@@ -7,13 +7,79 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
-from job_search.composition import discovery_service, observability, runtime_configuration, task_execution_service
+from job_search.composition import (
+    discovery_service,
+    observability,
+    outbound_clients,
+    runtime_configuration,
+    task_execution_service,
+)
+from job_search.http_client import OutboundRequestError, SafeHttpClient
 from job_search.presentation import legacy
 from job_search.presentation.dependencies import PresentationDependencies
 from job_search.presentation.factory import create_app
 
 
 class CompositionTests(unittest.TestCase):
+    def test_outbound_clients_compose_fake_transport_and_board_parsers(self):
+        class FakeResponse:
+            status_code = 200
+            ok = True
+            headers = {}
+            text = (
+                "<li><a class='base-card__full-link' href='https://www.linkedin.com/jobs/view/1'>Role</a>"
+                "<h3 class='base-search-card__title'>Architect</h3>"
+                "<h4 class='base-search-card__subtitle'>ExampleCo</h4></li>"
+            )
+
+            def raise_for_status(self):
+                return None
+
+        class FakeHttp:
+            def __init__(self):
+                self.calls = []
+
+            def get(self, service, url, **kwargs):
+                self.calls.append((service, url, kwargs))
+                return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = runtime_configuration(
+                Path(directory), {"JOB_SEARCH_USE_CAPTURE_CACHE": "1", "JOB_SEARCH_ENABLE_FULL_CAPTURE": "1"}
+            )
+            fake_http = FakeHttp()
+            with patch("job_search.composition.logging.getLogger") as logger:
+                logger.return_value = logging.Logger("test.outbound")
+                observed = observability(config)
+            try:
+                clients = outbound_clients(
+                    observed,
+                    lambda value: " ".join((value or "").split()),
+                    lambda value: value.split("?")[0],
+                    lambda board, value: f"{board}:{value}",
+                    lambda values: values,
+                    client=fake_http,
+                )
+                jobs = clients.boards.linkedin("architect", "Remote")
+                replayed = clients.boards.linkedin("architect", "Remote")
+                self.assertEqual(jobs[0]["company"], "ExampleCo")
+                self.assertEqual(replayed, jobs, "The second call should replay the redacted capture")
+                self.assertEqual(len(fake_http.calls), 1, "Replay must not call the transport again")
+                self.assertEqual(fake_http.calls[0][0], "linkedin")
+                secure = outbound_clients(
+                    observed,
+                    lambda value: value,
+                    lambda value: value,
+                    lambda board, value: f"{board}:{value}",
+                    lambda values: values,
+                    client=SafeHttpClient(),
+                )
+                with self.assertRaisesRegex(OutboundRequestError, "approved job-board host"):
+                    secure.gateway.get("indeed", "https://jobs.example.test/1", force_refresh=True)
+            finally:
+                for handler in observed.api_logger.handlers:
+                    handler.close()
+
     def test_http_request_correlation_reaches_telemetry_and_is_cleared(self):
         with patch.object(legacy.event_logger, "info") as emit:
             response = app.app.test_client().post(

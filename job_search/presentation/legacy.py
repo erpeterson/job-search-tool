@@ -31,8 +31,11 @@ from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
+from job_search.composition import background_task_service as compose_background_task_service
+from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
+from job_search.composition import company_service as compose_company_service
+from job_search.composition import console_query_service as compose_console_query_service
 from job_search.composition import (
-    JobBoardClient,
     database_session,
     infrastructure,
     observability,
@@ -40,16 +43,12 @@ from job_search.composition import (
     read_optional_text,
     runtime_configuration,
 )
-from job_search.composition import background_task_service as compose_background_task_service
-from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
-from job_search.composition import company_service as compose_company_service
-from job_search.composition import console_query_service as compose_console_query_service
 from job_search.composition import discovery_service as compose_discovery_service
 from job_search.composition import filtering_service as compose_filtering_service
 from job_search.composition import initialization_service as compose_initialization_service
 from job_search.composition import job_service as compose_job_service
 from job_search.composition import level_service as compose_level_service
-from job_search.composition import outbound_http_service as compose_outbound_http_service
+from job_search.composition import outbound_clients as compose_outbound_clients
 from job_search.composition import packet_attachment_service as compose_packet_attachment_service
 from job_search.composition import packet_catalog as compose_packet_catalog
 from job_search.composition import packet_content_service as compose_packet_content_service
@@ -62,7 +61,6 @@ from job_search.composition import search_run_service as compose_search_run_serv
 from job_search.composition import settings_service as compose_settings_service
 from job_search.composition import task_execution_service as compose_task_execution_service
 from job_search.errors import ClientInputError, translate_exception
-from job_search.redaction import redact_headers
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
     RequestValidationError,
@@ -237,7 +235,6 @@ ORACLE_IC6_LEVEL_REFERENCE = (
 MIN_ANNUAL_COMPENSATION = 200_000
 UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
 INFRASTRUCTURE = infrastructure()
-OUTBOUND_HTTP_CLIENT = INFRASTRUCTURE.http_client()
 
 
 class _DatabaseSessionProvider:
@@ -333,8 +330,8 @@ def manual_job_service() -> ManualJobService:
 
     return ManualJobService(
         INFRASTRUCTURE.job_repository(connect),
-        lambda url, force_refresh: scrape_job_from_url(url, force_refresh=force_refresh),
-        fallback_job_from_url,
+        lambda url, force_refresh: OUTBOUND_CLIENTS.boards.scrape(url, force_refresh=force_refresh),
+        OUTBOUND_CLIENTS.boards.fallback,
         filtering_service().refresh_job,
         score,
         scoring_availability,
@@ -345,7 +342,7 @@ def manual_job_service() -> ManualJobService:
 def rescrape_service() -> RescrapeService:
     return compose_rescrape_service(
         INFRASTRUCTURE.job_repository(connect),
-        lambda url, force_refresh: scrape_job_from_url(url, force_refresh=force_refresh),
+        lambda url, force_refresh: OUTBOUND_CLIENTS.boards.scrape(url, force_refresh=force_refresh),
         filtering_service().refresh_job,
         now,
     )
@@ -956,26 +953,6 @@ def calibration_examples(conn):
     return examples
 
 
-def fetch_linkedin_jobs(keywords, location, force_refresh=False):
-    return job_board_client().linkedin(keywords, location, force_refresh=force_refresh)
-
-
-def fetch_indeed_jobs(keywords, location, force_refresh=False):
-    return job_board_client().indeed(keywords, location, force_refresh=force_refresh)
-
-
-def scrape_job_from_url(url, force_refresh=False):
-    return job_board_client().scrape(url, force_refresh=force_refresh)
-
-
-def fallback_job_from_url(url):
-    return job_board_client().fallback(url)
-
-
-def posting_service_from_url(url):
-    return JobBoardClient.posting_service(url)
-
-
 def selector_text(soup, selectors):
     for selector in selectors:
         element = soup.select_one(selector)
@@ -1047,34 +1024,6 @@ def location_from_json_ld(payload):
     return nested_value(location, "name")
 
 
-def request_headers():
-    return {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-
-
-def fetch_url(service, url, force_refresh=False):
-    gateway = compose_outbound_http_service(
-        OUTBOUND_HTTP_CLIENT, request_headers, read_capture, write_capture, log_api_call, redact_headers
-    )
-    return gateway.get(service, url, force_refresh=force_refresh)
-
-
-def job_board_client():
-    return JobBoardClient(
-        fetch_url,
-        INFRASTRUCTURE.board_parser(clean_text, clean_url, lambda href: source_id("linkedin", href)),
-        INFRASTRUCTURE.posting_parser(clean_text, clean_url, source_id),
-        INFRASTRUCTURE.html_parser,
-        clean_text,
-        clean_url,
-        source_id,
-        dedupe_results,
-    )
-
-
 def clean_text(value):
     return " ".join((value or "").split())
 
@@ -1126,10 +1075,14 @@ def dedupe_results(results):
     return deduped
 
 
+OUTBOUND_CLIENTS = compose_outbound_clients(OBSERVABILITY, clean_text, clean_url, source_id, dedupe_results)
+
+
 def fetch_jobs_for_query(query, force_refresh=False):
-    gateway = INFRASTRUCTURE.board_gateway(fetch_linkedin_jobs, fetch_indeed_jobs)
     try:
-        return gateway.fetch(query["board"], query["keywords"], query["location"], force_refresh=force_refresh)
+        return OUTBOUND_CLIENTS.search_gateway.fetch(
+            query["board"], query["keywords"], query["location"], force_refresh=force_refresh
+        )
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
 
