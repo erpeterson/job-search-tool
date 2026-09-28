@@ -51,6 +51,7 @@ class SearchRunService:
         repository = ops.repository()
         run_id = repository.start_run(started, trigger)
         found_count = tracked_count = rejected_count = 0
+        seen_urls: set[str] = set()
         messages: list[str] = []
 
         for query in repository.enabled_queries():
@@ -72,6 +73,18 @@ class SearchRunService:
 
             repository.mark_query_run(query["id"], ops.now())
             for result in results:
+                url = result.get("url")
+                if url and url in seen_urls:
+                    ops.log(
+                        "discovery_skipped",
+                        reason="duplicate in search run",
+                        url=url,
+                        query_id=query["id"],
+                        run_id=run_id,
+                    )
+                    continue
+                if url:
+                    seen_urls.add(url)
                 result["pipeline"] = query.get("pipeline") or result.get("pipeline") or ""
                 result["criteria"] = query.get("criteria") or ""
                 found_count += 1

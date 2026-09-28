@@ -55,7 +55,6 @@ from job_search.composition import packet_generation_service as compose_packet_g
 from job_search.composition import packet_storage as compose_packet_storage
 from job_search.composition import rescrape_service as compose_rescrape_service
 from job_search.composition import search_query_service as compose_search_query_service
-from job_search.composition import search_repository as compose_search_repository
 from job_search.composition import search_run_service as compose_search_run_service
 from job_search.composition import settings_service as compose_settings_service
 from job_search.composition import source_documents as compose_source_documents
@@ -356,10 +355,6 @@ def scoring_service() -> ScoringService:
         return None
 
     return ScoringService(job_service().get_job, score, availability)
-
-
-def search_repository():
-    return dependency("search_repository", lambda: compose_search_repository(DB_PATH))
 
 
 def console_query_service():
@@ -917,15 +912,6 @@ def dedupe_results(results):
 OUTBOUND_CLIENTS = compose_outbound_clients(OBSERVABILITY, clean_text, clean_url, source_id, dedupe_results)
 
 
-def fetch_jobs_for_query(query, force_refresh=False):
-    try:
-        return OUTBOUND_CLIENTS.search_gateway.fetch(
-            query["board"], query["keywords"], query["location"], force_refresh=force_refresh
-        )
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-
 def score_discovery_with_codex(conn, discovery, force_refresh=False):
     job = {
         "company": discovery.get("company"),
@@ -1233,90 +1219,51 @@ def classify_discovery(conn, result, force_refresh=False):
     return discovery_service().classify(conn, result, force_refresh=force_refresh)
 
 
-class _SearchRunAdapter:
-    """Composition-edge adapter for the framework-independent search workflow."""
+def search_rejection_reason(result):
+    for name, decision in (
+        ("sales_role", sales_role_filter_decision),
+        ("location", location_filter_decision),
+        ("compensation", compensation_filter_decision),
+    ):
+        allowed, reason = decision(result)
+        if not allowed:
+            return name, reason
+    return None
 
-    @staticmethod
-    def now():
-        return now()
 
-    @staticmethod
-    def log(event, **fields):
-        log_event(event, **fields)
-
-    @staticmethod
-    def repository():
-        return search_repository()
-
-    @staticmethod
-    def connection():
-        return connect()
-
-    @staticmethod
-    def fetch(query, *, force_refresh):
-        return fetch_jobs_for_query(query, force_refresh=force_refresh)
-
-    @staticmethod
-    def reject_reason(result):
-        for name, decision in (
-            ("sales_role", sales_role_filter_decision),
-            ("location", location_filter_decision),
-            ("compensation", compensation_filter_decision),
-        ):
-            allowed, reason = decision(result)
-            if not allowed:
-                return name, reason
-        return None
-
-    @staticmethod
-    def level_assessment(connection, result):
-        equivalency = lookup_level_equivalency(connection, result.get("company"), result.get("title"))
-        if not equivalency:
-            return
-        result["cached_level_assessment"] = level_assessment_from_equivalency(equivalency)
-        result["cached_downlevel"] = bool(equivalency["downlevel"])
-        log_event(
-            "level_equivalency_matched",
-            company=result.get("company"),
-            title=result.get("title"),
-            oracle_level=equivalency["oracle_level"],
-            oracle_title=equivalency["oracle_title"],
-            downlevel=bool(equivalency["downlevel"]),
-            source_url=equivalency.get("source_url"),
-        )
-
-    @staticmethod
-    def already_seen_reason(connection, url):
-        return already_seen_reason(connection, url)
-
-    @staticmethod
-    def classify(connection, result, *, force_refresh):
-        return classify_discovery(connection, result, force_refresh=force_refresh)
-
-    @staticmethod
-    def refine(connection, query_id, *, force_refresh):
-        return refine_search_query(connection, query_id, force_refresh=force_refresh)
-
-    @staticmethod
-    def is_refinement_error(error):
-        return isinstance(error, CodexCliError)
+def assess_search_result_level(connection, result):
+    equivalency = lookup_level_equivalency(connection, result.get("company"), result.get("title"))
+    if not equivalency:
+        return
+    result["cached_level_assessment"] = level_assessment_from_equivalency(equivalency)
+    result["cached_downlevel"] = bool(equivalency["downlevel"])
+    log_event(
+        "level_equivalency_matched",
+        company=result.get("company"),
+        title=result.get("title"),
+        oracle_level=equivalency["oracle_level"],
+        oracle_title=equivalency["oracle_title"],
+        downlevel=bool(equivalency["downlevel"]),
+        source_url=equivalency.get("source_url"),
+    )
 
 
 def run_job_search(trigger="manual", force_refresh=False):
     """Run search through the application-layer orchestration service."""
-    adapter = _SearchRunAdapter()
     return compose_search_run_service(
-        now=adapter.now,
-        log=adapter.log,
-        repository=adapter.repository,
-        connection=adapter.connection,
-        fetch=adapter.fetch,
-        reject_reason=adapter.reject_reason,
-        level_assessment=adapter.level_assessment,
-        already_seen_reason=adapter.already_seen_reason,
-        classify=adapter.classify,
-        refine=adapter.refine,
-        is_refinement_error=adapter.is_refinement_error,
+        DB_PATH,
+        OUTBOUND_CLIENTS.search_gateway,
+        telemetry,
+        reject_reason=search_rejection_reason,
+        level_assessment=assess_search_result_level,
+        already_seen_reason=already_seen_reason,
+        classify=lambda connection, result, *, force_refresh: classify_discovery(
+            connection, result, force_refresh=force_refresh
+        ),
+        refine=lambda connection, query_id, *, force_refresh: refine_search_query(
+            connection, query_id, force_refresh=force_refresh
+        ),
+        is_refinement_error=lambda error: isinstance(error, CodexCliError),
     ).run(trigger=trigger, force_refresh=force_refresh)
 
 

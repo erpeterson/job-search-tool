@@ -117,8 +117,8 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(accepted.get_json()["deleted_jobs"], 1)
 
     def test_search_run_tracks_valid_discovery_and_records_filter_rejections(self):
-        originals = (workflow_app.fetch_jobs_for_query, workflow_app.refine_search_query)
-        workflow_app.fetch_jobs_for_query = lambda *_args, **_kwargs: [
+        originals = (workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch, workflow_app.refine_search_query)
+        workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch = lambda *_args, **_kwargs: [
             {
                 "board": "indeed",
                 "company": "SalesCo",
@@ -160,7 +160,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 )
             run = workflow_app.run_job_search()
         finally:
-            workflow_app.fetch_jobs_for_query, workflow_app.refine_search_query = originals
+            workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch, workflow_app.refine_search_query = originals
 
         self.assertEqual(run["found_count"], 4)
         self.assertEqual(run["tracked_count"], 1)
@@ -168,6 +168,51 @@ class ApplicationWorkflowTests(unittest.TestCase):
         with workflow_app.connect() as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0], 4)
+
+    def test_search_run_deduplicates_results_and_records_failed_board_call(self):
+        original_fetch = workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch
+        original_refine = workflow_app.refine_search_query
+        events = []
+        original_event = workflow_app.telemetry.event
+
+        def fake_fetch(board, _keywords, _location, *, force_refresh=False):
+            if board == "linkedin":
+                raise RuntimeError("board unavailable")
+            rejected = {
+                "board": "indeed",
+                "company": "SalesCo",
+                "title": "Sales Director",
+                "location": "Remote",
+                "url": "https://example.test/duplicate",
+            }
+            return [dict(rejected), dict(rejected)]
+
+        workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch = fake_fetch
+        workflow_app.refine_search_query = lambda *_args, **_kwargs: None
+        workflow_app.telemetry.event = lambda name, **fields: events.append((name, fields))
+        try:
+            with workflow_app.connect() as connection:
+                connection.execute("UPDATE search_queries SET enabled = 0")
+                for board in ("indeed", "linkedin"):
+                    connection.execute(
+                        """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
+                           VALUES (?, 'Executive IC', 'architect', 'Remote', 1, 1, 'test')""",
+                        (board,),
+                    )
+            run = workflow_app.run_job_search()
+        finally:
+            workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch = original_fetch
+            workflow_app.refine_search_query = original_refine
+            workflow_app.telemetry.event = original_event
+
+        self.assertEqual(run["found_count"], 1, "A repeated URL should be counted only once")
+        self.assertEqual(run["rejected_count"], 1)
+        self.assertIn("board unavailable", run["message"])
+        self.assertIn("job_search_query_failed", [name for name, _ in events])
+        self.assertIn("discovery_skipped", [name for name, _ in events])
+        with workflow_app.connect() as connection:
+            count = connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0]
+        self.assertEqual(count, 1, "The duplicate should not persist a second discovery")
 
     def test_refinement_and_codex_classification_use_fake_model_boundary(self):
         originals = (

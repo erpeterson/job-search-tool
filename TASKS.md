@@ -193,7 +193,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 - [x] **1.3b — Move durable-task execution.** Move bulk task progress, skipped
   item handling, and failure decisions into the application task service. Test
   one successful, skipped, and failed item with fake scoring/packet ports.
-- [ ] **1.3c — Move search runs.** Replace `_SearchRunAdapter` with explicit
+- [x] **1.3c — Move search runs.** Replace `_SearchRunAdapter` with explicit
   application ports for query selection, board calls, persistence, and run
   status. Test deduplication, filters, and failed board calls with fakes.
 - [ ] **1.3d — Move discovery.** Replace `_DiscoveryAdapter` with explicit

@@ -479,13 +479,74 @@ def discovery_service(unknown_level_assessment: str, **operations: Any) -> Disco
 
 
 class _SearchRunOperations:
-    def __init__(self, **operations: Any) -> None:
-        self.__dict__.update(operations)
+    """Concrete query, board, persistence, and run-status ports for search."""
+
+    def __init__(
+        self,
+        database_path: Path,
+        boards: CallableBoardGateway,
+        telemetry: Telemetry,
+        reject_reason: Callable[..., Any],
+        level_assessment: Callable[..., Any],
+        already_seen_reason: Callable[..., Any],
+        classify: Callable[..., Any],
+        refine: Callable[..., Any],
+        is_refinement_error: Callable[..., bool],
+    ) -> None:
+        self._database_path = database_path
+        self._boards = boards
+        self._telemetry = telemetry
+        self._repository = SqliteSearchRepository(lambda: database_session(database_path))
+        self.reject_reason = reject_reason
+        self.level_assessment = level_assessment
+        self.already_seen_reason = already_seen_reason
+        self.classify = classify
+        self.refine = refine
+        self.is_refinement_error = is_refinement_error
+
+    @staticmethod
+    def now() -> int:
+        return int(time.time())
+
+    def log(self, event: str, **fields: Any) -> None:
+        self._telemetry.event(event, **fields)
+
+    def repository(self) -> SqliteSearchRepository:
+        return self._repository
+
+    def connection(self):
+        return database_session(self._database_path)
+
+    def fetch(self, query: Any, *, force_refresh: bool):
+        return self._boards.fetch(query["board"], query["keywords"], query["location"], force_refresh=force_refresh)
 
 
-def search_run_service(**operations: Any) -> SearchRunService:
-    """Compose search-run workflow ports outside the presentation layer."""
-    return SearchRunService(_SearchRunOperations(**operations))
+def search_run_service(
+    database_path: Path,
+    boards: CallableBoardGateway,
+    telemetry: Telemetry,
+    *,
+    reject_reason: Callable[..., Any],
+    level_assessment: Callable[..., Any],
+    already_seen_reason: Callable[..., Any],
+    classify: Callable[..., Any],
+    refine: Callable[..., Any],
+    is_refinement_error: Callable[..., bool],
+) -> SearchRunService:
+    """Compose explicit search ports outside presentation."""
+    return SearchRunService(
+        _SearchRunOperations(
+            database_path,
+            boards,
+            telemetry,
+            reject_reason,
+            level_assessment,
+            already_seen_reason,
+            classify,
+            refine,
+            is_refinement_error,
+        )
+    )
 
 
 def rescrape_service(repository: Any, scraper: Any, refresh_filter: Any, clock: Any) -> RescrapeService:
