@@ -20,6 +20,17 @@ class PacketStorage:
             raise ValueError("Application packet folder does not exist.")
         return candidate.relative_to(self._repository_root).as_posix()
 
+    def relative_path(self, path: Path) -> str:
+        return path.resolve().relative_to(self._repository_root).as_posix()
+
+    def packet_directory(self, value: str) -> Path:
+        self.packet_relative_path(value)
+        return (self._repository_root / value).resolve()
+
+    @staticmethod
+    def markdown_files(packet_dir: Path) -> list[str]:
+        return sorted(path.name for path in packet_dir.glob("*.md") if path.is_file())
+
     def publish(
         self, name: str, payload: Mapping[str, str], writer: Callable[[Path, Mapping[str, str]], Sequence[str]]
     ) -> tuple[Path, Sequence[str]]:

@@ -59,6 +59,7 @@ class SqliteInitializationAdapter:
         self._now = now
 
     def connection(self):
+        self._database_path.parent.mkdir(parents=True, exist_ok=True)
         return open_connection(self._database_path)
 
     @staticmethod

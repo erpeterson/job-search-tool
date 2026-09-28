@@ -40,7 +40,6 @@ from job_search.composition import (
     infrastructure,
     observability,
     parse_model_json,
-    read_optional_text,
     runtime_configuration,
 )
 from job_search.composition import discovery_service as compose_discovery_service
@@ -54,11 +53,13 @@ from job_search.composition import packet_catalog as compose_packet_catalog
 from job_search.composition import packet_content_service as compose_packet_content_service
 from job_search.composition import packet_document_writer as compose_packet_document_writer
 from job_search.composition import packet_generation_service as compose_packet_generation_service
+from job_search.composition import packet_storage as compose_packet_storage
 from job_search.composition import rescrape_service as compose_rescrape_service
 from job_search.composition import search_query_service as compose_search_query_service
 from job_search.composition import search_repository as compose_search_repository
 from job_search.composition import search_run_service as compose_search_run_service
 from job_search.composition import settings_service as compose_settings_service
+from job_search.composition import source_documents as compose_source_documents
 from job_search.composition import task_execution_service as compose_task_execution_service
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
@@ -86,6 +87,8 @@ GUIDANCE_PATH = RUNTIME_CONFIG.paths.guidance
 CAREER_MANUAL_PATH = RUNTIME_CONFIG.paths.career_manual
 MASTER_RESUME_PATH = RUNTIME_CONFIG.paths.master_resume
 APPLICATIONS_DIR = RUNTIME_CONFIG.paths.applications
+SOURCE_DOCUMENTS = compose_source_documents(RUNTIME_CONFIG)
+PACKET_STORAGE = compose_packet_storage(RUNTIME_CONFIG)
 
 RUNTIME_SETTINGS = RUNTIME_CONFIG.settings
 DEFAULT_MODEL = RUNTIME_CONFIG.model()
@@ -396,7 +399,6 @@ def initialization_service():
 
 
 def init_db():
-    APP_DIR.mkdir(parents=True, exist_ok=True)
     initialization_service().initialize_database(
         {"gpt_threshold": "40", "user_threshold": "60", "codex_model": DEFAULT_MODEL, "last_search_at": "0"}
     )
@@ -625,33 +627,9 @@ def list_discoveries(conn, limit=50):
 
 
 def career_context():
-    manual = read_optional_text(CAREER_MANUAL_PATH)
-    guidance = read_optional_text(GUIDANCE_PATH)
+    manual = SOURCE_DOCUMENTS.career_manual()
+    guidance = SOURCE_DOCUMENTS.guidance()
     return textwrap.shorten(manual, width=9000, placeholder="\n[manual truncated]\n") + "\n\n" + guidance
-
-
-def repo_relative(path):
-    return path.resolve().relative_to(ROOT.resolve()).as_posix()
-
-
-def application_packet_abs_path(relative_path):
-    if not relative_path:
-        return None
-    candidate = (ROOT / relative_path).resolve()
-    applications_root = APPLICATIONS_DIR.resolve()
-    if candidate != applications_root and applications_root not in candidate.parents:
-        raise ValueError("Application packet path must be under applications/.")
-    if not candidate.exists() or not candidate.is_dir():
-        raise ValueError("Application packet folder does not exist.")
-    return candidate
-
-
-def list_markdown_files(packet_dir):
-    files = []
-    for path in sorted(packet_dir.glob("*.md")):
-        if path.is_file():
-            files.append(path.name)
-    return files
 
 
 def render_inline_markdown(text):
@@ -746,7 +724,7 @@ def application_packet_slug(job):
 
 
 def application_packet_rules():
-    manual = read_optional_text(CAREER_MANUAL_PATH)
+    manual = SOURCE_DOCUMENTS.career_manual()
     if not manual:
         return ""
     start = manual.find("# Downstream Artifact Rules")
@@ -755,7 +733,7 @@ def application_packet_rules():
 
 
 def application_packet_context(job):
-    master_resume = read_optional_text(MASTER_RESUME_PATH)
+    master_resume = SOURCE_DOCUMENTS.master_resume()
     return {
         "packet_creation_date": datetime.now().date().isoformat(),
         "job": {
@@ -851,7 +829,7 @@ def generate_application_packet_with_codex(job):
                 raise RuntimeError(
                     "Codex did not include the exact invoked model in every application-packet attribution."
                 )
-        packet_dir, markdown_files = INFRASTRUCTURE.packet_storage(ROOT, APPLICATIONS_DIR).publish(
+        packet_dir, markdown_files = PACKET_STORAGE.publish(
             application_packet_slug(job), payload, write_application_packet_documents
         )
         return {"output_text": output_text, "packet_dir": packet_dir, "markdown_files": markdown_files}
@@ -1229,9 +1207,9 @@ def packet_generation_service():
         result = generate_application_packet_with_codex(job)
         packet_dir = result["packet_dir"]
         return {
-            "path": repo_relative(packet_dir),
+            "path": PACKET_STORAGE.relative_path(packet_dir),
             "name": packet_dir.name,
-            "markdown_files": result.get("markdown_files", list_markdown_files(packet_dir)),
+            "markdown_files": result.get("markdown_files", PACKET_STORAGE.markdown_files(packet_dir)),
             "codex_output": result.get("output_text", ""),
         }
 

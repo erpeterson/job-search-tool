@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
@@ -21,11 +22,13 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.original_env_path = workflow_app.ENV_PATH
         self.original_applications_dir = workflow_app.APPLICATIONS_DIR
         self.original_root = workflow_app.ROOT
+        self.original_packet_storage = workflow_app.PACKET_STORAGE
         self.original_gpt_scoring_enabled = workflow_app.gpt_scoring_enabled
         workflow_app.DB_PATH = Path(self.tempdir.name) / "jobs.sqlite3"
         workflow_app.ENV_PATH = Path(self.tempdir.name) / ".env"
         workflow_app.APPLICATIONS_DIR = Path(self.tempdir.name) / "applications"
         workflow_app.ROOT = Path(self.tempdir.name)
+        workflow_app.PACKET_STORAGE = PacketStorage(workflow_app.ROOT, workflow_app.APPLICATIONS_DIR)
         workflow_app.gpt_scoring_enabled = lambda: False
         workflow_app.init_db()
         self.client = workflow_app.app.test_client()
@@ -35,6 +38,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         workflow_app.ENV_PATH = self.original_env_path
         workflow_app.APPLICATIONS_DIR = self.original_applications_dir
         workflow_app.ROOT = self.original_root
+        workflow_app.PACKET_STORAGE = self.original_packet_storage
         workflow_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
         self.tempdir.cleanup()
 
@@ -288,7 +292,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
         attached = self.client.post(
             f"/api/jobs/{job_id}/application-packet/attach",
-            json={"path": workflow_app.repo_relative(packet_dir)},
+            json={"path": workflow_app.PACKET_STORAGE.relative_path(packet_dir)},
         )
         content = self.client.get(f"/api/jobs/{job_id}/application-packet/content?file=Resume.md")
         rendered = self.client.get(f"/api/jobs/{job_id}/application-packet/render?file=Resume.md")

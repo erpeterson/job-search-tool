@@ -51,3 +51,19 @@ class PacketContentReaderTests(unittest.TestCase):
             self.assertTrue((destination / "Resume.md").is_file())
             with self.assertRaises(FileExistsError):
                 storage.publish("example", {}, write)
+
+    def test_failed_publish_leaves_no_destination_or_staging_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = PacketStorage(root, root / "applications")
+
+            def fail_after_partial_write(packet_dir, _payload):
+                packet_dir.mkdir(parents=True)
+                (packet_dir / "Resume.md").write_text("partial", encoding="utf-8")
+                raise OSError("simulated writer failure")
+
+            with self.assertRaisesRegex(OSError, "simulated writer failure"):
+                storage.publish("example", {}, fail_after_partial_write)
+
+            self.assertFalse((root / "applications" / "example").exists(), "Partial packet must not be published")
+            self.assertEqual(list((root / "applications").iterdir()), [], "Staging files must be removed")

@@ -57,6 +57,7 @@ from job_search.data_access.search_mutations import SqliteSearchMutations
 from job_search.data_access.search_query_repository import SqliteSearchQueryRepository
 from job_search.data_access.search_repository import SqliteSearchRepository
 from job_search.data_access.settings_repository import SqliteSettingsRepository
+from job_search.data_access.source_documents import SourceDocuments
 from job_search.data_access.sqlite import open_connection
 from job_search.data_access.telemetry import StructuredTelemetry, configure_json_file_logging
 from job_search.data_access.text_file_reader import read_optional_text  # noqa: F401
@@ -70,6 +71,16 @@ from job_search.task_repository import TaskRepository
 def database_session(database_path: Path):
     """Open a configured database session at the composition boundary."""
     return open_connection(database_path)
+
+
+def source_documents(configuration: RuntimeConfiguration) -> SourceDocuments:
+    paths = configuration.paths
+    return SourceDocuments(paths.guidance, paths.career_manual, paths.master_resume)
+
+
+def packet_storage(configuration: RuntimeConfiguration) -> PacketStorage:
+    paths = configuration.paths
+    return PacketStorage(paths.root, paths.applications)
 
 
 def runtime_configuration(

@@ -175,7 +175,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   parsers with explicit dependencies. Remove presentation-owned HTTP headers,
   gateway/parser construction, and fetch compatibility wrappers. Verify fake
   HTTP responses, rejected URLs, capture behavior, and board parsing.
-- [ ] **1.1e — Finish filesystem ownership.** Route source-document reads,
+- [x] **1.1e — Finish filesystem ownership.** Route source-document reads,
   packet path validation/catalog reads, atomic packet publication, and startup
   directory creation through data-access adapters. Test traversal rejection,
   absent optional files, publish collision, and failed publish cleanup.

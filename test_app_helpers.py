@@ -14,6 +14,7 @@ from job_search.composition import outbound_clients, runtime_configuration
 from job_search.config import RuntimePaths
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
+from job_search.data_access.packet_storage import PacketStorage
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("helpers_app", APP_PATH)
@@ -177,10 +178,12 @@ class AppHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             originals = (
                 helpers_app.APPLICATIONS_DIR,
+                helpers_app.PACKET_STORAGE,
                 helpers_app.call_codex_json,
                 helpers_app.write_application_packet_documents,
             )
             helpers_app.APPLICATIONS_DIR = Path(directory) / "applications"
+            helpers_app.PACKET_STORAGE = PacketStorage(Path(directory), helpers_app.APPLICATIONS_DIR)
             payload = {
                 "job_brief_markdown": "Brief\nGenerated with test-model",
                 "resume_markdown": "Resume\nGenerated with test-model",
@@ -209,6 +212,7 @@ class AppHelperTests(unittest.TestCase):
             finally:
                 (
                     helpers_app.APPLICATIONS_DIR,
+                    helpers_app.PACKET_STORAGE,
                     helpers_app.call_codex_json,
                     helpers_app.write_application_packet_documents,
                 ) = originals
