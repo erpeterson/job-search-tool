@@ -2,7 +2,9 @@
 
 import json
 import logging
+import sqlite3
 
+from job_search.domain.errors import DuplicateUrlError
 from job_search.domain.text import normalize_lookup_text
 from job_search.observability import record_exception
 
@@ -165,11 +167,25 @@ class JobRepository:
         if unknown:
             raise ValueError(f"Unknown jobs columns: {sorted(unknown)}")
         placeholders = ", ".join("?" for _ in columns)
-        cur = self._conn.execute(
-            # Column names are checked against JOB_COLUMNS above; values are bound parameters.
-            f"INSERT INTO jobs({', '.join(columns)}) VALUES ({placeholders})",  # noqa: S608 - allowlisted columns
-            [fields[column] for column in columns],
-        )
+        try:
+            cur = self._conn.execute(
+                # Column names are checked against JOB_COLUMNS above; values are bound parameters.
+                f"INSERT INTO jobs({', '.join(columns)}) VALUES ({placeholders})",  # noqa: S608 - allowlisted columns
+                [fields[column] for column in columns],
+            )
+        except sqlite3.IntegrityError as exc:
+            if "jobs.url" not in str(exc):
+                raise
+            record_exception(
+                "job_insert_duplicate_url",
+                "data.repositories",
+                "insert",
+                exc,
+                level=logging.INFO,
+                recovery="Raised DuplicateUrlError for the caller to handle.",
+                url=fields.get("url"),
+            )
+            raise DuplicateUrlError("This job URL is already tracked.", "job_url_already_tracked") from exc
         return cur.lastrowid
 
     def update_scraped_posting(self, job_id, fields, ts):

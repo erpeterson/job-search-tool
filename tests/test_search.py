@@ -325,3 +325,55 @@ def test_normalized_company_is_backfilled_for_existing_rows(container):
     with container.db.unit_of_work() as uow:
         value = uow.connection.execute("SELECT normalized_company FROM jobs").fetchone()[0]
     assert value == "acme inc", f"rows written before the migration must be backfilled: {value!r}"
+
+
+def test_second_search_run_is_rejected_while_one_is_running(container, config, environ, http, codex_runner, profile):
+    import json as _json
+
+    from conftest import FakeResolver, make_client
+
+    from job_search.container import build_container
+
+    class DeferredThread:
+        def __init__(self, target, args=(), daemon=None, name=None):
+            pass
+
+        def start(self):
+            pass
+
+    deferred = build_container(
+        config,
+        environ=environ,
+        http_get=http,
+        codex_runner=codex_runner,
+        thread_factory=DeferredThread,
+        resolve_host=FakeResolver(),
+        profile=profile,
+    )
+    client = make_client(deferred)
+    first = client.post("/api/search/run", data="{}", content_type="application/json")
+    assert first.status_code == 202, f"the first run should start: {first.get_json()}"
+    second = client.post("/api/search/run", data=_json.dumps({}), content_type="application/json")
+    body = second.get_json()
+    assert second.status_code == 409, f"a concurrent run must be rejected, got {second.status_code}: {body}"
+    assert body["task"]["id"] == first.get_json()["task"]["id"], "the 409 body points at the running task"
+    assert "search_run" in body["error"], body["error"]
+
+
+def test_url_tracked_between_screening_and_tracking_is_skipped(client, container, http, monkeypatch):
+    from job_search.observability import METRICS
+
+    enable_only(container, "linkedin", "Executive IC")
+    http.route("linkedin.com/jobs-guest", "<ul>" + linkedin_card("Chief Architect", "Acme", "Seattle", 901) + "</ul>")
+    original = container.search._track_result
+
+    def race(run_id, query_id, result, *args):
+        insert_job(container, url=result["url"])  # a manual add lands after screening
+        return original(run_id, query_id, result, *args)
+
+    monkeypatch.setattr(container.search, "_track_result", race)
+    before = METRICS.snapshot().get("blame.search_result_already_tracked", 0)
+    run = run_search(client)["run"]
+    assert run["status"] == "complete", f"the run must complete despite the duplicate: {run}"
+    assert run["tracked_count"] == 0, f"the raced result is skipped, not tracked: {run}"
+    assert METRICS.snapshot()["blame.search_result_already_tracked"] == before + 1, "the skip is recorded"

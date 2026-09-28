@@ -135,7 +135,12 @@ async function api(path, options = {}) {
     });
     const isJson = (response.headers.get("content-type") || "").includes("application/json");
     const data = isJson ? await response.json() : {};
-    if (!response.ok) throw new Error(data.error || `Request failed (HTTP ${response.status})`);
+    if (!response.ok) {
+      const error = new Error(data.error || `Request failed (HTTP ${response.status})`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
     if (!isJson) throw new Error(`Unexpected response type from ${path}`);
     return data;
   } finally {
@@ -948,10 +953,17 @@ async function runSearch() {
   searchRunning = true;
   renderSearchState();
   try {
-    const { task } = await api("/api/search/run", {
-      method: "POST",
-      body: JSON.stringify({ force_refresh: document.getElementById("force_refresh").checked })
-    });
+    let task;
+    try {
+      ({ task } = await api("/api/search/run", {
+        method: "POST",
+        body: JSON.stringify({ force_refresh: document.getElementById("force_refresh").checked })
+      }));
+    } catch (err) {
+      // A search is already running: follow that task instead of starting another.
+      if (err.status !== 409 || !err.data || !err.data.task) throw err;
+      task = err.data.task;
+    }
     await waitForTask(task, "Job search running");
     searchRunning = false;
     await load();
