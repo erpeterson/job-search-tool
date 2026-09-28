@@ -44,7 +44,6 @@ from job_search.composition import (
 )
 from job_search.composition import discovery_service as compose_discovery_service
 from job_search.composition import filtering_service as compose_filtering_service
-from job_search.composition import initialization_service as compose_initialization_service
 from job_search.composition import job_service as compose_job_service
 from job_search.composition import level_service as compose_level_service
 from job_search.composition import outbound_clients as compose_outbound_clients
@@ -60,6 +59,7 @@ from job_search.composition import search_repository as compose_search_repositor
 from job_search.composition import search_run_service as compose_search_run_service
 from job_search.composition import settings_service as compose_settings_service
 from job_search.composition import source_documents as compose_source_documents
+from job_search.composition import startup_service as compose_startup_service
 from job_search.composition import task_execution_service as compose_task_execution_service
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
@@ -212,23 +212,6 @@ PIPELINE_CRITERIA = {
         "keywords": '("AI safety" OR robotics OR "research operations" OR "national lab" OR NASA OR "Apple Vision" OR Imagineering OR NVIDIA) ("Principal Engineer" OR Architect OR "Technical Strategy")',
     },
 }
-
-SALES_ROLE_EXCLUSION_QUERY = (
-    '-"Account Executive" -"Sales Executive" -"Sales Director" -"Account Manager" -"Business Development" -sales'
-)
-SALES_ROLE_EXCLUSION_CRITERIA = "Exclude Account Executive and other sales roles."
-DEFAULT_SEARCH_QUERIES = [
-    {
-        "board": board,
-        "pipeline": pipeline,
-        "keywords": f"{config['keywords']} {SALES_ROLE_EXCLUSION_QUERY}",
-        "location": "Remote",
-        "criteria": f"{config['description']} {SALES_ROLE_EXCLUSION_CRITERIA}",
-        "seeded": 1,
-    }
-    for pipeline, config in PIPELINE_CRITERIA.items()
-    for board in ("linkedin", "indeed")
-]
 
 ORACLE_IC6_LEVEL_REFERENCE = (
     "Oracle Software Engineer IC-6 is Architect. "
@@ -394,38 +377,8 @@ def level_service(connection=None) -> LevelService:
     return dependency("level_service", lambda: compose_level_service(DB_PATH))
 
 
-def initialization_service():
-    return dependency("initialization_service", lambda: compose_initialization_service(DB_PATH))
-
-
-def init_db():
-    initialization_service().initialize_database(
-        {"gpt_threshold": "40", "user_threshold": "60", "codex_model": DEFAULT_MODEL, "last_search_at": "0"}
-    )
-
-    recovered_tasks = background_task_service().initialize()
-    if recovered_tasks:
-        log_event(
-            "background_tasks_recovered",
-            error_code="BACKGROUND_TASKS_RECOVERED",
-            component="data_access.tasks",
-            operation="initialize",
-            recovered_count=recovered_tasks,
-        )
-
-
-def with_sales_role_exclusion_keywords(keywords):
-    keywords = clean_text(keywords or "")
-    if "Account Executive" in keywords or SALES_ROLE_EXCLUSION_QUERY in keywords:
-        return keywords
-    return clean_text(f"{keywords} {SALES_ROLE_EXCLUSION_QUERY}")
-
-
-def with_sales_role_exclusion_criteria(criteria):
-    criteria = clean_text(criteria or "")
-    if "Account Executive" in criteria and "sales roles" in criteria.lower():
-        return criteria
-    return clean_text(f"{criteria} {SALES_ROLE_EXCLUSION_CRITERIA}")
+def startup_service():
+    return dependency("startup_service", lambda: compose_startup_service(DB_PATH, telemetry, DEFAULT_MODEL))
 
 
 def normalize_pipeline(value, fallback=""):
@@ -438,22 +391,6 @@ def normalize_pipeline(value, fallback=""):
             if isinstance(candidate, str) and candidate.strip() in PIPELINES:
                 return candidate.strip()
     return fallback
-
-
-def seed_search_queries(conn):
-    prepared_queries = [
-        {
-            **query,
-            "criteria": with_sales_role_exclusion_criteria(query["criteria"]),
-            "keywords": with_sales_role_exclusion_keywords(query["keywords"]),
-        }
-        for query in DEFAULT_SEARCH_QUERIES
-    ]
-    INFRASTRUCTURE.search_mutations.seed_queries(conn, prepared_queries, now())
-
-
-def remove_hardcoded_level_equivalency_seeds(conn):
-    INFRASTRUCTURE.search_mutations.remove_legacy_level_equivalency_seeds(conn)
 
 
 def lookup_level_equivalency(conn, company, title):
@@ -2094,7 +2031,7 @@ def api_error(exc):
 
 
 def main(application):
-    init_db()
+    startup_service().initialize()
     print(f"Job Search Console running at http://{HOST}:{PORT}")
     print(f"Database: {DB_PATH}")
     application.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)

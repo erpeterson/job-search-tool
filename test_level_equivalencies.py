@@ -25,7 +25,7 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.original_codex_model = job_search_app.codex_model
         self.original_populate_codex_score = job_search_app.populate_codex_score
         job_search_app.DB_PATH = Path(self.tmpdir.name) / "job_search.sqlite3"
-        job_search_app.init_db()
+        job_search_app.startup_service().initialize()
 
     def tearDown(self):
         job_search_app.DB_PATH = self.original_db_path
@@ -37,7 +37,7 @@ class LevelEquivalencyTests(unittest.TestCase):
         job_search_app.populate_codex_score = self.original_populate_codex_score
         self.tmpdir.cleanup()
 
-    def test_init_db_does_not_seed_level_equivalencies(self):
+    def test_startup_does_not_seed_level_equivalencies(self):
         with job_search_app.connect() as conn:
             count = conn.execute("SELECT COUNT(*) FROM level_equivalencies").fetchone()[0]
 

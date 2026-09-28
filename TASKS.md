@@ -186,7 +186,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 
 ### T-1.3 — Move workflows to application services
 
-- [ ] **1.3a — Move startup orchestration.** Move database initialization,
+- [x] **1.3a — Move startup orchestration.** Move database initialization,
   query seeding, and task recovery decisions from `legacy.py` into an
   application service; keep SQLite and directory creation in data access. Test
   fresh startup and recovery using a temporary database.

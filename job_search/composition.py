@@ -30,6 +30,7 @@ from job_search.application.rescrape_service import RescrapeService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.search_run_service import SearchRunService
 from job_search.application.settings_service import SettingsService
+from job_search.application.startup_service import StartupService
 from job_search.application.task_execution_service import TaskExecutionService
 from job_search.config import RuntimeConfiguration, RuntimePaths, load_runtime_settings
 from job_search.data_access.application_packet_catalog import ApplicationPacketCatalog
@@ -273,6 +274,16 @@ def background_task_service(database_path: Path, observe: Any) -> BackgroundTask
 def initialization_service(database_path: Path) -> InitializationService:
     """Compose startup initialization at the infrastructure boundary."""
     return InitializationService(SqliteInitializationAdapter(database_path, lambda: int(time.time())))
+
+
+def startup_service(database_path: Path, telemetry: Telemetry, default_model: str) -> StartupService:
+    """Compose startup schema/default seeding and durable-task recovery."""
+    return StartupService(
+        initialization_service(database_path),
+        background_task_service(database_path, telemetry.event),
+        telemetry,
+        default_model,
+    )
 
 
 def packet_content_service(database_path: Path) -> PacketContentService:

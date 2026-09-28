@@ -30,7 +30,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         workflow_app.ROOT = Path(self.tempdir.name)
         workflow_app.PACKET_STORAGE = PacketStorage(workflow_app.ROOT, workflow_app.APPLICATIONS_DIR)
         workflow_app.gpt_scoring_enabled = lambda: False
-        workflow_app.init_db()
+        workflow_app.startup_service().initialize()
         self.client = workflow_app.app.test_client()
 
     def tearDown(self):
