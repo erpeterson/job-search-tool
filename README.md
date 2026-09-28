@@ -37,7 +37,7 @@ Subcommand:
 
 ```bash
 .venv/bin/python app.py prune-captures --older-than 30        # list captures older than 30 days
-.venv/bin/python app.py prune-captures --older-than 30 --yes  # delete them
+.venv/bin/python app.py prune-captures --older-than 30 --yes  # archive them into captures/archive/
 ```
 
 Exit codes: `0` success, `1` unexpected failure, `2` invalid configuration,
@@ -179,13 +179,18 @@ is uploaded except the Codex prompts sent through your Codex CLI.
 | Location | Contents | Sensitivity | Retention |
 | --- | --- | --- | --- |
 | `job_search.sqlite3` (`JOB_SEARCH_DB_PATH`) | Tracked jobs, CRM notes and interactions, company interest, searches, discoveries, settings | Personal job-search data | Kept until you delete jobs in the UI (single delete or the confirmed `PURGE`). |
-| `captures/` (`JOB_SEARCH_CAPTURE_DIR`) | Replayable HTTP responses and Codex requests/responses. Codex prompts include your master resume and Career Manual excerpts. `Set-Cookie`, `Cookie`, and `Authorization` headers are never stored. Successful responses are `<digest>.json`; each failed call is kept as its own `<digest>.failed.<timestamp>.json`. | Personal (resume content) | Grows until pruned with `prune-captures --older-than DAYS --yes`; the command is a dry run without `--yes`. |
+| `captures/` (`JOB_SEARCH_CAPTURE_DIR`) | Replayable HTTP responses and Codex requests/responses. Codex prompts include your master resume and Career Manual excerpts. `Set-Cookie`, `Cookie`, and `Authorization` headers are never stored. Successful responses are `<digest>.json`; each failed call is kept as its own `<digest>.failed.<timestamp>.json`. | Personal (resume content) | Grows until pruned with `prune-captures --older-than DAYS --yes`, which moves old captures into `captures/archive/captures-<UTC>.tar.gz` (verified before originals are removed); nothing is deleted outright. The command is a dry run without `--yes`. |
 | `logs/` (`JOB_SEARCH_LOG_DIR`) | Structured event and API logs | Operational; contains job URLs and titles | Rotated at `JOB_SEARCH_LOG_MAX_BYTES` into timestamped `.gz` archives that the app never deletes. Remove old archives manually if disk space matters. |
 | `<workspace>/applications/` | Generated application packets (Markdown and DOCX) | Personal | Kept indefinitely; manage the folders yourself. |
 | `.env` | Local configuration | May contain local paths | Kept; edited by `run.sh` and the Configuration panel. |
 
 Decision (T-31): rotated logs are archived, not deleted, because logs are
 evidence. `JOB_SEARCH_LOG_BACKUP_COUNT` was removed with this change.
+
+Decision (T-44): capture pruning follows the same rule. Captures include Codex
+prompts and responses (model-call records) and HTTP fetches (tool-call records),
+so `prune-captures` archives them into a compressed tarball instead of deleting
+them. Remove old archives manually if disk space matters.
 
 ## Response Size
 
