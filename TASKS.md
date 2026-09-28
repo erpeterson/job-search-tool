@@ -85,7 +85,7 @@ evidence.
 
   Milestones:
 
-  - [ ] **T-1.1 — Extract presentation-owned configuration, logging, capture,
+  - [x] **T-1.1 — Extract presentation-owned configuration, logging, capture,
     HTTP, parsing, and filesystem adapters.**
   - [ ] **T-1.2 — Assemble every application service in `composition.py` and
     remove presentation-layer infrastructure construction and session access.**
@@ -179,7 +179,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   packet path validation/catalog reads, atomic packet publication, and startup
   directory creation through data-access adapters. Test traversal rejection,
   absent optional files, publish collision, and failed publish cleanup.
-- [ ] **1.1f — Audit and commit.** Inspect every presentation module for direct
+- [x] **1.1f — Audit and commit.** Inspect every presentation module for direct
   environment, transport, parser, logging, capture, or filesystem adapter work;
   account for anything intentionally deferred to T-1.2 or T-1.3. Run
   `./quality.sh` (including at least 80% coverage), then check T-1.1 and commit.

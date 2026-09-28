@@ -10,6 +10,36 @@ PRESENTATION = ROOT / "job_search" / "presentation"
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_presentation_does_not_own_runtime_or_filesystem_adapters(self):
+        forbidden_imports = {"os", "shutil", "dotenv", "logging", "pathlib", "bs4", "requests", "sqlite3", "subprocess"}
+        filesystem_calls = {
+            "read_text",
+            "write_text",
+            "mkdir",
+            "glob",
+            "rglob",
+            "unlink",
+            "rename",
+            "resolve",
+            "relative_to",
+        }
+        for path in PRESENTATION.rglob("*.py"):
+            with self.subTest(module=path.relative_to(ROOT)):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                self.assertFalse(
+                    forbidden_imports & _imports(path),
+                    f"{path.name} must receive runtime and filesystem adapters from composition.",
+                )
+                self.assertFalse(
+                    any(
+                        isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in filesystem_calls
+                        for node in ast.walk(tree)
+                    ),
+                    f"{path.name} must not perform direct filesystem operations.",
+                )
+
     def test_application_services_do_not_import_framework_or_concrete_infrastructure(self):
         forbidden = {"flask", "sqlite3", "requests", "subprocess"}
         for path in APPLICATION.glob("*.py"):
