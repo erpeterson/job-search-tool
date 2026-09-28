@@ -2,7 +2,10 @@
 
 import ast
 import unittest
+from dataclasses import fields
 from pathlib import Path
+
+from job_search.presentation.dependencies import PresentationDependencies
 
 ROOT = Path(__file__).resolve().parent
 APPLICATION = ROOT / "job_search" / "application"
@@ -10,6 +13,29 @@ PRESENTATION = ROOT / "job_search" / "presentation"
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_presentation_dependency_lookups_match_required_named_contract(self):
+        contract_fields = {field.name for field in fields(PresentationDependencies)}
+        self.assertTrue(contract_fields, "The web contract must declare required named dependencies.")
+        for path in PRESENTATION.rglob("*.py"):
+            with self.subTest(module=path.relative_to(ROOT)):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                self.assertFalse(
+                    any(isinstance(node, ast.Attribute) and node.attr == "services" for node in ast.walk(tree)),
+                    f"{path.name} must not use a permissive service dictionary.",
+                )
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                        continue
+                    if node.func.id != "dependency":
+                        continue
+                    self.assertEqual(len(node.args), 1, "Dependency lookups must not accept a fallback.")
+                    self.assertIsInstance(node.args[0], ast.Constant, "Dependency names must be static.")
+                    self.assertIn(
+                        node.args[0].value,
+                        contract_fields,
+                        "Every presentation dependency must be required at app construction.",
+                    )
+
     def test_presentation_does_not_own_runtime_or_filesystem_adapters(self):
         forbidden_imports = {"os", "shutil", "dotenv", "logging", "pathlib", "bs4", "requests", "sqlite3", "subprocess"}
         filesystem_calls = {
