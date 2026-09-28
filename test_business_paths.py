@@ -80,7 +80,8 @@ class BusinessPathTests(unittest.TestCase):
         original_logger = app_module.event_logger.info
         app_module.event_logger.info = events.append
         try:
-            self.assertEqual(app_module.clamp_score("not-a-number"), 0)
+            with app_module.app.app_context():
+                self.assertEqual(app_module.clamp_score("not-a-number"), 0)
         finally:
             app_module.event_logger.info = original_logger
 

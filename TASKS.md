@@ -220,7 +220,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     dictionary and fallback lookup with named required fields, fail app
     construction when dependencies are absent, and migrate direct web tests
     to the injected factory. Run the quality gate.
-  - [ ] **1.2a.2 — Complete the web contract.** Add all remaining route-facing
+  - [x] **1.2a.2 — Complete the web contract.** Add all remaining route-facing
     workflows and configuration/telemetry ports to the named contract; remove
     their presentation-side construction and test missing-field failures.
     - [x] **1.2a.2a — Inject scoring and packet workflows.** Compose the Codex
@@ -233,7 +233,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     - [x] **1.2a.2c — Inject discovery and search workflows.** Compose the
       remaining model/board/persistence ports and move search-run construction
       out of presentation, with deterministic fake-boundary tests.
-    - [ ] **1.2a.2d — Inject runtime and observability ports.** Supply web
+    - [x] **1.2a.2d — Inject runtime and observability ports.** Supply web
       configuration, security, correlation, logging, and capture dependencies
       through the named contract and verify missing-field failures.
   - [ ] **1.2a.3 — Define process builders.** Give worker and scheduler separate

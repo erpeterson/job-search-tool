@@ -191,9 +191,9 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertEqual(response.get_json()["error"], "note is required.")
 
     def test_external_binding_rejects_unauthenticated_and_missing_csrf_mutations(self):
-        original_security = job_search_app.REQUEST_SECURITY
+        original_dependencies = job_search_app.app.extensions["job_search.dependencies"]
         try:
-            job_search_app.REQUEST_SECURITY = load_request_security(
+            security = load_request_security(
                 {
                     "JOB_SEARCH_HOST": "0.0.0.0",
                     "JOB_SEARCH_AUTH_TOKEN": "auth",
@@ -202,6 +202,10 @@ class LevelEquivalencyTests(unittest.TestCase):
                     "JOB_SEARCH_TLS_TERMINATED": "1",
                     "JOB_SEARCH_TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
                 }
+            )
+            job_search_app.app.extensions["job_search.dependencies"] = replace(
+                original_dependencies,
+                configuration=replace(original_dependencies.configuration, security=security),
             )
             client = job_search_app.app.test_client()
             unauthenticated = client.post("/api/search/run", json={}, headers={"X-Forwarded-Proto": "https"})
@@ -230,7 +234,7 @@ class LevelEquivalencyTests(unittest.TestCase):
             self.assertEqual(untrusted_proxy.status_code, 403)
             self.assertEqual(trusted_proxy.status_code, 200)
         finally:
-            job_search_app.REQUEST_SECURITY = original_security
+            job_search_app.app.extensions["job_search.dependencies"] = original_dependencies
 
     def test_bulk_request_rejects_array_duplicate_and_oversized_job_ids(self):
         client = job_search_app.app.test_client()

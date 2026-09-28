@@ -408,6 +408,11 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         ),
         discovery_service=discovery,
         search_run_service=search,
+        configuration=configuration,
+        observability=observed,
+        outbound_clients=clients,
+        codex_gateway=gateway,
+        database_path=database_path,
     )
 
 

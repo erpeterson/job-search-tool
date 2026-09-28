@@ -35,6 +35,11 @@ class PresentationDependencies:
     rescrape_service: Any
     discovery_service: Any
     search_run_service: Any
+    configuration: Any
+    observability: Any
+    outbound_clients: Any
+    codex_gateway: Any
+    database_path: Any
 
     def __post_init__(self) -> None:
         missing = [name for name in self.__dataclass_fields__ if getattr(self, name) is None]

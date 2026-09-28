@@ -144,8 +144,32 @@ class CompositionTests(unittest.TestCase):
             create_app(route_blueprint=legacy.routes)
         with self.assertRaisesRegex(TypeError, "required positional"):
             PresentationDependencies(job_service=object())
-        with self.assertRaisesRegex(ValueError, "job_service"):
-            replace(presentation_dependencies(Path("unused.sqlite3")), job_service=None)
+        complete = presentation_dependencies(Path("unused.sqlite3"))
+        for name in (
+            "job_service",
+            "configuration",
+            "observability",
+            "outbound_clients",
+            "codex_gateway",
+            "database_path",
+        ):
+            with self.subTest(dependency=name):
+                with self.assertRaisesRegex(ValueError, name):
+                    replace(complete, **{name: None})
+
+    def test_web_runtime_ports_use_the_supplied_database_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "jobs.sqlite3"
+            dependencies = presentation_dependencies(database)
+            try:
+                self.assertEqual(dependencies.database_path, database)
+                self.assertEqual(dependencies.configuration.paths.root, Path(directory).resolve())
+                self.assertIsNotNone(dependencies.observability.telemetry)
+                self.assertIsNotNone(dependencies.observability.captures)
+            finally:
+                for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
+                    for handler in logger.handlers:
+                        handler.close()
 
     def test_task_processor_is_composed_from_application_services(self):
         class Console:

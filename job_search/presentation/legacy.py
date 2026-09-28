@@ -54,28 +54,13 @@ from job_search.validation import (
 
 RUNTIME_CONFIG = runtime_configuration()
 ROOT = RUNTIME_CONFIG.paths.root
-APP_DIR = ROOT
 DB_PATH = RUNTIME_CONFIG.paths.database
 ENV_PATH = RUNTIME_CONFIG.paths.environment_file
-LOG_DIR = RUNTIME_CONFIG.paths.log_dir
-API_LOG_PATH = RUNTIME_CONFIG.paths.api_log
-APP_LOG_PATH = RUNTIME_CONFIG.paths.app_log
 CAPTURE_DIR = RUNTIME_CONFIG.paths.captures
-GUIDANCE_PATH = RUNTIME_CONFIG.paths.guidance
-CAREER_MANUAL_PATH = RUNTIME_CONFIG.paths.career_manual
-MASTER_RESUME_PATH = RUNTIME_CONFIG.paths.master_resume
 APPLICATIONS_DIR = RUNTIME_CONFIG.paths.applications
 
-RUNTIME_SETTINGS = RUNTIME_CONFIG.settings
 DEFAULT_MODEL = RUNTIME_CONFIG.model()
-CODEX_CLI_TIMEOUT_SECONDS = RUNTIME_SETTINGS.codex_timeout_seconds
-HOST = RUNTIME_SETTINGS.host
-PORT = RUNTIME_SETTINGS.port
-DEBUG = RUNTIME_SETTINGS.debug
 AUTORUN = False  # the scheduler is buggy and eats codex credits; disable it for now
-SEARCH_INTERVAL_SECONDS = RUNTIME_SETTINGS.search_interval_seconds
-LOG_MAX_BYTES = RUNTIME_SETTINGS.log_max_bytes
-LOG_BACKUP_COUNT = RUNTIME_SETTINGS.log_backup_count
 CONFIG_KEYS = [
     "CODEX_CLI_PATH",
     "CODEX_MODEL",
@@ -85,7 +70,6 @@ CONFIG_KEYS = [
 
 
 routes = Blueprint("job_search", __name__)
-REQUEST_SECURITY = RUNTIME_CONFIG.security
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -93,7 +77,6 @@ telemetry = OBSERVABILITY.telemetry
 capture_store = OBSERVABILITY.captures
 CODEX_JSON_GATEWAY = compose_codex_json_gateway(RUNTIME_CONFIG, OBSERVABILITY)
 log_api_call = telemetry.api_call
-log_event = telemetry.event
 capture_path = capture_store.path
 read_capture = capture_store.read
 write_capture = capture_store.write
@@ -102,18 +85,20 @@ write_capture = capture_store.write
 @routes.before_request
 def enforce_request_security():
     """Protect all external bindings before any route can mutate local state."""
+    observed = dependency("observability")
+    security = dependency("configuration").security
     g.correlation_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
-    g.correlation_token = OBSERVABILITY.correlation_ids.set(g.correlation_id)
-    if not REQUEST_SECURITY.enabled:
+    g.correlation_token = observed.correlation_ids.set(g.correlation_id)
+    if not security.enabled:
         return None
-    if not trusted_proxy_peer(request.remote_addr, REQUEST_SECURITY):
+    if not trusted_proxy_peer(request.remote_addr, security):
         return jsonify({"error": "Request must arrive through a configured trusted proxy."}), 403
     if request.headers.get("X-Forwarded-Proto", "").lower() != "https":
         return jsonify({"error": "HTTPS is required for externally exposed deployments."}), 400
-    if not authorized(request.headers.get("Authorization"), REQUEST_SECURITY.auth_token):
+    if not authorized(request.headers.get("Authorization"), security.auth_token):
         return jsonify({"error": "Authentication is required."}), 401
     if request.method not in {"GET", "HEAD", "OPTIONS"} and not csrf_valid(
-        request.headers.get("X-CSRF-Token"), REQUEST_SECURITY.csrf_token
+        request.headers.get("X-CSRF-Token"), security.csrf_token
     ):
         return jsonify({"error": "CSRF validation failed."}), 403
     return None
@@ -123,7 +108,7 @@ def enforce_request_security():
 def clear_request_correlation_id(_error):
     token = getattr(g, "correlation_token", None)
     if token is not None:
-        OBSERVABILITY.correlation_ids.reset(token)
+        dependency("observability").correlation_ids.reset(token)
 
 
 @routes.before_request
@@ -161,6 +146,10 @@ connect = _DatabaseSessionProvider()
 def dependency(name):
     """Resolve a required service supplied by the composition root."""
     return getattr(current_app.extensions["job_search.dependencies"], name)
+
+
+def log_event(event_type, **fields):
+    dependency("observability").telemetry.event(event_type, **fields)
 
 
 def job_service() -> JobService:
@@ -262,19 +251,19 @@ def settings(conn):
 
 
 def gpt_scoring_enabled():
-    return RUNTIME_CONFIG.enabled("JOB_SEARCH_ENABLE_GPT_SCORING")
+    return dependency("configuration").enabled("JOB_SEARCH_ENABLE_GPT_SCORING")
 
 
 def codex_cli_path():
-    return RUNTIME_CONFIG.cli_path()
+    return dependency("configuration").cli_path()
 
 
 def codex_cli_available():
-    return RUNTIME_CONFIG.cli_available()
+    return dependency("configuration").cli_available()
 
 
 def codex_model(conn=None):
-    env_model = RUNTIME_CONFIG.model()
+    env_model = dependency("configuration").model()
     if env_model:
         return env_model
     if conn is not None:
@@ -283,11 +272,11 @@ def codex_model(conn=None):
 
 
 def capture_cache_enabled():
-    return RUNTIME_CONFIG.enabled("JOB_SEARCH_USE_CAPTURE_CACHE")
+    return dependency("configuration").enabled("JOB_SEARCH_USE_CAPTURE_CACHE")
 
 
 def full_capture_enabled():
-    return RUNTIME_CONFIG.enabled("JOB_SEARCH_ENABLE_FULL_CAPTURE")
+    return dependency("configuration").enabled("JOB_SEARCH_ENABLE_FULL_CAPTURE")
 
 
 def background_task_service():
@@ -307,7 +296,7 @@ def start_background_task(operation, job_ids):
 
 
 def masked_config():
-    return RUNTIME_CONFIG.masked(CONFIG_KEYS)
+    return dependency("configuration").masked(CONFIG_KEYS)
 
 
 def apply_filter(_connection, job_id):
@@ -355,10 +344,11 @@ def list_search_runs(conn):
 
 def search_schedule_state(conn):
     last_search_at = int(settings(conn).get("last_search_at", "0") or 0)
-    next_run_at = last_search_at + SEARCH_INTERVAL_SECONDS if last_search_at else now()
+    interval = dependency("configuration").settings.search_interval_seconds
+    next_run_at = last_search_at + interval if last_search_at else now()
     return {
         "autorun_enabled": AUTORUN,
-        "interval_seconds": SEARCH_INTERVAL_SECONDS,
+        "interval_seconds": interval,
         "last_search_at": last_search_at,
         "next_run_at": next_run_at if AUTORUN else None,
     }
@@ -601,16 +591,20 @@ def index():
 @routes.get("/api/state")
 def api_state():
     include_filtered = request.args.get("include_filtered") == "1"
+    config = dependency("configuration")
     state = dict(console_query_service().state(include_filtered=include_filtered))
     state.update(
         {
             "config": masked_config(),
-            "api_log_path": str(API_LOG_PATH),
-            "event_log_path": str(APP_LOG_PATH),
-            "capture_dir": str(CAPTURE_DIR),
+            "api_log_path": str(config.paths.api_log),
+            "event_log_path": str(config.paths.app_log),
+            "capture_dir": str(config.paths.captures),
             "gpt_scoring_enabled": gpt_scoring_enabled(),
             "capture_cache_enabled": capture_cache_enabled(),
-            "search_schedule": {"interval_seconds": SEARCH_INTERVAL_SECONDS, "managed_by": "job_search.scheduler"},
+            "search_schedule": {
+                "interval_seconds": config.settings.search_interval_seconds,
+                "managed_by": "job_search.scheduler",
+            },
             "codex_tasks": list_background_tasks(),
             "pipelines": PIPELINES,
             "rubric_fields": RUBRIC_FIELDS,
@@ -1060,6 +1054,7 @@ def api_update_search_query(query_id):
 @routes.post("/api/config")
 def api_update_config():
     payload = require_json_object(request.get_json(silent=True) or {})
+    config = dependency("configuration")
     updates = {}
     for key in CONFIG_KEYS:
         if key not in payload:
@@ -1073,23 +1068,23 @@ def api_update_config():
         return jsonify(
             {
                 "config": masked_config(),
-                "api_log_path": str(API_LOG_PATH),
-                "event_log_path": str(APP_LOG_PATH),
-                "capture_dir": str(CAPTURE_DIR),
+                "api_log_path": str(config.paths.api_log),
+                "event_log_path": str(config.paths.app_log),
+                "capture_dir": str(config.paths.captures),
                 "gpt_scoring_enabled": gpt_scoring_enabled(),
                 "capture_cache_enabled": capture_cache_enabled(),
             }
         )
-    RUNTIME_CONFIG.update(updates)
+    config.update(updates)
     if "CODEX_MODEL" in updates:
         settings_service().save({"codex_model": updates["CODEX_MODEL"]})
     return jsonify(
         {
             "config": masked_config(),
             "settings": console_query_service().settings(),
-            "api_log_path": str(API_LOG_PATH),
-            "event_log_path": str(APP_LOG_PATH),
-            "capture_dir": str(CAPTURE_DIR),
+            "api_log_path": str(config.paths.api_log),
+            "event_log_path": str(config.paths.app_log),
+            "capture_dir": str(config.paths.captures),
             "gpt_scoring_enabled": gpt_scoring_enabled(),
             "capture_cache_enabled": capture_cache_enabled(),
         }
@@ -1228,10 +1223,18 @@ def api_error(exc):
 
 
 def main(application):
-    startup_service().initialize()
-    print(f"Job Search Console running at http://{HOST}:{PORT}")
-    print(f"Database: {DB_PATH}")
-    application.run(host=HOST, port=PORT, debug=DEBUG, use_reloader=False)
+    with application.app_context():
+        startup_service().initialize()
+        configuration = dependency("configuration")
+        database_path = dependency("database_path")
+    print(f"Job Search Console running at http://{configuration.settings.host}:{configuration.settings.port}")
+    print(f"Database: {database_path}")
+    application.run(
+        host=configuration.settings.host,
+        port=configuration.settings.port,
+        debug=configuration.settings.debug,
+        use_reloader=False,
+    )
 
 
 if __name__ == "__main__":
