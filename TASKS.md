@@ -227,7 +227,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
       scoring, on-demand scoring, and packet-generation services once per web
       application; replace presentation constructors and use fake ports in
       direct workflow tests.
-    - [ ] **1.2a.2b — Inject ingestion workflows.** Compose manual ingestion
+    - [x] **1.2a.2b — Inject ingestion workflows.** Compose manual ingestion
       and rescraping with repository, board, filtering, clock, and telemetry
       ports; remove their presentation constructors.
     - [ ] **1.2a.2c — Inject discovery and search workflows.** Compose the

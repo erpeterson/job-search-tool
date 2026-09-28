@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import hashlib
 import json
 import re
 import time
@@ -19,6 +18,7 @@ from werkzeug.exceptions import HTTPException
 
 from job_search.application.company_service import CompanyService
 from job_search.application.discovery_policy import DiscoveryPolicy
+from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
 from job_search.application.filtering_service import FilteringService
 from job_search.application.job_scoring_policy import (
     ORACLE_IC6_LEVEL_REFERENCE,
@@ -45,7 +45,6 @@ from job_search.composition import discovery_service as compose_discovery_servic
 from job_search.composition import job_score_service as compose_job_score_service
 from job_search.composition import level_service as compose_level_service
 from job_search.composition import outbound_clients as compose_outbound_clients
-from job_search.composition import rescrape_service as compose_rescrape_service
 from job_search.composition import search_run_service as compose_search_run_service
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
@@ -191,74 +190,15 @@ def settings_service() -> SettingsService:
 
 
 def filtering_service() -> FilteringService:
-    def observe(job, decision):
-        if decision.filtered:
-            log_event(
-                "job_filtered",
-                job_id=job.get("id"),
-                company=job["company"],
-                title=job["title"],
-                reasons=decision.reasons,
-                gpt_score=job["gpt_score"],
-                user_score=job["user_score"],
-                downlevel=bool(job["downlevel"]),
-                gpt_scoring_enabled=gpt_scoring_enabled(),
-            )
-
     return dependency("filtering_service")
 
 
 def manual_job_service() -> ManualJobService:
-    def score(job_id: int) -> object:
-        return codex_scoring_workflow().populate_by_id(job_id, force_refresh=False)
-
-    def scoring_availability() -> str | None:
-        if not gpt_scoring_enabled():
-            return "Codex scoring is disabled."
-        if not codex_cli_available():
-            return f"Codex CLI is unavailable at {codex_cli_path()!r}."
-        return None
-
-    def report_failure(operation: str, error: Exception, context: dict[str, object]) -> None:
-        if operation == "scrape":
-            log_event(
-                "manual_job_scrape_failed",
-                error_code="MANUAL_JOB_SCRAPE_FAILED",
-                component="business.job_ingestion",
-                operation="scrape_job_from_url",
-                error_type=type(error).__name__,
-                message=str(error)[:1000],
-                **context,
-            )
-        else:
-            log_event(
-                "manual_job_auto_score_failed",
-                error_code="MANUAL_JOB_AUTO_SCORE_FAILED",
-                component="business.job_scoring",
-                operation="populate_codex_score",
-                error_type=type(error).__name__,
-                message=str(error)[:1000],
-                **context,
-            )
-
-    return ManualJobService(
-        INFRASTRUCTURE.job_repository(connect),
-        lambda url, force_refresh: OUTBOUND_CLIENTS.boards.scrape(url, force_refresh=force_refresh),
-        OUTBOUND_CLIENTS.boards.fallback,
-        filtering_service().refresh_job,
-        score,
-        scoring_availability,
-        report_failure,
-    )
+    return dependency("manual_job_service")
 
 
 def rescrape_service() -> RescrapeService:
-    return compose_rescrape_service(
-        INFRASTRUCTURE.job_repository(connect),
-        lambda url, force_refresh: OUTBOUND_CLIENTS.boards.scrape(url, force_refresh=force_refresh),
-        filtering_service().refresh_job,
-        now,
-    )
+    return dependency("rescrape_service")
 
 
 def packet_attachment_service():
@@ -599,14 +539,6 @@ def location_from_json_ld(payload):
     return nested_value(location, "name")
 
 
-def clean_text(value):
-    return " ".join((value or "").split())
-
-
-def clean_url(value):
-    return (value or "").split("?trk=")[0].strip()
-
-
 def append_note_text(existing, addition):
     existing = clean_text(existing)
     addition = clean_text(addition)
@@ -631,23 +563,6 @@ def clamp_score(value, low=0, high=10):
         )
         return low
     return max(low, min(high, parsed))
-
-
-def source_id(board, url):
-    digest = hashlib.sha256((url or "").encode("utf-8")).hexdigest()[:16]
-    return f"{board}:{digest}"
-
-
-def dedupe_results(results):
-    seen = set()
-    deduped = []
-    for result in results:
-        key = result.get("url") or result.get("source_job_id")
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(result)
-    return deduped
 
 
 OUTBOUND_CLIENTS = compose_outbound_clients(OBSERVABILITY, clean_text, clean_url, source_id, dedupe_results)

@@ -6,11 +6,14 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from job_search.application.manual_job_service import ManualJobService
+from job_search.application.rescrape_service import RescrapeService
 from job_search.composition import (
     codex_scoring_workflow,
     packet_generation_service,
     presentation_dependencies,
 )
+from job_search.data_access.job_repository import SqliteJobRepository
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
 
@@ -398,7 +401,6 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_rescrape_and_manual_job_creation_handle_fake_success_and_failure(self):
         job_id = self.create_job()
-        original_scrape = workflow_app.OUTBOUND_CLIENTS.boards.scrape
         calls = []
 
         def fake_scrape(url, force_refresh=False):
@@ -415,7 +417,23 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 "source_job_id": "abc",
             }
 
-        workflow_app.OUTBOUND_CLIENTS.boards.scrape = fake_scrape
+        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
+        repository = SqliteJobRepository(workflow_app.connect)
+        filtering = original_dependencies.filtering_service
+        manual = ManualJobService(
+            repository,
+            fake_scrape,
+            lambda url: {"url": url, "company": "Fallback"},
+            filtering.refresh_job,
+            lambda _job_id: None,
+            lambda: "Codex scoring is disabled.",
+            lambda *_args: None,
+        )
+        workflow_app.app.extensions["job_search.dependencies"] = replace(
+            original_dependencies,
+            manual_job_service=manual,
+            rescrape_service=RescrapeService(repository, fake_scrape, filtering.refresh_job, lambda: 1),
+        )
         try:
             rescraped = self.client.post(f"/api/jobs/{job_id}/scrape", json={"force_refresh": True})
             created = self.client.post(
@@ -427,7 +445,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 json={"url": "https://example.com/failure", "pipeline": "Executive IC"},
             )
         finally:
-            workflow_app.OUTBOUND_CLIENTS.boards.scrape = original_scrape
+            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         self.assertEqual(rescraped.get_json()["job"]["company"], "RefreshedCo")
         self.assertEqual(created.status_code, 201)

@@ -1,10 +1,13 @@
 import importlib.util
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from job_search.application.manual_job_service import ManualJobService
 from job_search.composition import codex_scoring_workflow, presentation_dependencies
+from job_search.data_access.job_repository import SqliteJobRepository
 from job_search.presentation.factory import create_app
 from job_search.security import load_request_security
 
@@ -121,15 +124,17 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertEqual(pipeline, "Executive IC")
 
     def test_manually_added_job_is_automatically_scored(self):
-        job_search_app.OUTBOUND_CLIENTS.boards.scrape = lambda url, force_refresh=False: {
-            "url": url,
-            "company": "ExampleCo",
-            "title": "Principal Engineer",
-            "location": "Remote",
-            "posting_text": "Architecture role.",
-            "source_board": "manual",
-            "source_job_id": None,
-        }
+        def scraped(url, force_refresh=False):
+            return {
+                "url": url,
+                "company": "ExampleCo",
+                "title": "Principal Engineer",
+                "location": "Remote",
+                "posting_text": "Architecture role.",
+                "source_board": "manual",
+                "source_job_id": None,
+            }
+
         job_search_app.gpt_scoring_enabled = lambda: True
         job_search_app.codex_cli_available = lambda: True
 
@@ -139,15 +144,27 @@ class LevelEquivalencyTests(unittest.TestCase):
                     conn.execute("UPDATE jobs SET gpt_score = ? WHERE id = ?", (88, job_id))
                 return {"total_score": 88}
 
-        original_workflow = job_search_app.codex_scoring_workflow
-        job_search_app.codex_scoring_workflow = lambda: FakeScoringWorkflow()
+        original_dependencies = job_search_app.app.extensions["job_search.dependencies"]
+        repository = SqliteJobRepository(job_search_app.connect)
+        manual = ManualJobService(
+            repository,
+            scraped,
+            lambda url: {"url": url},
+            original_dependencies.filtering_service.refresh_job,
+            lambda job_id: FakeScoringWorkflow().populate_by_id(job_id, force_refresh=False),
+            lambda: None,
+            lambda *_args: None,
+        )
+        job_search_app.app.extensions["job_search.dependencies"] = replace(
+            original_dependencies, manual_job_service=manual
+        )
         client = job_search_app.app.test_client()
         try:
             response = client.post(
                 "/api/jobs", json={"url": "https://example.com/jobs/123", "pipeline": "Executive IC"}
             )
         finally:
-            job_search_app.codex_scoring_workflow = original_workflow
+            job_search_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         self.assertEqual(response.status_code, 201)
         self.assertIsNone(response.get_json()["score_error"])

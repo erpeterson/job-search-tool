@@ -21,6 +21,7 @@ from job_search.application.company_service import CompanyService
 from job_search.application.console_query_service import ConsoleQueryService
 from job_search.application.contracts import Telemetry
 from job_search.application.discovery_service import DiscoveryService
+from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
 from job_search.application.filtering_service import FilteringService
 from job_search.application.initialization_service import InitializationService
 from job_search.application.job_score_service import JobScoreService
@@ -33,6 +34,7 @@ from job_search.application.job_scoring_policy import (
 )
 from job_search.application.job_service import JobService
 from job_search.application.level_service import LevelService
+from job_search.application.manual_job_service import ManualJobService
 from job_search.application.packet_attachment_service import PacketAttachmentService
 from job_search.application.packet_content_service import PacketContentService
 from job_search.application.packet_draft_service import PacketDraftService
@@ -270,6 +272,57 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     scoring_workflow = codex_scoring_workflow(database_path, configuration, scorer, observed.telemetry)
     draft = packet_draft_service(configuration, observed, gateway)
     jobs = JobService(adapters.job_repository(connect))
+    clients = outbound_clients(observed, clean_text, clean_url, source_id, dedupe_results)
+
+    def observe_filter(job: Mapping[str, Any], decision: Any) -> None:
+        if decision.filtered:
+            observed.telemetry.event(
+                "job_filtered",
+                job_id=job.get("id"),
+                company=job["company"],
+                title=job["title"],
+                reasons=decision.reasons,
+                gpt_score=job["gpt_score"],
+                user_score=job["user_score"],
+                downlevel=bool(job["downlevel"]),
+                gpt_scoring_enabled=configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
+            )
+
+    filtering = filtering_service(
+        database_path, observe_filter, scoring_enabled=configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING")
+    )
+
+    def scrape(url: str, force_refresh: bool):
+        return clients.boards.scrape(url, force_refresh=force_refresh)
+
+    def manual_scoring_availability() -> str | None:
+        if not configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"):
+            return "Codex scoring is disabled."
+        if not configuration.cli_available():
+            return f"Codex CLI is unavailable at {configuration.cli_path()!r}."
+        return None
+
+    def report_manual_failure(operation: str, error: Exception, context: Mapping[str, Any]) -> None:
+        event = "manual_job_scrape_failed" if operation == "scrape" else "manual_job_auto_score_failed"
+        observed.telemetry.event(
+            event,
+            error_code="MANUAL_JOB_SCRAPE_FAILED" if operation == "scrape" else "MANUAL_JOB_AUTO_SCORE_FAILED",
+            component="business.job_ingestion" if operation == "scrape" else "business.job_scoring",
+            operation="scrape_job_from_url" if operation == "scrape" else "populate_codex_score",
+            error_type=type(error).__name__,
+            message=str(error)[:1000],
+            **context,
+        )
+
+    manual = ManualJobService(
+        adapters.job_repository(connect),
+        scrape,
+        clients.boards.fallback,
+        filtering.refresh_job,
+        lambda job_id: scoring_workflow.populate_by_id(job_id, force_refresh=False),
+        manual_scoring_availability,
+        report_manual_failure,
+    )
 
     def scoring_availability() -> str | None:
         if not configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"):
@@ -291,11 +344,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         packet_attachment_service=packet_attachment_service(database_path),
         level_service=level_service(database_path),
         search_repository=adapters.search_repository(connect),
-        filtering_service=FilteringService(
-            adapters.filter_repository(connect),
-            lambda: int(time.time()),
-            gpt_scoring_enabled=os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1",
-        ),
+        filtering_service=filtering,
         background_task_service=BackgroundTaskService(
             adapters.task_repository(database_path),
             lambda: int(time.time()),
@@ -312,6 +361,10 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
             scoring_availability,
         ),
         packet_generation_service=packet_generation_service(database_path, draft, observed.telemetry),
+        manual_job_service=manual,
+        rescrape_service=rescrape_service(
+            adapters.job_repository(connect), scrape, filtering.refresh_job, lambda: int(time.time())
+        ),
     )
 
 
