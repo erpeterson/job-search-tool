@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 
-from job_search.config import DEFAULT_APP_DIR, AppConfig
+from job_search.config import DEFAULT_APP_DIR, AppConfig, warn_unknown_variables
 from job_search.container import build_container
 from job_search.data.captures import CaptureStore
 from job_search.data.env_file import EnvFile
@@ -47,8 +47,10 @@ def parse_args(argv):
 
 def run_prune_captures(args, environ, out, app_dir):
     """List captures older than --older-than days; with --yes, move them into a compressed archive."""
-    config = AppConfig.from_env(startup_settings(environ, app_dir / ".env", args), app_dir=app_dir)
+    settings = startup_settings(environ, app_dir / ".env", args)
+    config = AppConfig.from_env(settings, app_dir=app_dir)
     configure_file_logging(config.event_log_path, config.api_log_path, config.log_max_bytes)
+    warn_unknown_variables(settings)
     result = prune_captures(CaptureStore(config.capture_dir, lambda: True), args.older_than, confirmed=args.yes)
     for path in result.candidates:
         print(path, file=out)
@@ -77,6 +79,7 @@ def run(args, environ, serve, out, app_dir):
     config = AppConfig.from_env(environ, app_dir=app_dir)
     install_thread_excepthook()
     configure_file_logging(config.event_log_path, config.api_log_path, config.log_max_bytes)
+    warn_unknown_variables(environ)
     container = build_container(config, environ=environ)
     container.bootstrap()
     container.scheduler.start()

@@ -40,7 +40,9 @@ def test_env_example_lists_every_supported_variable():
     for path in (REPO / "job_search").rglob("*.py"):
         code_vars |= set(re.findall(r'"((?:JOB_SEARCH|CODEX|PANDOC)_[A-Z_]+)"', path.read_text(encoding="utf-8")))
     example_vars = set(EnvFile(REPO / ".env.example").read())
-    missing = sorted(code_vars - example_vars)
+    from job_search.config import REMOVED_VARIABLES
+
+    missing = sorted(code_vars - example_vars - set(REMOVED_VARIABLES))
     assert not missing, f".env.example is missing supported variables: {missing}"
 
 

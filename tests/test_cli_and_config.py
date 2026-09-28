@@ -274,3 +274,36 @@ def test_every_log_line_carries_the_process_run_id(tmp_path):
     assert lines, "expected log lines to be written"
     missing = [line["event"] for line in lines if line.get("process_run_id") != process_run_id()]
     assert not missing, f"every line needs the process run id; missing on: {missing}"
+
+
+class TestUnknownVariables:
+    def test_removed_variable_in_env_file_produces_a_warning(self, workspace):
+        app_dir = workspace / "job-search-tool"
+        (app_dir / ".env").write_text("JOB_SEARCH_LOG_BACKUP_COUNT=5\nJOB_SEARCH_PORTT=1\n", encoding="utf-8")
+        out = io.StringIO()
+        configure_console_logging(verbose=True, stdout=out, stderr=io.StringIO())
+        from job_search.config import warn_unknown_variables
+
+        settings = cli.startup_settings({}, app_dir / ".env", cli.parse_args([]))
+        unknown = warn_unknown_variables(settings)
+        events = [json.loads(line) for line in out.getvalue().splitlines() if "config_unknown_variable" in line]
+        assert unknown == ["JOB_SEARCH_LOG_BACKUP_COUNT", "JOB_SEARCH_PORTT"], unknown
+        advice = {event["variable"]: event["advice"] for event in events}
+        assert "archived" in advice["JOB_SEARCH_LOG_BACKUP_COUNT"], f"removed names explain the replacement: {advice}"
+        assert "spelling" in advice["JOB_SEARCH_PORTT"], f"unknown names suggest checking spelling: {advice}"
+        assert all(event["level"] == "WARNING" for event in events), "the event is a warning"
+
+    def test_supported_variables_match_env_example(self):
+        from pathlib import Path
+
+        from job_search.config import SUPPORTED_VARIABLES
+        from job_search.data.env_file import EnvFile
+
+        example = set(EnvFile(Path(__file__).resolve().parent.parent / ".env.example").read())
+        only_code, only_example = sorted(SUPPORTED_VARIABLES - example), sorted(example - SUPPORTED_VARIABLES)
+        assert not only_code and not only_example, f"only in code: {only_code}; only in .env.example: {only_example}"
+
+    def test_known_variables_do_not_warn(self):
+        from job_search.config import warn_unknown_variables
+
+        assert warn_unknown_variables({"JOB_SEARCH_PORT": "5050", "HOME": "/x"}) == [], "supported names are silent"
