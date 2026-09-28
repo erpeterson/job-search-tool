@@ -467,3 +467,38 @@ def test_thread_start_failure_returns_500_with_message(client, container, monkey
     response = post(client, "/api/search/run")
     assert response.status_code == 500, f"expected 500, got {response.status_code}"
     assert "could not be started" in response.get_json()["error"], response.get_json()
+
+
+def test_manual_add_returns_201_when_scoring_thread_cannot_start(config, environ, http, profile):
+    from conftest import FakeResolver, make_client
+
+    from job_search.container import build_container
+    from job_search.observability import METRICS
+
+    class BrokenThread:
+        def __init__(self, target, args=(), daemon=None, name=None):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    container = build_container(
+        config,
+        environ=environ,
+        http_get=http,
+        thread_factory=BrokenThread,
+        resolve_host=FakeResolver(),
+        profile=profile,
+    )
+    container.bootstrap()
+    container.runtime.update({"JOB_SEARCH_ENABLE_GPT_SCORING": "1"})
+    http.route("example.com", "<html><h1>Chief Architect</h1></html>")
+    before = METRICS.snapshot().get("blame.manual_job_auto_score_not_started", 0)
+    response = post(
+        make_client(container), "/api/jobs", {"url": "https://example.com/jobs/t52", "pipeline": "Wildcards"}
+    )
+    body = response.get_json()
+    assert response.status_code == 201, f"the saved job must be returned, not a 500: {body}"
+    assert body["job"]["url"] == "https://example.com/jobs/t52", "the response carries the saved job"
+    assert body["score_task"] is None and "could not be started" in body["score_error"], body
+    assert METRICS.snapshot()["blame.manual_job_auto_score_not_started"] == before + 1, "the failure is recorded"
