@@ -252,7 +252,9 @@ class TestFileStores:
         EnvFile(path).update({"B": "20", "C": "30"})
         assert path.read_text() == '# comment\nA=3\nB="20"\nC="30"\n', path.read_text()
 
-    @pytest.mark.parametrize("value", ["a # not a comment", 'say "hi"', "  padded  ", "back\\slash", "it's"])
+    @pytest.mark.parametrize(
+        "value", ["a # not a comment", 'say "hi"', "  padded  ", "back\\slash", "it's", "gpt-${HOME}-x", "$HOME"]
+    )
     def test_env_file_values_round_trip(self, tmp_path, value):
         env = EnvFile(tmp_path / ".env")
         env.update({"KEY": value})

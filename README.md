@@ -90,7 +90,9 @@ in `tests/conftest.py`.
 
 ## Configuration
 
-Values are read from the environment and `job-search-tool/.env`.
+Values are read from the environment and `job-search-tool/.env`. `.env` values are
+literal: `${VAR}` references are not expanded, so a saved value never pulls in
+other environment variables.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
