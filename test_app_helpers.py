@@ -10,9 +10,10 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
+from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
 from job_search.application.job_scoring_policy import normalize_pipeline
 from job_search.application.packet_draft_service import validate_packet_payload
-from job_search.composition import outbound_clients, runtime_configuration
+from job_search.composition import codex_json_gateway, outbound_clients, runtime_configuration
 from job_search.config import RuntimePaths
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
@@ -25,13 +26,13 @@ SPEC.loader.exec_module(helpers_app)
 
 class AppHelperTests(unittest.TestCase):
     def test_text_url_and_pipeline_normalization(self):
-        self.assertEqual(helpers_app.clean_text("  one\n two  "), "one two")
-        self.assertEqual(helpers_app.clean_url("https://example.test/job?trk=value"), "https://example.test/job")
+        self.assertEqual(clean_text("  one\n two  "), "one two")
+        self.assertEqual(clean_url("https://example.test/job?trk=value"), "https://example.test/job")
         self.assertEqual(normalize_pipeline(["wrong", "Wildcards"]), "Wildcards")
         self.assertEqual(helpers_app.normalize_lookup_text("Senior-Principal Engineer!"), "senior principal engineer")
         self.assertEqual(
-            helpers_app.source_id("manual", "https://example.test"),
-            helpers_app.source_id("manual", "https://example.test"),
+            source_id("manual", "https://example.test"),
+            source_id("manual", "https://example.test"),
         )
 
     def test_compensation_helpers_cover_hourly_monthly_and_unknown_text(self):
@@ -66,9 +67,7 @@ class AppHelperTests(unittest.TestCase):
             "Below-threshold compensation should reject an otherwise eligible role.",
         )
         self.assertIsNone(policy.rejection_reason({"title": "Architect", "location": "Seattle, WA"}))
-        values = helpers_app.dedupe_results(
-            [{"url": "a"}, {"url": "a"}, {"source_job_id": "b"}, {"source_job_id": "b"}]
-        )
+        values = dedupe_results([{"url": "a"}, {"url": "a"}, {"source_job_id": "b"}, {"source_job_id": "b"}])
         self.assertEqual(len(values), 2)
 
     def test_html_json_ld_and_markdown_helpers(self):
@@ -122,10 +121,10 @@ class AppHelperTests(unittest.TestCase):
 
         boards = outbound_clients(
             helpers_app.OBSERVABILITY,
-            helpers_app.clean_text,
-            helpers_app.clean_url,
-            helpers_app.source_id,
-            helpers_app.dedupe_results,
+            clean_text,
+            clean_url,
+            source_id,
+            dedupe_results,
             fetch=fake_fetch,
         ).boards
         scraped = boards.scrape("https://jobs.example.test/123")
@@ -204,7 +203,7 @@ class AppHelperTests(unittest.TestCase):
 
         codex_cli.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
         try:
-            output, model = helpers_app.call_codex_json(
+            output, model = codex_json_gateway(helpers_app.RUNTIME_CONFIG, helpers_app.OBSERVABILITY).complete(
                 "test-model",
                 {"task": "score_job"},
                 "score_job",

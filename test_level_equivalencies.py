@@ -3,7 +3,6 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
 
 from job_search.application.manual_job_service import ManualJobService
 from job_search.composition import codex_scoring_workflow, presentation_dependencies
@@ -22,7 +21,6 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.original_db_path = job_search_app.DB_PATH
         self.original_log_event = job_search_app.log_event
-        self.original_scrape_job_from_url = job_search_app.OUTBOUND_CLIENTS.boards.scrape
         self.original_gpt_scoring_enabled = job_search_app.gpt_scoring_enabled
         self.original_codex_cli_available = job_search_app.codex_cli_available
         self.original_populate_codex_score = job_search_app.populate_codex_score
@@ -36,7 +34,6 @@ class LevelEquivalencyTests(unittest.TestCase):
     def tearDown(self):
         job_search_app.DB_PATH = self.original_db_path
         job_search_app.log_event = self.original_log_event
-        job_search_app.OUTBOUND_CLIENTS.boards.scrape = self.original_scrape_job_from_url
         job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
         job_search_app.codex_cli_available = self.original_codex_cli_available
         job_search_app.populate_codex_score = self.original_populate_codex_score
@@ -56,12 +53,9 @@ class LevelEquivalencyTests(unittest.TestCase):
 
         job_search_app.log_event = fake_log_event
 
-        with patch.object(
-            job_search_app.OUTBOUND_CLIENTS.boards, "scrape", side_effect=AssertionError("unexpected fetch")
-        ):
-            with job_search_app.connect() as conn:
-                result = job_search_app.lookup_level_equivalency(conn, "Atlassian", "Principal Engineer")
-                count = conn.execute("SELECT COUNT(*) FROM level_equivalencies").fetchone()[0]
+        with job_search_app.connect() as conn:
+            result = job_search_app.lookup_level_equivalency(conn, "Atlassian", "Principal Engineer")
+            count = conn.execute("SELECT COUNT(*) FROM level_equivalencies").fetchone()[0]
 
         self.assertIsNone(result)
         self.assertEqual(count, 0)
@@ -75,12 +69,9 @@ class LevelEquivalencyTests(unittest.TestCase):
         )
 
     def test_downlevel_title_estimate_is_cached_and_reused(self):
-        with patch.object(
-            job_search_app.OUTBOUND_CLIENTS.boards, "scrape", side_effect=AssertionError("unexpected fetch")
-        ):
-            with job_search_app.connect() as conn:
-                first = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
-                second = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
+        with job_search_app.connect() as conn:
+            first = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
+            second = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
 
         self.assertEqual(first["oracle_level"], "BELOW_IC6")
         self.assertEqual(first["oracle_title"], "Below Architect-equivalent")

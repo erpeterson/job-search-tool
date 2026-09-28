@@ -8,6 +8,7 @@ from pathlib import Path
 
 from job_search.application.discovery_policy import MIN_ANNUAL_COMPENSATION, DiscoveryPolicy
 from job_search.application.discovery_service import UNKNOWN_LEVEL_ASSESSMENT
+from job_search.application.discovery_utils import clean_text
 from job_search.application.job_scoring_policy import ORACLE_IC6_LEVEL_REFERENCE, normalize_pipeline
 from job_search.application.manual_job_service import ManualJobService
 from job_search.application.rescrape_service import RescrapeService
@@ -80,7 +81,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             apply_filter=lambda *_args: None,
             normalize_pipeline=normalize_pipeline,
             refine=refine or (lambda *_args, **_kwargs: None),
-            clean_text=workflow_app.clean_text,
+            clean_text=clean_text,
         )
 
     def make_search(self, fetch, *, telemetry=None):
@@ -618,7 +619,12 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 """UPDATE jobs SET gpt_score = 70, user_score = 85, user_rationale = ?, posting_text = ? WHERE id = ?""",
                 ("Strategic scope", "A" * 1000, job_id),
             )
-            scorer = job_score_service(workflow_app.RUNTIME_CONFIG, workflow_app.CODEX_JSON_GATEWAY)
+
+            class UnusedGateway:
+                def complete(self, *_args, **_kwargs):
+                    raise AssertionError("Calibration examples must not invoke Codex")
+
+            scorer = job_score_service(workflow_app.RUNTIME_CONFIG, UnusedGateway())
             examples = scorer.calibration_examples(connection)
 
         self.assertEqual(examples[0]["user_score"], 85)

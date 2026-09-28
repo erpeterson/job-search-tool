@@ -17,7 +17,7 @@ from flask import (
 from werkzeug.exceptions import HTTPException
 
 from job_search.application.company_service import CompanyService
-from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
+from job_search.application.discovery_utils import clean_text
 from job_search.application.filtering_service import FilteringService
 from job_search.application.job_scoring_policy import (
     PIPELINES,
@@ -30,14 +30,12 @@ from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
-from job_search.composition import codex_json_gateway as compose_codex_json_gateway
 from job_search.composition import (
     database_session,
     observability,
     runtime_configuration,
 )
 from job_search.composition import level_service as compose_level_service
-from job_search.composition import outbound_clients as compose_outbound_clients
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
@@ -74,7 +72,6 @@ api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
 telemetry = OBSERVABILITY.telemetry
 capture_store = OBSERVABILITY.captures
-CODEX_JSON_GATEWAY = compose_codex_json_gateway(RUNTIME_CONFIG, OBSERVABILITY)
 log_api_call = telemetry.api_call
 capture_path = capture_store.path
 read_capture = capture_store.read
@@ -455,18 +452,9 @@ def clamp_score(value, low=0, high=10):
     return max(low, min(high, parsed))
 
 
-OUTBOUND_CLIENTS = compose_outbound_clients(OBSERVABILITY, clean_text, clean_url, source_id, dedupe_results)
-
-
 def extract_codex_reported_model(output):
     match = re.search(r"\bmodel:\s*([^\s]+)", output or "", flags=re.IGNORECASE)
     return match.group(1) if match else ""
-
-
-def call_codex_json(model, prompt, operation, force_refresh=False, return_metadata=False):
-    return CODEX_JSON_GATEWAY.complete(
-        model, prompt, operation, force_refresh=force_refresh, return_metadata=return_metadata
-    )
 
 
 def packet_generation_service():

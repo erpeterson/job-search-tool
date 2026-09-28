@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_search.application.discovery_policy import DiscoveryPolicy
-from job_search.composition import presentation_dependencies
+from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
+from job_search.composition import codex_json_gateway, outbound_clients, presentation_dependencies
 from job_search.data_access import codex_cli
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
@@ -148,16 +149,16 @@ class BusinessPathTests(unittest.TestCase):
         environment = {"JOB_SEARCH_USE_CAPTURE_CACHE": "1", "JOB_SEARCH_ENABLE_FULL_CAPTURE": "0"}
         try:
             with patch.object(app_module.RUNTIME_CONFIG, "environment", environment):
-                gateway = app_module.compose_outbound_clients(
+                gateway = outbound_clients(
                     app_module.OBSERVABILITY,
-                    app_module.clean_text,
-                    app_module.clean_url,
-                    app_module.source_id,
-                    app_module.dedupe_results,
+                    clean_text,
+                    clean_url,
+                    source_id,
+                    dedupe_results,
                     client=HttpClient(),
                 ).gateway
                 gateway.get("manual_posting", f"https://example.test/job?token={sentinels['token']}")
-                app_module.call_codex_json(
+                codex_json_gateway(app_module.RUNTIME_CONFIG, app_module.OBSERVABILITY).complete(
                     "test-model", {"prompt": sentinels["prompt"]}, "redaction_test", force_refresh=True
                 )
                 captures = [path.read_text(encoding="utf-8") for path in app_module.CAPTURE_DIR.rglob("*.json")]
