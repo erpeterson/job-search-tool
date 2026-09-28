@@ -103,7 +103,7 @@ other environment variables.
 | `JOB_SEARCH_ENABLE_GPT_SCORING` | `0` | `1` enables Codex scoring. Editable in the UI. |
 | `JOB_SEARCH_USE_CAPTURE_CACHE` | `1` | `0` forces live requests. Editable in the UI. |
 | `JOB_SEARCH_HOST` / `JOB_SEARCH_PORT` | `127.0.0.1` / `5050` | Bind address. |
-| `JOB_SEARCH_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>` | Comma-separated `Host` header values the app accepts. Other hosts get `403` (DNS-rebinding protection); state-changing requests with a foreign `Origin` also get `403`. |
+| `JOB_SEARCH_ALLOWED_HOSTS` | `127.0.0.1:<port>,localhost:<port>`, plus `<host>:<port>` for the configured host (IPv6 hosts bracketed, e.g. `[::1]:5050`) | Comma-separated `Host` header values the app accepts. Other hosts get `403` (DNS-rebinding protection); state-changing requests with a foreign `Origin` also get `403`. |
 | `JOB_SEARCH_INTERVAL_SECONDS` | `86400` | Scheduled search cadence (scheduler currently disabled). |
 | `JOB_SEARCH_LOG_MAX_BYTES` | `1048576` | Size at which a log is rotated into a timestamped `.gz` archive. |
 | `JOB_SEARCH_WORKSPACE_ROOT` | parent of `job-search-tool/` | Location of `career-manual/`, `resume/`, `applications/`. |
