@@ -182,6 +182,20 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn(".submit(", source, "HTTP task submission must only persist queued work.")
         self.assertNotIn("scheduler_loop", source, "Web startup must not own a scheduler loop.")
 
+    def test_managed_processes_do_not_import_presentation(self):
+        for name in ("worker.py", "scheduler.py"):
+            with self.subTest(module=name):
+                tree = ast.parse((ROOT / "job_search" / name).read_text(encoding="utf-8"))
+                imported = [
+                    node.module
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom) and node.module is not None
+                ]
+                self.assertFalse(
+                    any(module.startswith("job_search.presentation") for module in imported),
+                    f"{name} must compose application services without presentation callbacks.",
+                )
+
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))

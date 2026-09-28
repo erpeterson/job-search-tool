@@ -93,7 +93,7 @@ evidence.
     initialization, and durable-task workflow adapters from `legacy.py`.**
   - [ ] **T-1.4 — Reduce presentation modules to HTTP mapping, validation,
     response rendering, security hooks, and top-level error handling.**
-  - [ ] **T-1.5 — Rewire the worker and scheduler through composition-owned
+  - [x] **T-1.5 — Rewire the worker and scheduler through composition-owned
     application services rather than presentation callbacks.**
   - [ ] **T-1.6 — Add boundary and integration evidence for every T-1 closure
     criterion, run the quality gate, and close T-1.**
@@ -273,7 +273,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 - [x] **1.5b — Rewire the scheduler.** Build a search runner from composition
   using the CLI's `--database` path; make `scheduler.py` invoke the application
   runner after lease acquisition without importing presentation.
-- [ ] **1.5c — Verify and commit.** Test both CLI entry points with a temporary
+- [x] **1.5c — Verify and commit.** Test both CLI entry points with a temporary
   database and fake external adapters, including failure and lease paths. Run
   `./quality.sh`, check T-1.5, and commit.
 

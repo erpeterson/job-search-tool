@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from job_search import scheduler, worker
 from job_search.composition import (
     database_session,
     runtime_configuration,
@@ -12,6 +13,7 @@ from job_search.composition import (
     worker_process_dependencies,
 )
 from job_search.data_access.schema import initialize_schema
+from job_search.task_repository import TaskRepository
 
 
 class FakeTelemetry:
@@ -55,6 +57,83 @@ class FakeBoards:
 
 
 class ProcessCompositionTests(unittest.TestCase):
+    def test_worker_cli_records_fake_model_failure_in_temporary_database(self):
+        class FailingScorer:
+            def score(self, *_args, **_kwargs):
+                raise RuntimeError("fake model unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "worker.sqlite3"
+            with database_session(database) as connection:
+                initialize_schema(connection)
+                job_id = connection.execute(
+                    "INSERT INTO jobs(created_at, updated_at, company, title, pipeline, status) "
+                    "VALUES (1, 1, 'Example', 'Architect', 'Executive IC', 'researching')"
+                ).lastrowid
+            repository = TaskRepository(database)
+            repository.initialize(1)
+            repository.create("failure-task", "scorecards", [job_id], 2)
+            configuration = runtime_configuration(Path(directory), {})
+            observed = FakeObserved()
+            real_process_one = worker.process_one
+
+            def process_then_stop(*args, **kwargs):
+                self.assertTrue(real_process_one(*args, **kwargs), "The worker should claim the queued item.")
+                raise KeyboardInterrupt
+
+            def build(path):
+                return worker_process_dependencies(
+                    path, configuration=configuration, observed=observed, scorer=FailingScorer(), draft=FakeDraft()
+                )
+
+            with (
+                patch("sys.argv", ["worker", "--database", str(database)]),
+                patch("job_search.worker.worker_process_dependencies", side_effect=build),
+                patch("job_search.worker.process_one", side_effect=process_then_stop),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    worker._main()
+
+            task = repository.get("failure-task")
+            self.assertEqual(task["status"], "error", "The fake model failure must survive process exit.")
+            self.assertIn("fake model unavailable", task["items"][0]["message"])
+
+    def test_scheduler_cli_respects_existing_lease_in_temporary_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "scheduler.sqlite3"
+            with database_session(database) as connection:
+                initialize_schema(connection)
+                connection.execute(
+                    "INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at) "
+                    "VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1)"
+                )
+            configuration = runtime_configuration(Path(directory), {})
+            observed = FakeObserved()
+            boards = FakeBoards()
+
+            def build(path):
+                return scheduler_process_dependencies(
+                    path,
+                    configuration=configuration,
+                    observed=observed,
+                    gateway=FakeGateway(),
+                    scorer=FakeScorer(),
+                    boards=boards,
+                )
+
+            with (
+                patch("sys.argv", ["scheduler", "--database", str(database)]),
+                patch("job_search.scheduler.scheduler_process_dependencies", side_effect=build),
+            ):
+                self.assertEqual(scheduler._main(), 0)
+                self.assertEqual(boards.calls, [("indeed", "architect", "Remote", True)])
+                with patch("job_search.scheduler.socket.gethostname", return_value="different-owner"):
+                    self.assertEqual(scheduler._main(), 0, "A live lease should make the scheduler exit cleanly.")
+                self.assertEqual(len(boards.calls), 1, "The denied scheduler must not run another search.")
+            with database_session(database) as connection:
+                count = connection.execute("SELECT COUNT(*) FROM search_runs").fetchone()[0]
+            self.assertEqual(count, 1, "Only the lease owner should persist a search run.")
+
     def test_worker_builder_processes_fake_score_and_packet_without_web_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
