@@ -5,7 +5,7 @@ import logging
 
 from job_search.domain.clock import now
 from job_search.domain.discovery_filters import first_rejection
-from job_search.domain.errors import AppError, NotFoundError, public_error_code
+from job_search.domain.errors import AppError, DuplicateUrlError, NotFoundError, public_error_code
 from job_search.domain.job_filter import apply_job_filters
 from job_search.domain.levels import LevelCalibrationCache, level_assessment_from_equivalency
 from job_search.domain.model_output import validate_refinement_payload
@@ -205,7 +205,8 @@ class SearchService:
             candidates = self._screen_results(uow, run_id, query["id"], results, counts)
         for result in candidates:
             outcome = self._track_result(run_id, query["id"], result, force_refresh, messages, scoring_inputs)
-            counts[outcome] += 1
+            if outcome in counts:  # "skipped" results are not counted
+                counts[outcome] += 1
         try:
             self.refine_query(query["id"], force_refresh=force_refresh)
         except AppError as exc:
@@ -329,26 +330,40 @@ class SearchService:
                     **_result_fields(result),
                 )
 
-        with self._db.unit_of_work() as uow:
-            job_id = uow.jobs.insert(
-                _discovered_job_fields(result, pipeline, notes, level_assessment, downlevel, score)
-            )
-            apply_job_filters(uow, self._runtime.gpt_scoring_enabled(), job_id)
-            uow.discoveries.insert(
-                _discovery_record(
-                    run_id,
-                    query_id,
-                    result,
-                    "tracked",
-                    gpt_score=score_total(score) if score else None,
-                    gpt_rationale=score.get("rationale") if score else None,
-                    scorecard=score.get("scorecard", {}) if score else {},
-                    level_assessment=level_assessment,
-                    downlevel=downlevel,
-                    rejection_reason=reason,
-                    tracked_job_id=job_id,
+        try:
+            with self._db.unit_of_work() as uow:
+                job_id = uow.jobs.insert(
+                    _discovered_job_fields(result, pipeline, notes, level_assessment, downlevel, score)
                 )
+                apply_job_filters(uow, self._runtime.gpt_scoring_enabled(), job_id)
+                uow.discoveries.insert(
+                    _discovery_record(
+                        run_id,
+                        query_id,
+                        result,
+                        "tracked",
+                        gpt_score=score_total(score) if score else None,
+                        gpt_rationale=score.get("rationale") if score else None,
+                        scorecard=score.get("scorecard", {}) if score else {},
+                        level_assessment=level_assessment,
+                        downlevel=downlevel,
+                        rejection_reason=reason,
+                        tracked_job_id=job_id,
+                    )
+                )
+        except DuplicateUrlError as exc:
+            record_exception(
+                "search_result_already_tracked",
+                "domain.search",
+                "track_result",
+                exc,
+                level=logging.WARNING,
+                recovery="The URL was tracked concurrently (manual add or another run); counted as skipped.",
+                run_id=run_id,
+                query_id=query_id,
+                url=result.get("url"),
             )
+            return "skipped"
         log_event(
             "discovery_decision",
             decision="tracked",

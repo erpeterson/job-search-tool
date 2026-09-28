@@ -227,7 +227,7 @@ error statuses for all routes are `400` (validation), `403` (host/origin),
 | GET | `/api/companies/<company_id>` | — | `200` company with matching jobs | `404` |
 | POST | `/api/companies` | `company` (required), `status`, `interest_score` (0-100), `rationale`, `notes`, `next_step`, `contacts` | `201` company, companies (upserts by normalized name) | — |
 | POST | `/api/companies/<company_id>` | any company fields (omitted fields are kept) | `200` company, companies | `404` |
-| POST | `/api/search/run` | `force_refresh` | `202` task (result `run`) | `429` |
+| POST | `/api/search/run` | `force_refresh` | `202` task (result `run`) | `409` a search is already running (body includes that `task`; the UI follows it), `429` |
 | POST | `/api/search/queries` | `board` (`linkedin`/`indeed`), `keywords` (required), `pipeline`, `location`, `criteria`, `enabled` | `201` search queries | — |
 | POST | `/api/search/queries/<query_id>` | any query fields | `200` search queries | `404` |
 | POST | `/api/settings` | `gpt_threshold`, `user_threshold` (0-100), `codex_model` | `200` settings, jobs | — |
