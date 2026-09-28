@@ -303,17 +303,25 @@ def test_calibration_query_runs_once_per_search_run(client, container, http, cod
 
 
 def test_company_list_join_uses_normalized_company_index(container):
+    from job_search.data.repositories import COMPANY_LIST_SQL
+
     with container.db.unit_of_work() as uow:
-        plan = uow.connection.execute(
-            """
-            EXPLAIN QUERY PLAN
-            SELECT ci.*, COUNT(j.id) FROM company_interests ci
-            LEFT JOIN jobs j ON j.normalized_company = ci.normalized_company
-            GROUP BY ci.id
-            """
-        ).fetchall()
+        plan = uow.connection.execute(f"EXPLAIN QUERY PLAN {COMPANY_LIST_SQL}").fetchall()
     details = " ".join(row["detail"] for row in plan)
-    assert "idx_jobs_normalized_company" in details, f"the company join should use the new index: {details}"
+    assert "idx_jobs_normalized_company" in details, f"the repository's company query must use the index: {details}"
+
+
+def test_company_matching_ignores_case_and_punctuation(client, container):
+    insert_job(container, company="Acme, Inc.", url="https://example.com/a")
+    insert_job(container, company="ACME INC", url="https://example.com/b")
+    insert_job(container, company="Acme Industries", url="https://example.com/c")
+    body = client.post(
+        "/api/companies", data=json.dumps({"company": "Acme Inc"}), content_type="application/json"
+    ).get_json()
+    titles = sorted(job["company"] for job in body["company"]["jobs"])
+    assert titles == ["ACME INC", "Acme, Inc."], f"normalized names match; other companies do not: {titles}"
+    listed = next(c for c in body["companies"] if c["company"] == "Acme Inc")
+    assert listed["tracked_job_count"] == 2, f"the list count uses the same matching: {listed}"
 
 
 def test_normalized_company_is_backfilled_for_existing_rows(container):
