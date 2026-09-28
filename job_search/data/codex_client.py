@@ -163,4 +163,11 @@ class CodexClient:
                 "error_type": type(error).__name__ if error else None,
                 "error_message": str(error) if error else None,
             }
-            self._captures.write("codex_cli", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})
+            self._captures.write(
+                "codex_cli",
+                operation,
+                request_payload,
+                response_payload,
+                {"elapsed_ms": elapsed_ms},
+                succeeded=_codex_succeeded(response_payload),
+            )

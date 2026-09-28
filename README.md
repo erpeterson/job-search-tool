@@ -172,7 +172,7 @@ is uploaded except the Codex prompts sent through your Codex CLI.
 | Location | Contents | Sensitivity | Retention |
 | --- | --- | --- | --- |
 | `job_search.sqlite3` (`JOB_SEARCH_DB_PATH`) | Tracked jobs, CRM notes and interactions, company interest, searches, discoveries, settings | Personal job-search data | Kept until you delete jobs in the UI (single delete or the confirmed `PURGE`). |
-| `captures/` (`JOB_SEARCH_CAPTURE_DIR`) | Replayable HTTP responses and Codex requests/responses. Codex prompts include your master resume and Career Manual excerpts. `Set-Cookie`, `Cookie`, and `Authorization` headers are never stored. | Personal (resume content) | Grows until pruned with `prune-captures --older-than DAYS --yes`; the command is a dry run without `--yes`. |
+| `captures/` (`JOB_SEARCH_CAPTURE_DIR`) | Replayable HTTP responses and Codex requests/responses. Codex prompts include your master resume and Career Manual excerpts. `Set-Cookie`, `Cookie`, and `Authorization` headers are never stored. Successful responses are `<digest>.json`; each failed call is kept as its own `<digest>.failed.<timestamp>.json`. | Personal (resume content) | Grows until pruned with `prune-captures --older-than DAYS --yes`; the command is a dry run without `--yes`. |
 | `logs/` (`JOB_SEARCH_LOG_DIR`) | Structured event and API logs | Operational; contains job URLs and titles | Rotated at `JOB_SEARCH_LOG_MAX_BYTES` into timestamped `.gz` archives that the app never deletes. Remove old archives manually if disk space matters. |
 | `<workspace>/applications/` | Generated application packets (Markdown and DOCX) | Personal | Kept indefinitely; manage the folders yourself. |
 | `.env` | Local configuration | May contain local paths | Kept; edited by `run.sh` and the Configuration panel. |
@@ -335,8 +335,9 @@ Indeed. Codex CLI request/response payloads use the same capture mechanism for
 scoring and search refinement when Codex scoring is enabled.
 
 Only successful outcomes are replayed: a `2xx` HTTP response, or a Codex call
-that exited `0`. Failed calls are still written to `captures/` as evidence, but
-the next request makes a live call. Captures are written atomically, and a
+that exited `0`, stored as `<digest>.json`. Failed calls are written to their own
+`<digest>.failed.<UTC timestamp>.json` files, which are never overwritten, and the
+next request makes a live call; a failure never replaces the last good capture. Captures are written atomically, and a
 failed capture write is logged (`capture_write_failed`) without affecting the
 request.
 
