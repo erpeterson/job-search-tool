@@ -88,6 +88,23 @@ suppression is line-level and states its reason.
 Tests run without network access, Codex, or Pandoc; those are replaced by fakes
 in `tests/conftest.py`.
 
+## Continuous Integration
+
+`.github/workflows/quality.yml` runs on every push and pull request (and can be
+started manually). The `quality` job installs the hash-pinned
+`requirements-dev.lock` on Python 3.12 and fails if any of these fail:
+
+- `ruff check` (including the bandit security rules) and `ruff format --check`
+- `pytest` with branch coverage below 80%
+- `pip-audit` of every package in `requirements.lock`
+- `node --check` on `static/app.js` and `bash -n run.sh`
+
+A workflow can only mark a commit as failed; to reject changes that fail it, make
+the check required on `main`: in GitHub, open Settings > Rules > Rulesets (or
+Settings > Branches > Branch protection), target `main`, enable "Require status
+checks to pass", add `quality`, and enable "Require a pull request before
+merging" so changes reach `main` only through a passing pull request.
+
 ## Configuration
 
 Values are read from the environment and `job-search-tool/.env`. `.env` values are
