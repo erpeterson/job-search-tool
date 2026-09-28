@@ -64,7 +64,7 @@ python3 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-dev.lock
 .venv/bin/python -m pytest          # runs tests with coverage; fails below 80%
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
-.venv/bin/pip-audit -r requirements.txt  # known-vulnerability check for runtime deps
+.venv/bin/pip-audit --require-hashes --disable-pip -r requirements.lock  # every pinned runtime package
 ```
 
 Dependencies: `requirements.txt` and `requirements-dev.txt` list direct
@@ -76,6 +76,11 @@ both locks:
 .venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements.lock requirements.txt
 .venv/bin/pip-compile --generate-hashes --strip-extras --allow-unsafe -o requirements-dev.lock requirements-dev.txt
 ```
+
+The audit covers the full lock file, so transitive packages exposed to
+untrusted input (Werkzeug, Jinja2, urllib3, soupsieve) are checked too. Last
+run 2026-09-28 against `requirements.lock` and `requirements-dev.lock`: no known
+vulnerabilities found, and no findings are accepted.
 
 Ruff includes the `S` (bandit security) and `A` (builtin shadowing) rules; any
 suppression is line-level and states its reason.
