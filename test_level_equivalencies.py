@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from job_search.composition import presentation_dependencies
+from job_search.composition import codex_scoring_workflow, presentation_dependencies
 from job_search.presentation.factory import create_app
 from job_search.security import load_request_security
 
@@ -95,33 +95,30 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertEqual(result["downlevel"], 0)
 
     def test_scorecard_pipeline_list_is_normalized_before_sqlite_update(self):
-        original_factory = job_search_app.compose_job_score_service
-        try:
-            with job_search_app.connect() as conn:
-                job_id = conn.execute(
-                    "INSERT INTO jobs(created_at, updated_at, company, title, pipeline, status) VALUES (?, ?, ?, ?, ?, ?)",
-                    (1, 1, "ExampleCo", "Principal Engineer", "Wildcards", "researching"),
-                ).lastrowid
+        with job_search_app.connect() as conn:
+            job_id = conn.execute(
+                "INSERT INTO jobs(created_at, updated_at, company, title, pipeline, status) VALUES (?, ?, ?, ?, ?, ?)",
+                (1, 1, "ExampleCo", "Principal Engineer", "Wildcards", "researching"),
+            ).lastrowid
 
-                class FakeScorer:
-                    def score(self, *_args, **_kwargs):
-                        return {
-                            "total_score": 85,
-                            "scorecard": {},
-                            "pipeline": ["Executive IC", "Wildcards"],
-                            "level_assessment": "IC6-equivalent",
-                            "downlevel": False,
-                            "rationale": "Strong fit.",
-                        }
+            class FakeScorer:
+                def score(self, *_args, **_kwargs):
+                    return {
+                        "total_score": 85,
+                        "scorecard": {},
+                        "pipeline": ["Executive IC", "Wildcards"],
+                        "level_assessment": "IC6-equivalent",
+                        "downlevel": False,
+                        "rationale": "Strong fit.",
+                    }
 
-                job_search_app.compose_job_score_service = lambda *_args: FakeScorer()
+            service = codex_scoring_workflow(
+                job_search_app.DB_PATH, job_search_app.RUNTIME_CONFIG, FakeScorer(), job_search_app.telemetry
+            )
+            service.populate(conn, job_id, force_refresh=False)
+            pipeline = conn.execute("SELECT pipeline FROM jobs WHERE id = ?", (job_id,)).fetchone()["pipeline"]
 
-                job_search_app.populate_codex_score(conn, job_id)
-                pipeline = conn.execute("SELECT pipeline FROM jobs WHERE id = ?", (job_id,)).fetchone()["pipeline"]
-
-            self.assertEqual(pipeline, "Executive IC")
-        finally:
-            job_search_app.compose_job_score_service = original_factory
+        self.assertEqual(pipeline, "Executive IC")
 
     def test_manually_added_job_is_automatically_scored(self):
         job_search_app.OUTBOUND_CLIENTS.boards.scrape = lambda url, force_refresh=False: {

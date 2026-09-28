@@ -3,9 +3,14 @@
 import importlib.util
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-from job_search.composition import presentation_dependencies
+from job_search.composition import (
+    codex_scoring_workflow,
+    packet_generation_service,
+    presentation_dependencies,
+)
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
 
@@ -326,7 +331,6 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_codex_scoring_persists_a_valid_fake_scorecard(self):
         job_id = self.create_job()
-        original_factory = workflow_app.compose_job_score_service
         scorecard = {field: 8 for field in workflow_app.RUBRIC_FIELDS}
         score = {
             "total_score": 88,
@@ -341,13 +345,12 @@ class ApplicationWorkflowTests(unittest.TestCase):
             def score(self, *_args, **_kwargs):
                 return score
 
-        workflow_app.compose_job_score_service = lambda *_args: FakeScorer()
-        try:
-            with workflow_app.connect() as connection:
-                persisted = workflow_app.populate_codex_score(connection, job_id)
-                saved = workflow_app.get_job(connection, job_id)
-        finally:
-            workflow_app.compose_job_score_service = original_factory
+        service = codex_scoring_workflow(
+            workflow_app.DB_PATH, workflow_app.RUNTIME_CONFIG, FakeScorer(), workflow_app.telemetry
+        )
+        with workflow_app.connect() as connection:
+            persisted = service.populate(connection, job_id, force_refresh=False)
+            saved = workflow_app.get_job(connection, job_id)
 
         self.assertEqual(persisted["total_score"], 88)
         self.assertEqual(saved["gpt_score"], 88)
@@ -537,7 +540,6 @@ class ApplicationWorkflowTests(unittest.TestCase):
         orphan_dir.mkdir()
         (generated_dir / "Resume.md").write_text("Resume", encoding="utf-8")
         (orphan_dir / "Job-Brief.md").write_text("Brief", encoding="utf-8")
-        original_factory = workflow_app.compose_packet_draft_service
 
         class FakeDraft:
             def generate(self, _job):
@@ -548,14 +550,20 @@ class ApplicationWorkflowTests(unittest.TestCase):
                     "codex_output": "{}",
                 }
 
-        workflow_app.compose_packet_draft_service = lambda *_args: FakeDraft()
+        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
+        workflow_app.app.extensions["job_search.dependencies"] = replace(
+            original_dependencies,
+            packet_generation_service=packet_generation_service(
+                workflow_app.DB_PATH, FakeDraft(), workflow_app.telemetry
+            ),
+        )
         try:
             with workflow_app.app.app_context():
                 with workflow_app.connect() as connection:
                     created = workflow_app.create_application_packet(connection, job_id)
                     packets = workflow_app.list_application_packets(connection)
         finally:
-            workflow_app.compose_packet_draft_service = original_factory
+            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         by_name = {packet["name"]: packet for packet in packets}
         self.assertEqual(created["name"], "generated")

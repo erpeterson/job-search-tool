@@ -38,6 +38,7 @@ from job_search.application.packet_content_service import PacketContentService
 from job_search.application.packet_draft_service import PacketDraftService
 from job_search.application.packet_generation_service import PacketGenerationService
 from job_search.application.rescrape_service import RescrapeService
+from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.search_run_service import SearchRunService
 from job_search.application.settings_service import SettingsService
@@ -262,9 +263,23 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         event: Callable[..., None]
 
     packet_catalog = ApplicationPacketCatalog(database_path.parent, database_path.parent / "applications")
+    configuration = runtime_configuration(database_path.parent)
+    observed = observability(configuration)
+    gateway = codex_json_gateway(configuration, observed)
+    scorer = job_score_service(configuration, gateway)
+    scoring_workflow = codex_scoring_workflow(database_path, configuration, scorer, observed.telemetry)
+    draft = packet_draft_service(configuration, observed, gateway)
+    jobs = JobService(adapters.job_repository(connect))
+
+    def scoring_availability() -> str | None:
+        if not configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"):
+            return "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."
+        if not configuration.cli_available():
+            return f"Codex CLI is unavailable at {configuration.cli_path()!r}."
+        return None
 
     return PresentationDependencies(
-        job_service=JobService(adapters.job_repository(connect)),
+        job_service=jobs,
         company_service=CompanyService(adapters.company_repository(connect)),
         search_query_service=SearchQueryService(adapters.query_repository(connect)),
         settings_service=SettingsService(adapters.settings_repository(connect)),
@@ -290,6 +305,13 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         startup_service=startup_service(
             database_path, EventTelemetry(observe), runtime_configuration(database_path.parent).model()
         ),
+        codex_scoring_workflow=scoring_workflow,
+        scoring_service=ScoringService(
+            jobs.get_job,
+            lambda job_id: scoring_workflow.populate_by_id(job_id, force_refresh=False),
+            scoring_availability,
+        ),
+        packet_generation_service=packet_generation_service(database_path, draft, observed.telemetry),
     )
 
 

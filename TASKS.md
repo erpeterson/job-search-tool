@@ -223,6 +223,19 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [ ] **1.2a.2 — Complete the web contract.** Add all remaining route-facing
     workflows and configuration/telemetry ports to the named contract; remove
     their presentation-side construction and test missing-field failures.
+    - [x] **1.2a.2a — Inject scoring and packet workflows.** Compose the Codex
+      scoring, on-demand scoring, and packet-generation services once per web
+      application; replace presentation constructors and use fake ports in
+      direct workflow tests.
+    - [ ] **1.2a.2b — Inject ingestion workflows.** Compose manual ingestion
+      and rescraping with repository, board, filtering, clock, and telemetry
+      ports; remove their presentation constructors.
+    - [ ] **1.2a.2c — Inject discovery and search workflows.** Compose the
+      remaining model/board/persistence ports and move search-run construction
+      out of presentation, with deterministic fake-boundary tests.
+    - [ ] **1.2a.2d — Inject runtime and observability ports.** Supply web
+      configuration, security, correlation, logging, and capture dependencies
+      through the named contract and verify missing-field failures.
   - [ ] **1.2a.3 — Define process builders.** Give worker and scheduler separate
     composition builders keyed by the supplied database path, with focused
     tests that no web dependency bundle is required.

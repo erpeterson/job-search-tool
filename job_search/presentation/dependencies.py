@@ -28,6 +28,9 @@ class PresentationDependencies:
     background_task_service: Any
     initialization_service: Any
     startup_service: Any
+    codex_scoring_workflow: Any
+    scoring_service: Any
+    packet_generation_service: Any
 
     def __post_init__(self) -> None:
         missing = [name for name in self.__dataclass_fields__ if getattr(self, name) is None]

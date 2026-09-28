@@ -41,13 +41,10 @@ from job_search.composition import (
     runtime_configuration,
 )
 from job_search.composition import codex_json_gateway as compose_codex_json_gateway
-from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
 from job_search.composition import discovery_service as compose_discovery_service
 from job_search.composition import job_score_service as compose_job_score_service
 from job_search.composition import level_service as compose_level_service
 from job_search.composition import outbound_clients as compose_outbound_clients
-from job_search.composition import packet_draft_service as compose_packet_draft_service
-from job_search.composition import packet_generation_service as compose_packet_generation_service
 from job_search.composition import rescrape_service as compose_rescrape_service
 from job_search.composition import search_run_service as compose_search_run_service
 from job_search.errors import ClientInputError, translate_exception
@@ -273,17 +270,7 @@ def packet_content_service():
 
 
 def scoring_service() -> ScoringService:
-    def score(job_id: int) -> dict[str, object]:
-        return codex_scoring_workflow().populate_by_id(job_id, force_refresh=False)
-
-    def availability() -> str | None:
-        if not gpt_scoring_enabled():
-            return "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."
-        if not codex_cli_available():
-            return f"Codex CLI is unavailable at {codex_cli_path()!r}."
-        return None
-
-    return ScoringService(job_service().get_job, score, availability)
+    return dependency("scoring_service")
 
 
 def console_query_service():
@@ -692,11 +679,7 @@ def call_codex_json(model, prompt, operation, force_refresh=False, return_metada
 
 
 def packet_generation_service():
-    return compose_packet_generation_service(
-        DB_PATH,
-        compose_packet_draft_service(RUNTIME_CONFIG, OBSERVABILITY, CODEX_JSON_GATEWAY),
-        telemetry,
-    )
+    return dependency("packet_generation_service")
 
 
 def create_application_packet(_connection, job_id):
@@ -705,12 +688,7 @@ def create_application_packet(_connection, job_id):
 
 
 def codex_scoring_workflow():
-    return compose_codex_scoring_workflow(
-        DB_PATH,
-        RUNTIME_CONFIG,
-        compose_job_score_service(RUNTIME_CONFIG, CODEX_JSON_GATEWAY),
-        telemetry,
-    )
+    return dependency("codex_scoring_workflow")
 
 
 def populate_codex_score(conn, job_id, force_refresh=False):
