@@ -1,0 +1,17 @@
+{
+  "description": "Record submitted AI prompts for reproducibility",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/log-prompt.sh\"",
+            "timeout": 5,
+            "statusMessage": "Recording prompt"
+          }
+        ]
+      }
+    ]
+  }
+}
