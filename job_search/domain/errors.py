@@ -63,6 +63,10 @@ class TaskStartError(AppError):
     """A background task could not be started (maps to HTTP 500 with this message)."""
 
 
+class StorageError(AppError):
+    """Local file storage failed; the message is safe to show and nothing was lost."""
+
+
 class DependencyUnavailableError(AppError):
     """A required local dependency (Codex CLI, feature flag) is unavailable."""
 
