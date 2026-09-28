@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from job_search.application.manual_job_service import ManualJobService
-from job_search.composition import codex_scoring_workflow, presentation_dependencies
+from job_search.composition import codex_scoring_workflow, database_session, level_service, presentation_dependencies
 from job_search.data_access.job_repository import SqliteJobRepository
 from job_search.presentation.factory import create_app
 from job_search.security import load_request_security
@@ -20,7 +20,6 @@ class LevelEquivalencyTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.original_db_path = job_search_app.DB_PATH
-        self.original_log_event = job_search_app.log_event
         self.original_gpt_scoring_enabled = job_search_app.gpt_scoring_enabled
         self.original_codex_cli_available = job_search_app.codex_cli_available
         self.original_populate_codex_score = job_search_app.populate_codex_score
@@ -33,45 +32,30 @@ class LevelEquivalencyTests(unittest.TestCase):
 
     def tearDown(self):
         job_search_app.DB_PATH = self.original_db_path
-        job_search_app.log_event = self.original_log_event
         job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
         job_search_app.codex_cli_available = self.original_codex_cli_available
         job_search_app.populate_codex_score = self.original_populate_codex_score
         self.tmpdir.cleanup()
 
     def test_startup_does_not_seed_level_equivalencies(self):
-        with job_search_app.connect() as conn:
+        with database_session(job_search_app.DB_PATH) as conn:
             count = conn.execute("SELECT COUNT(*) FROM level_equivalencies").fetchone()[0]
 
         self.assertEqual(count, 0)
 
     def test_ambiguous_title_is_unknown_and_does_not_fetch_or_cache(self):
-        events = []
-
-        def fake_log_event(event_type, **fields):
-            events.append((event_type, fields))
-
-        job_search_app.log_event = fake_log_event
-
-        with job_search_app.connect() as conn:
-            result = job_search_app.lookup_level_equivalency(conn, "Atlassian", "Principal Engineer")
+        with database_session(job_search_app.DB_PATH) as conn:
+            result = level_service(job_search_app.DB_PATH, conn).lookup("Atlassian", "Principal Engineer")
             count = conn.execute("SELECT COUNT(*) FROM level_equivalencies").fetchone()[0]
 
         self.assertIsNone(result)
         self.assertEqual(count, 0)
-        self.assertTrue(
-            any(
-                event_type == "level_equivalency_unknown"
-                and fields["company"] == "Atlassian"
-                and fields["title"] == "Principal Engineer"
-                for event_type, fields in events
-            )
-        )
 
     def test_downlevel_title_estimate_is_cached_and_reused(self):
-        with job_search_app.connect() as conn:
-            first = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
-            second = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Software Engineer")
+        with database_session(job_search_app.DB_PATH) as conn:
+            service = level_service(job_search_app.DB_PATH, conn)
+            first = service.lookup("ExampleCo", "Senior Software Engineer")
+            second = service.lookup("ExampleCo", "Senior Software Engineer")
 
         self.assertEqual(first["oracle_level"], "BELOW_IC6")
         self.assertEqual(first["oracle_title"], "Below Architect-equivalent")
@@ -79,15 +63,17 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.assertEqual(second["oracle_level"], "BELOW_IC6")
 
     def test_ic6_plus_title_estimate_is_cached(self):
-        with job_search_app.connect() as conn:
-            result = job_search_app.lookup_level_equivalency(conn, "ExampleCo", "Senior Principal Software Engineer")
+        with database_session(job_search_app.DB_PATH) as conn:
+            result = level_service(job_search_app.DB_PATH, conn).lookup(
+                "ExampleCo", "Senior Principal Software Engineer"
+            )
 
         self.assertEqual(result["oracle_level"], "IC6+")
         self.assertEqual(result["oracle_title"], "Architect-equivalent or higher")
         self.assertEqual(result["downlevel"], 0)
 
     def test_scorecard_pipeline_list_is_normalized_before_sqlite_update(self):
-        with job_search_app.connect() as conn:
+        with database_session(job_search_app.DB_PATH) as conn:
             job_id = conn.execute(
                 "INSERT INTO jobs(created_at, updated_at, company, title, pipeline, status) VALUES (?, ?, ?, ?, ?, ?)",
                 (1, 1, "ExampleCo", "Principal Engineer", "Wildcards", "researching"),
@@ -129,12 +115,12 @@ class LevelEquivalencyTests(unittest.TestCase):
 
         class FakeScoringWorkflow:
             def populate_by_id(self, job_id, *, force_refresh):
-                with job_search_app.connect() as conn:
+                with database_session(job_search_app.DB_PATH) as conn:
                     conn.execute("UPDATE jobs SET gpt_score = ? WHERE id = ?", (88, job_id))
                 return {"total_score": 88}
 
         original_dependencies = job_search_app.app.extensions["job_search.dependencies"]
-        repository = SqliteJobRepository(job_search_app.connect)
+        repository = SqliteJobRepository(lambda: database_session(job_search_app.DB_PATH))
         manual = ManualJobService(
             repository,
             scraped,
@@ -244,6 +230,7 @@ class LevelEquivalencyTests(unittest.TestCase):
 
     def test_validation_response_contains_error_code_and_correlation_id(self):
         events = []
+        original_log_event = job_search_app.log_event
         job_search_app.log_event = lambda event_type, **fields: events.append((event_type, fields))
         try:
             response = job_search_app.app.test_client().post(
@@ -253,7 +240,7 @@ class LevelEquivalencyTests(unittest.TestCase):
             self.assertEqual(response.get_json()["error_code"], "API_CLIENT_INPUT_INVALID")
             self.assertEqual(events[0][1]["error_code"], "API_CLIENT_INPUT_INVALID")
         finally:
-            job_search_app.log_event = self.original_log_event
+            job_search_app.log_event = original_log_event
 
 
 if __name__ == "__main__":

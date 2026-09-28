@@ -24,18 +24,13 @@ from job_search.application.job_scoring_policy import (
     RUBRIC_FIELDS,
 )
 from job_search.application.job_service import JobService
-from job_search.application.level_service import LevelService, normalize_lookup_text
+from job_search.application.level_service import normalize_lookup_text
 from job_search.application.manual_job_service import ManualJobService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
-from job_search.composition import (
-    database_session,
-    observability,
-    runtime_configuration,
-)
-from job_search.composition import level_service as compose_level_service
+from job_search.composition import observability, runtime_configuration
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
@@ -127,16 +122,6 @@ COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
 
 
-class _DatabaseSessionProvider:
-    """Deferred composition provider so tests can replace ``DB_PATH`` safely."""
-
-    def __call__(self):
-        return database_session(DB_PATH)
-
-
-connect = _DatabaseSessionProvider()
-
-
 def dependency(name):
     """Resolve a required service supplied by the composition root."""
     return getattr(current_app.extensions["job_search.dependencies"], name)
@@ -191,30 +176,8 @@ def console_query_service():
     return dependency("console_query_service")
 
 
-def level_service(connection=None) -> LevelService:
-    if connection is not None:
-        return compose_level_service(DB_PATH, connection)
-    return dependency("level_service")
-
-
 def startup_service():
     return dependency("startup_service")
-
-
-def lookup_level_equivalency(conn, company, title):
-    equivalency = level_service(conn).lookup(company, title)
-    if not equivalency:
-        log_event(
-            "level_equivalency_unknown",
-            company=company,
-            title=title,
-            reason="No cached calibration or reliable local title estimate.",
-        )
-    return equivalency
-
-
-def level_assessment_from_equivalency(equivalency):
-    return LevelService.assessment(equivalency)
 
 
 def now():

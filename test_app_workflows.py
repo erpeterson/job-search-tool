@@ -14,6 +14,7 @@ from job_search.application.manual_job_service import ManualJobService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.composition import (
     codex_scoring_workflow,
+    database_session,
     discovery_service,
     job_score_service,
     packet_generation_service,
@@ -61,7 +62,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def create_job(self, *, company="ExampleCo", title="Principal Engineer", url="https://example.com/role"):
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             return connection.execute(
                 """INSERT INTO jobs(created_at, updated_at, company, title, url, pipeline, status, source_board)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -203,7 +204,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 "snippet": "$250,000 per year",
             },
         ]
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             connection.execute("UPDATE search_queries SET enabled = 0")
             connection.execute(
                 """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
@@ -214,7 +215,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(run["found_count"], 4)
         self.assertEqual(run["tracked_count"], 1)
         self.assertEqual(run["rejected_count"], 3)
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0], 4)
 
@@ -237,7 +238,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             }
             return [dict(rejected), dict(rejected)]
 
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             connection.execute("UPDATE search_queries SET enabled = 0")
             for board in ("indeed", "linkedin"):
                 connection.execute(
@@ -252,7 +253,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertIn("board unavailable", run["message"])
         self.assertIn("job_search_query_failed", [name for name, _ in events])
         self.assertIn("discovery_skipped", [name for name, _ in events])
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             count = connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0]
         self.assertEqual(count, 1, "The duplicate should not persist a second discovery")
 
@@ -294,7 +295,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             score=lambda *_args, **_kwargs: score,
             refine=lambda *_args, **_kwargs: refined_output,
         )
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             query_id = connection.execute(
                 """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
                    VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
@@ -324,7 +325,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(refined["refinement_notes"], "narrowed")
         self.assertEqual(decision[0], "tracked")
         self.assertEqual(decision[3]["total_score"], 85)
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             saved = connection.execute("SELECT company, gpt_score FROM jobs WHERE id = ?", (decision[2],)).fetchone()
         self.assertEqual((saved["company"], saved["gpt_score"]), ("ExampleCo", 85))
 
@@ -340,7 +341,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             refine=lambda *_args, **_kwargs: "not-json",
             telemetry=FakeTelemetry(),
         )
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             query_id = connection.execute(
                 """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
                    VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
@@ -375,7 +376,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         service = codex_scoring_workflow(
             workflow_app.DB_PATH, workflow_app.RUNTIME_CONFIG, FakeScorer(), workflow_app.telemetry
         )
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             persisted = service.populate(connection, job_id, force_refresh=False)
             saved = SqliteReadModels.job(connection, job_id)
 
@@ -442,7 +443,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             }
 
         original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
-        repository = SqliteJobRepository(workflow_app.connect)
+        repository = SqliteJobRepository(lambda: database_session(workflow_app.DB_PATH))
         filtering = original_dependencies.filtering_service
         manual = ManualJobService(
             repository,
@@ -601,7 +602,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         )
         try:
             with workflow_app.app.app_context():
-                with workflow_app.connect() as connection:
+                with database_session(workflow_app.DB_PATH) as connection:
                     created = workflow_app.create_application_packet(connection, job_id)
                     packets = workflow_app.list_application_packets(connection)
         finally:
@@ -614,7 +615,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_calibration_examples_include_saved_user_feedback(self):
         job_id = self.create_job()
-        with workflow_app.connect() as connection:
+        with database_session(workflow_app.DB_PATH) as connection:
             connection.execute(
                 """UPDATE jobs SET gpt_score = 70, user_score = 85, user_rationale = ?, posting_text = ? WHERE id = ?""",
                 ("Strategic scope", "A" * 1000, job_id),

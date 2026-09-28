@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
 from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
 from job_search.application.job_scoring_policy import normalize_pipeline
+from job_search.application.level_service import normalize_lookup_text
 from job_search.application.packet_draft_service import validate_packet_payload
 from job_search.composition import codex_json_gateway, outbound_clients, runtime_configuration
 from job_search.config import RuntimePaths
@@ -29,7 +30,7 @@ class AppHelperTests(unittest.TestCase):
         self.assertEqual(clean_text("  one\n two  "), "one two")
         self.assertEqual(clean_url("https://example.test/job?trk=value"), "https://example.test/job")
         self.assertEqual(normalize_pipeline(["wrong", "Wildcards"]), "Wildcards")
-        self.assertEqual(helpers_app.normalize_lookup_text("Senior-Principal Engineer!"), "senior principal engineer")
+        self.assertEqual(normalize_lookup_text("Senior-Principal Engineer!"), "senior principal engineer")
         self.assertEqual(
             source_id("manual", "https://example.test"),
             source_id("manual", "https://example.test"),

@@ -247,7 +247,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   application services extracted in T-1.3. Replace generic
   `**operations`/`__dict__` ports with named, testable contracts. Keep
   application modules independent of Flask and concrete storage APIs.
-- [ ] **1.2c — Remove presentation construction.** Delete `INFRASTRUCTURE`,
+- [x] **1.2c — Remove presentation construction.** Delete `INFRASTRUCTURE`,
   `OUTBOUND_HTTP_CLIENT`, `_DatabaseSessionProvider`/`connect`, and every
   presentation fallback that builds a repository, gateway, session, or service.
   Update direct-helper tests to construct application services with fakes.
@@ -257,7 +257,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.2c.2 — Remove eager outbound and Codex gateways.** Rehome direct
     gateway tests at the adapter/composition boundary and eliminate the
     presentation globals and compatibility wrapper.
-  - [ ] **1.2c.3 — Remove session and service construction.** Replace the
+  - [x] **1.2c.3 — Remove session and service construction.** Replace the
     presentation session provider and any remaining construction/fallbacks;
     migrate direct-helper tests and verify the entire presentation package.
 - [ ] **1.2d — Verify and commit.** AST-inspect all presentation modules for
