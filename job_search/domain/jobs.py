@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from job_search.domain.clock import now
 from job_search.domain.errors import (
+    AppError,
     CapacityError,
     DuplicateJobError,
     NotFoundError,
@@ -162,14 +163,16 @@ class JobService:
             return f"Automatic Codex scoring skipped: {unavailable}", None
         try:
             return None, self._background.start_auto_score(job_id)
-        except CapacityError as exc:
+        except AppError as exc:
+            # The job is already committed, so a scoring task that cannot start must not fail the request.
+            deferred = isinstance(exc, CapacityError)
             record_exception(
-                "manual_job_auto_score_deferred",
+                "manual_job_auto_score_deferred" if deferred else "manual_job_auto_score_not_started",
                 "domain.jobs",
                 "auto_score",
                 exc,
                 level=logging.WARNING,
-                recovery="The job is saved; it can be scored from the UI once a task slot frees up.",
+                recovery="The job is saved; it can be scored from the UI later.",
                 job_id=job_id,
             )
             return f"Automatic Codex scoring skipped: {exc.message}", None
