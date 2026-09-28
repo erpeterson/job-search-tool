@@ -52,6 +52,7 @@ def api_state():
             "codex_tasks": c.tasks.list(),
             "pipelines": c.profile.pipeline_names,
             "rubric_fields": RUBRIC_FIELDS,
+            "profile_is_example": c.profile_is_example,
         }
     )
 

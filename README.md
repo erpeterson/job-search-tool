@@ -390,7 +390,9 @@ to Codex.
 
 `profile.example.json` ships with the current values. To customize, copy it to
 `<workspace>/job-search-profile.json` (or anywhere, and set
-`JOB_SEARCH_PROFILE_PATH`). The profile is validated at startup; an invalid
+`JOB_SEARCH_PROFILE_PATH`). Until you do, the app runs on the example (which
+describes the original candidate's search): it logs a `search_profile_using_example`
+warning at startup and shows a banner in the UI. The profile is validated at startup; an invalid
 profile stops the app with exit code `2` and a message naming the bad field.
 
 ## Automated Search
