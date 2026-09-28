@@ -8,6 +8,9 @@ T-39 through T-51 come from a second review, of commit `99a9977`, which checked 
 against the code. At that commit, `ruff check`, `ruff format --check`, and `pytest` all pass, with 309
 tests and 97% coverage. Each new task names the earlier task it follows up on, where there is one.
 
+T-52 and T-53 come from a third review, of commit `62aea03`, which checked T-39 through T-51. At that
+commit, all three tools pass, with 331 tests and 97% coverage.
+
 **Priority:** P1 = security or data-integrity risk; fix first. P2 = clear standards violation.
 P3 = hygiene or completeness.
 
@@ -75,6 +78,8 @@ P3 = hygiene or completeness.
 | T-49 | Test the real company query and confirm the matching change | Tests | P3 | Done |
 | T-50 | Remove dead code left by the refactors | Code standards | P3 | Done |
 | T-51 | Finish removing profile-specific names and defaults | Configuration | P3 | Done |
+| T-52 | Keep a saved manual job from returning 500 when auto-scoring cannot start | Errors | P2 | Open |
+| T-53 | Write capture archives atomically | Data handling | P3 | Open |
 
 ---
 
@@ -709,7 +714,10 @@ P3 = hygiene or completeness.
   scheduler thread is never stopped on shutdown.
 - **Action:** Choose one of these:
   - (a) Record the known bugs as their own tasks, fix them, add a `stop()` call on shutdown, and
-    remove the gate.
+    remove the gate. The `stop()` call now exists in `cli.run`. Also route scheduled runs through
+    `BulkOperations.start_search` instead of calling `SearchService.run` directly
+    ([job_search/domain/scheduler.py:41](job_search/domain/scheduler.py#L41)); otherwise a scheduled
+    run bypasses T-39's one-search-at-a-time rule and can overlap a manual run.
   - (b) Delete the scheduler, its configuration, and its UI state until it is needed.
 - **Done when:** No configuration variable is silently ignored.
 
@@ -1060,3 +1068,46 @@ P3 = hygiene or completeness.
     banner in the UI until a real profile is configured.
 - **Done when:** A case-insensitive `grep -rni "oracle" job_search/` finds only the migration, and a
   test shows the warning when the example profile is loaded.
+
+---
+
+## Third Review (Commit `62aea03`)
+
+### T-52 — Keep a saved manual job from returning 500 when auto-scoring cannot start (P2)
+
+- **Follows:** T-46.
+- **Standard:** Transform exceptions into appropriate HTTP responses; handle recoverable failures.
+- **Where:** [job_search/domain/jobs.py:157-175](job_search/domain/jobs.py#L157-L175)
+  (`_start_auto_score`)
+- **Problem:** T-46 made `BackgroundTaskRegistry.start` raise `TaskStartError` when a worker thread
+  cannot start. `_start_auto_score` catches only `CapacityError`, so `TaskStartError` escapes
+  `create_manual` after the job has already been committed. `POST /api/jobs` then returns `500`
+  even though the job was saved. If the user retries, they get `409` duplicate URL, which makes it
+  look as if the first request both failed and succeeded.
+- **Action:** Catch `TaskStartError` alongside `CapacityError` in `_start_auto_score`, or catch
+  `AppError` from `start_auto_score` generally. Record it with its own error code, for example
+  `manual_job_auto_score_not_started`, and return the reason as `score_error`, so the response is
+  `201` with the saved job.
+- **Done when:** A test with a `thread_factory` whose `start()` raises shows `POST /api/jobs` returns
+  `201` with the saved job and a `score_error`, and the blame counter increments.
+
+### T-53 — Write capture archives atomically (P3)
+
+- **Follows:** T-44.
+- **Standard:** Data integrity; avoid partial writes that look complete.
+- **Where:** [job_search/data/captures.py:77-120](job_search/data/captures.py#L77-L120)
+  (`archive_files`)
+- **Problem:** The archive is written straight to its final name,
+  `archive/captures-<UTC>.tar.gz`. If writing fails partway, for example on a full disk or with a
+  `tarfile.TarError`, the originals are correctly kept. But a truncated file with a valid-looking
+  archive name is left in `archive/`, and nothing marks it as incomplete. `TarError` is also not an
+  `OSError`, so it surfaces only as the generic `cli_unhandled_exception`, not as a
+  capture-specific error code.
+- **Action:**
+  - Write the archive to a temporary name in `archive/`, verify it, and then `os.replace` it to the
+    final name. Remove the temporary file on any failure.
+  - Catch `(OSError, tarfile.TarError)` around the archive step, call `record_exception` with the
+    error code `capture_archive_failed`, and re-raise as an `AppError` so the CLI prints a clear
+    message and exits non-zero.
+- **Done when:** A test where writing the archive fails shows no file left in `archive/`, all
+  originals still in place, and the `capture_archive_failed` blame counter incremented.
