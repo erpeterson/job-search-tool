@@ -4,6 +4,10 @@ Work needed to bring the codebase into full compliance with [AGENTS.md](AGENTS.m
 Findings come from a review of commit `6aab6ba`. At that commit, `ruff check`, `ruff format --check`,
 and `pytest` all pass, with 137 tests and 95% coverage.
 
+T-39 through T-51 come from a second review, of commit `99a9977`, which checked the tasks marked Done
+against the code. At that commit, `ruff check`, `ruff format --check`, and `pytest` all pass, with 309
+tests and 97% coverage. Each new task names the earlier task it follows up on, where there is one.
+
 **Priority:** P1 = security or data-integrity risk; fix first. P2 = clear standards violation.
 P3 = hygiene or completeness.
 
@@ -12,6 +16,9 @@ P3 = hygiene or completeness.
 - Include tests for the change, with at least one failure-path test and assertion messages.
 - Every new caught exception must call `record_exception` with a new, stable error code.
 - Update README.md and `.env.example` whenever behavior, configuration, or the API changes.
+- Start the commit message's subject line with `AI Generated:` followed by the task number, for
+  example `AI Generated: T-39: Allow only one search run at a time`. A commit that covers several
+  tasks lists every task number, for example `AI Generated: T-43, T-47: ...`.
 
 ## Summary
 
@@ -55,6 +62,19 @@ P3 = hygiene or completeness.
 | T-36 | Add assertion messages to bare test asserts | Tests | P2 | Done |
 | T-37 | Cover untested boundary and failure paths | Tests | P3 | Done |
 | T-38 | Document the HTTP API and fix README inaccuracies | Documentation | P3 | Done |
+| T-39 | Allow only one search run at a time; survive duplicate-URL inserts | Integrity / Performance | P2 | Open |
+| T-40 | Bind a correlation ID inside single-call background tasks | Observability | P2 | Open |
+| T-41 | Keep failure captures instead of overwriting them | Integrity / Evidence | P2 | Open |
+| T-42 | Audit the full lock file, not just direct dependencies | Dependencies | P2 | Open |
+| T-43 | Stop `.env` reads from expanding `${VAR}` references | Configuration / Security | P3 | Open |
+| T-44 | Decide whether `prune-captures` may delete Codex call records | Data handling | P3 | Open |
+| T-45 | Keep large task results out of `/api/state` | Performance | P3 | Open |
+| T-46 | Release the task slot when a worker thread fails to start | Errors | P3 | Open |
+| T-47 | Accept IPv6 loopback in the default Host allowlist | Security / Configuration | P3 | Open |
+| T-48 | Warn about removed or unknown `JOB_SEARCH_*` variables | Configuration | P3 | Open |
+| T-49 | Test the real company query and confirm the matching change | Tests | P3 | Open |
+| T-50 | Remove dead code left by the refactors | Code standards | P3 | Open |
+| T-51 | Finish removing profile-specific names and defaults | Configuration | P3 | Open |
 
 ---
 
@@ -795,3 +815,248 @@ P3 = hygiene or completeness.
   - Correct the scheduler statements.
   - Update the configuration table as each configuration task lands.
 - **Done when:** Every route in `routes.py` appears in the README table.
+
+---
+
+## Second Review (Commit `99a9977`)
+
+### T-39 — Allow only one search run at a time; survive duplicate-URL inserts (P2)
+
+- **Follows:** T-27, T-28, and T-12.
+- **Standard:** Data integrity; avoid wasted long-running work; do not let one failure abort a batch.
+- **Where:** [job_search/domain/tasks.py:198-202](job_search/domain/tasks.py#L198-L202)
+  (`start_search`), [job_search/domain/tasks.py:94-106](job_search/domain/tasks.py#L94-L106) (the
+  busy check), [job_search/domain/search.py:332-336](job_search/domain/search.py#L332-L336)
+  (the insert in `_track_result`)
+- **Problem:**
+  - Search runs now start through `start_call` with no job IDs, so T-28's busy check never matches.
+    With the default `JOB_SEARCH_MAX_RUNNING_TASKS=2`, a double-click on "Run job search now" starts
+    two full runs at once. Both score the same results with Codex, spending credits twice. This was
+    confirmed by calling `start_search()` twice while the first run was blocked: both were accepted.
+  - Two runs screen results against the same database snapshot, so both can try to insert the
+    same URL. The unique index `idx_jobs_url` then raises `sqlite3.IntegrityError`. That is not an
+    `AppError`, so it escapes `_track_result` and aborts the whole run as `search_run_aborted`. The
+    same thing happens if the user manually adds a URL while a run is scoring it.
+- **Action:**
+  - Reject a new search run while another is queued or running. Raise `ConflictError` with the
+    error code `search_run_in_progress`, which maps to `409`, and have the UI show the running task
+    instead.
+  - In `_track_result`, catch `sqlite3.IntegrityError` on the jobs insert, call `record_exception`
+    with the error code `search_result_already_tracked` at WARNING, count the result as skipped, and
+    continue.
+- **Done when:** A test shows the second `POST /api/search/run` gets `409` while one is running, and a
+  test where the URL is inserted between screening and tracking shows the run completing with that
+  result skipped.
+
+### T-40 — Bind a correlation ID inside single-call background tasks (P2)
+
+- **Follows:** T-17 and T-27.
+- **Standard:** Carry correlation, request, or run IDs across logs and telemetry.
+- **Where:** [job_search/domain/tasks.py:114-146](job_search/domain/tasks.py#L114-L146) (`start_call`)
+- **Problem:** Bulk workers bind `task-<id>` through `correlation_scope`, but the `start_call`
+  worker does not. Python threads do not inherit the request's context variables, so single score,
+  auto-score, and packet tasks log `codex_score_*`, `application_packet_generation_*`, and
+  `codex_cli_call_*` events with no `correlation_id`. This was confirmed by capturing
+  `current_correlation_id()` inside a `start_call` worker: it returned `None`. Those events cannot be
+  tied back to the task or the request that started it. Search runs are unaffected because
+  `SearchService.run` binds its own ID.
+- **Action:**
+  - Wrap the `start_call` worker body in `correlation_scope(f"task-{task_id}")`.
+  - Better, bind it once in `_guarded` so every task type gets it.
+- **Done when:** A test shows the `codex_score_started` event from `POST /api/jobs/<id>/score-gpt`
+  carries `correlation_id == "task-<task id>"`.
+
+### T-41 — Keep failure captures instead of overwriting them (P2)
+
+- **Follows:** T-14.
+- **Standard:** Do not delete, rewrite, or hide model-call records, tool-call records, or evaluation
+  outputs.
+- **Where:** [job_search/data/captures.py:24-26](job_search/data/captures.py#L24-L26) (`path_for`),
+  [job_search/data/captures.py:95-132](job_search/data/captures.py#L95-L132) (`write`),
+  [job_search/data/http_client.py:185-199](job_search/data/http_client.py#L185-L199),
+  [job_search/data/codex_client.py:138-166](job_search/data/codex_client.py#L138-L166)
+- **Problem:** T-14 kept writing failure captures as evidence, but every capture for the same request
+  goes to the same path, `<digest>.json`. When a failed capture is skipped on replay, the next live
+  call overwrites it, so the failure record is lost. The reverse also happens: a failing live call
+  overwrites the last good capture, so a working replay is lost.
+- **Action:**
+  - Write failed outcomes to a separate, never-overwritten file, such as
+    `<digest>.failed.<UTC timestamp>.json`, and keep `<digest>.json` for the latest successful
+    response only.
+  - Leave the replay lookup reading only `<digest>.json`.
+  - Update the README Data table to describe the failure files.
+- **Done when:** A test shows that a failure followed by a success leaves both files on disk, and that
+  a success followed by a failure still replays the success.
+
+### T-42 — Audit the full lock file, not just direct dependencies (P2)
+
+- **Follows:** T-9 and T-10.
+- **Standard:** OWASP: vulnerable dependencies.
+- **Where:** [README.md:67](README.md#L67)
+- **Problem:** The documented audit is `pip-audit -r requirements.txt`, which checks only the four
+  direct dependencies. Transitive packages that are exposed to untrusted input, such as Werkzeug,
+  Jinja2, urllib3, and soupsieve, are pinned in `requirements.lock` but never audited.
+- **Action:**
+  - Change the README command to
+    `.venv/bin/pip-audit --require-hashes --disable-pip -r requirements.lock`.
+  - Run it once, and record the result or any accepted findings in README.
+- **Done when:** README audits `requirements.lock`, and the result of the first run is recorded.
+
+### T-43 — Stop `.env` reads from expanding `${VAR}` references (P3)
+
+- **Follows:** T-19.
+- **Standard:** Configuration; never leak secrets into logs.
+- **Where:** [job_search/data/env_file.py:23-27](job_search/data/env_file.py#L23-L27) (`read`)
+- **Problem:** `dotenv_values` expands `${VAR}` references by default, and `_quote` does not escape
+  `$`. A value saved from the Configuration panel therefore does not round-trip. This was confirmed:
+  saving `CODEX_MODEL=gpt-${HOME}-x` reads back as `gpt-/Users/<name>-x`. Any environment variable,
+  including a secret, can be expanded into `CODEX_MODEL`. That value is then passed to Codex as `-m`
+  and logged in `codex_cli_call_started`.
+- **Action:** Call `dotenv_values(self.path, interpolate=False)`, and add `${HOME}` to the round-trip
+  test cases.
+- **Done when:** `test_env_file_values_round_trip` includes a `${...}` value and passes.
+
+### T-44 — Decide whether `prune-captures` may delete Codex call records (P3)
+
+- **Follows:** T-31.
+- **Standard:** Do not delete model-call or tool-call records; define data lifecycle.
+- **Where:** [job_search/cli.py:48-58](job_search/cli.py#L48-L58),
+  [job_search/domain/retention.py](job_search/domain/retention.py), README "Data" section
+- **Problem:** T-31 archives rotated logs instead of deleting them, because logs are evidence. But
+  `prune-captures --yes` permanently deletes everything under `captures/`, including
+  `codex_cli/` files. Those files are the only record of each Codex prompt and response, which are
+  model-call records under AGENTS.md. The two retention rules conflict, and neither the code nor
+  README explains why deletion is acceptable for one and not the other.
+- **Action:** Choose one of these and record the decision in README's Data section:
+  - (a) Archive pruned captures into a compressed file instead of deleting them, as log rotation
+    does.
+  - (b) Exclude `codex_cli/` from pruning, so only HTTP captures are deleted.
+  - (c) Keep deletion, and document why capture pruning is an allowed exception.
+- **Done when:** README states the decision, and a test covers whichever behavior was chosen.
+
+### T-45 — Keep large task results out of `/api/state` (P3)
+
+- **Follows:** T-30 and T-27.
+- **Standard:** Avoid unbounded memory growth and response sizes.
+- **Where:** [job_search/web/routes.py:52](job_search/web/routes.py#L52) (`codex_tasks`),
+  [job_search/domain/tasks.py:38-41](job_search/domain/tasks.py#L38-L41) (`list`),
+  [job_search/domain/packets.py:227](job_search/domain/packets.py#L227) (`codex_output`)
+- **Problem:** Tasks now store their full `result`: the whole search run, the raw score, and for
+  packets the raw Codex output. `/api/state` returns up to 10 full task snapshots on every refresh,
+  and the registry keeps up to 50. This adds output that T-30's 1 MB check did not cover, because
+  the test in `test_response_bounds.py` runs with no tasks.
+- **Action:**
+  - Have `BackgroundTaskRegistry.list` return summaries without `result`, and return `result` only
+    from `GET /api/codex-tasks/<id>`.
+  - Drop `codex_output` from the packet result; the Markdown files and the capture already hold it.
+- **Done when:** A test shows `/api/state` task entries have no `result` key, and the task detail
+  endpoint still returns it.
+
+### T-46 — Release the task slot when a worker thread fails to start (P3)
+
+- **Follows:** T-28.
+- **Standard:** Handle and record exceptions; avoid leaked resources.
+- **Where:** [job_search/domain/tasks.py:107-111](job_search/domain/tasks.py#L107-L111)
+- **Problem:** `start` registers the task as `queued` and then calls `thread.start()` outside any
+  error handling. If the thread cannot start (for example, `RuntimeError: can't start new thread`),
+  the task stays `queued` forever. It counts against `max_running`, so after two such failures no
+  background task can ever start again until restart.
+- **Action:** Wrap `thread.start()` in `try`/`except`. On failure, call `record_exception` with the
+  error code `background_task_thread_start_failed`, mark the task `error`, and re-raise as an
+  `AppError` so the client gets a clear `5xx` message.
+- **Done when:** A test with a `thread_factory` whose `start()` raises shows the task ends in `error`
+  and a later task can still start.
+
+### T-47 — Accept IPv6 loopback in the default Host allowlist (P3)
+
+- **Follows:** T-1.
+- **Standard:** Configuration: provide safe defaults.
+- **Where:** [job_search/config.py:117-122](job_search/config.py#L117-L122) (`_allowed_hosts`)
+- **Problem:** With `JOB_SEARCH_HOST=::1`, the default allowlist entry is `::1:5050`, but browsers
+  send `Host: [::1]:5050`. Every request is then rejected with `403`, so IPv6 loopback, which
+  `is_loopback_host` accepts, cannot be used without setting `JOB_SEARCH_ALLOWED_HOSTS` by hand.
+- **Action:** Bracket IPv6 literals when building the default entries, for example `[::1]:5050`.
+- **Done when:** A test with `JOB_SEARCH_HOST=::1` shows a request with `Host: [::1]:5050` is allowed.
+
+### T-48 — Warn about removed or unknown `JOB_SEARCH_*` variables (P3)
+
+- **Follows:** T-31 and T-22.
+- **Standard:** Configuration: return actionable validation errors; do not silently ignore settings.
+- **Where:** [job_search/config.py:167-230](job_search/config.py#L167-L230) (`AppConfig.from_env`)
+- **Problem:** T-31 removed `JOB_SEARCH_LOG_BACKUP_COUNT`, but an existing `.env` that still sets it
+  gets no message; the value is just ignored. The same is true for any misspelled `JOB_SEARCH_*`
+  name.
+- **Action:**
+  - Keep a set of supported variable names.
+  - At startup, log a WARNING event, `config_unknown_variable`, that names each `JOB_SEARCH_*` key in
+    the merged settings that is not supported. For known removed names such as
+    `JOB_SEARCH_LOG_BACKUP_COUNT`, also say what replaced them.
+- **Done when:** A test shows that `JOB_SEARCH_LOG_BACKUP_COUNT=5` produces the warning, and the
+  supported set matches the variables listed in `.env.example`.
+
+### T-49 — Test the real company query and confirm the matching change (P3)
+
+- **Follows:** T-29.
+- **Standard:** Tests must exercise the code they claim to verify.
+- **Where:** [tests/test_search.py:305-316](tests/test_search.py#L305-L316),
+  [job_search/data/repositories.py:306-315](job_search/data/repositories.py#L306-L315)
+- **Problem:**
+  - `test_company_list_join_uses_normalized_company_index` runs `EXPLAIN QUERY PLAN` on its own
+    copy of the SQL, not on the repository's query. If `list_with_job_counts` changes, the test still
+    passes.
+  - T-29 required results to stay the same, but the join changed from `lower(company)` equality to
+    `normalize_lookup_text` equality, which ignores punctuation. "Acme, Inc." and "Acme Inc" now
+    count as the same company. No test covers this change, and it is not documented.
+- **Action:**
+  - Move the company-list SQL into a module constant, or expose it from the repository, and run
+    `EXPLAIN QUERY PLAN` on that exact statement in the test.
+  - Decide whether the broader matching is intended. If it is, add a test for it and a README note.
+    If it is not, match the previous behavior.
+- **Done when:** The index test fails if the repository query stops using the index, and the
+  company-matching behavior is tested and documented.
+
+### T-50 — Remove dead code left by the refactors (P3)
+
+- **Standard:** Prefer the smallest implementation.
+- **Where:** [job_search/domain/scoring.py:136-141](job_search/domain/scoring.py#L136-L141)
+  (`score_tracked_job`, which has no callers since T-27 moved scoring to a task),
+  [job_search/domain/levels.py:47-48](job_search/domain/levels.py#L47-L48) and
+  [job_search/domain/levels.py:87-94](job_search/domain/levels.py#L87-L94)
+  (`find_cached_level_equivalency` and `lookup_level_equivalency`, used only by
+  `tests/test_search.py:171-187`, because production uses `LevelCalibrationCache`),
+  [job_search/domain/jobs.py:26-30](job_search/domain/jobs.py#L26-L30) (a docstring that says
+  hostnames are not resolved, which T-5 changed)
+- **Problem:** Unused functions keep a second code path alive that production never runs, and one of
+  them is the only thing `test_level_equivalency_cache_is_populated_without_network` tests. The
+  stale docstring misstates the SSRF protection.
+- **Action:**
+  - Delete `score_tracked_job`.
+  - Point the level-cache test at `LevelCalibrationCache`, then delete the two unused functions.
+  - Update the `validate_posting_url` docstring to say it is a fast pre-check and that `HttpClient`
+    resolves and validates every hop.
+- **Done when:** Each function in `job_search/` has at least one production caller, and the tests
+  still pass.
+
+### T-51 — Finish removing profile-specific names and defaults (P3)
+
+- **Follows:** T-23.
+- **Standard:** Keep environment-specific values in configuration, not in source.
+- **Where:** [job_search/data/database.py:118-119](job_search/data/database.py#L118-L119)
+  (`oracle_level`, `oracle_title` columns), [job_search/domain/levels.py](job_search/domain/levels.py)
+  and [job_search/domain/search.py:262-263](job_search/domain/search.py#L262-L263) (the same names
+  in code and log fields), [job_search/config.py:106-111](job_search/config.py#L106-L111) (profile
+  fallback)
+- **Problem:**
+  - The target level is now configurable, but the schema, dict keys, and log fields are still named
+    after Oracle. Someone using a different level system gets `oracle_level` values that are not
+    Oracle levels.
+  - When no workspace profile exists, the app silently loads `profile.example.json`, which contains
+    the original candidate's name and preferences. It logs only an INFO `search_profile_loaded`
+    event, so a new user can score jobs against someone else's profile without noticing.
+- **Action:**
+  - Rename the columns to `target_level` and `target_title` with a migration that copies the data,
+    and rename the matching dict keys and log fields.
+  - When the example profile is used, log a WARNING event, `search_profile_using_example`, and show a
+    banner in the UI until a real profile is configured.
+- **Done when:** A case-insensitive `grep -rni "oracle" job_search/` finds only the migration, and a
+  test shows the warning when the example profile is loaded.
