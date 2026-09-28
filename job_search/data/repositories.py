@@ -62,6 +62,28 @@ JOB_SUMMARY_COLUMNS = ", ".join(
 )
 
 
+# Jobs match a company by normalized name (case and punctuation ignored), via idx_jobs_normalized_company.
+COMPANY_LIST_SQL = """
+SELECT ci.*,
+       COUNT(j.id) AS tracked_job_count,
+       MAX(j.updated_at) AS latest_job_updated_at
+FROM company_interests ci
+LEFT JOIN jobs j ON j.normalized_company = ci.normalized_company
+GROUP BY ci.id
+ORDER BY
+  CASE ci.status
+    WHEN 'target' THEN 0
+    WHEN 'watching' THEN 1
+    WHEN 'active_conversation' THEN 2
+    WHEN 'paused' THEN 3
+    WHEN 'not_interested' THEN 4
+    ELSE 5
+  END,
+  COALESCE(ci.interest_score, -1) DESC,
+  ci.updated_at DESC
+"""
+
+
 def _chunks(values, size=500):
     """Split values so IN (...) lists stay under SQLite's bound-parameter limit."""
     for start in range(0, len(values), size):
@@ -320,30 +342,7 @@ class CompanyRepository:
         self._conn = conn
 
     def list_with_job_counts(self):
-        return [
-            _row_to_dict(row)
-            for row in self._conn.execute(
-                """
-                SELECT ci.*,
-                       COUNT(j.id) AS tracked_job_count,
-                       MAX(j.updated_at) AS latest_job_updated_at
-                FROM company_interests ci
-                LEFT JOIN jobs j ON j.normalized_company = ci.normalized_company
-                GROUP BY ci.id
-                ORDER BY
-                  CASE ci.status
-                    WHEN 'target' THEN 0
-                    WHEN 'watching' THEN 1
-                    WHEN 'active_conversation' THEN 2
-                    WHEN 'paused' THEN 3
-                    WHEN 'not_interested' THEN 4
-                    ELSE 5
-                  END,
-                  COALESCE(ci.interest_score, -1) DESC,
-                  ci.updated_at DESC
-                """
-            )
-        ]
+        return [_row_to_dict(row) for row in self._conn.execute(COMPANY_LIST_SQL)]
 
     def get(self, company_id):
         row = self._conn.execute("SELECT * FROM company_interests WHERE id = ?", (company_id,)).fetchone()
