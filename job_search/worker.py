@@ -9,8 +9,10 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
+from job_search.composition import worker_process_dependencies
 from job_search.task_repository import TaskRepository
 
 
@@ -61,16 +63,15 @@ def main() -> int:
 
 def _main() -> int:
     parser = argparse.ArgumentParser(description="Process durable job-search tasks outside the web process.")
-    parser.add_argument("--database", required=True)
+    parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     args = parser.parse_args()
-    repository = TaskRepository(args.database)
+    process = worker_process_dependencies(args.database)
+    repository = process.repository
     repository.initialize(int(time.time()))
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
-    from job_search.presentation.legacy import process_background_task_item
-
     while True:
-        processed = process_one(repository, worker_id, process_background_task_item)
+        processed = process_one(repository, worker_id, process.processor.process)
         if not processed:
             time.sleep(args.poll_seconds)
 

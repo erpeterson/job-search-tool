@@ -1,12 +1,31 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from job_search.task_repository import TaskRepository
-from job_search.worker import process_one
+from job_search.worker import _main, process_one
 
 
 class ManagedWorkerTests(unittest.TestCase):
+    def test_cli_builds_processor_for_requested_database(self):
+        database = Path("worker-test.sqlite3")
+        repository = SimpleNamespace(initialize=lambda _now: None)
+        processor = SimpleNamespace(process=lambda _claim: ("complete", "done"))
+        process = SimpleNamespace(repository=repository, processor=processor)
+        with (
+            patch("sys.argv", ["worker", "--database", str(database)]),
+            patch("job_search.worker.worker_process_dependencies", return_value=process) as compose,
+            patch("job_search.worker.process_one", side_effect=KeyboardInterrupt) as process_item,
+        ):
+            with self.assertRaises(KeyboardInterrupt, msg="The test must stop the polling loop deterministically."):
+                _main()
+
+        compose.assert_called_once_with(database)
+        self.assertIs(process_item.call_args.args[0], repository)
+        self.assertIs(process_item.call_args.args[2], processor.process)
+
     def test_process_one_claims_and_finishes_work_without_flask(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = TaskRepository(Path(directory) / "tasks.sqlite3")

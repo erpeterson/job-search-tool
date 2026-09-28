@@ -266,7 +266,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 
 ### T-1.5 — Managed process wiring
 
-- [ ] **1.5a — Rewire the worker.** Build a task processor from composition
+- [x] **1.5a — Rewire the worker.** Build a task processor from composition
   using the CLI's `--database` path; make `worker.py` call the application
   processor without importing presentation. Preserve claim, heartbeat, and
   durable completion semantics.
