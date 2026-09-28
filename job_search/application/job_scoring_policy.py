@@ -6,6 +6,37 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+RUBRIC_FIELDS = [
+    "interesting_technical_problems",
+    "organizational_influence",
+    "cross_functional_work",
+    "opportunity_to_mentor",
+    "work_life_balance",
+    "low_operational_burden",
+    "compensation",
+    "mission",
+]
+
+PIPELINES = ["Executive IC", "Office of the CTO", "Adjacent industries", "Wildcards"]
+
+ORACLE_IC6_LEVEL_REFERENCE = (
+    "Oracle Software Engineer IC-6 is Architect. "
+    "Treat IC6-equivalent as Architect / Principal-plus / Staff-plus scope with broad technical influence, "
+    "cross-team architecture, durable technical direction, or organization-level engineering judgment."
+)
+
+
+def normalize_pipeline(value: Any, fallback: str = "") -> str:
+    """Return a known pipeline from model output or retain the prior value."""
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate if candidate in PIPELINES else fallback
+    if isinstance(value, (list, tuple, set)):
+        for candidate in value:
+            if isinstance(candidate, str) and candidate.strip() in PIPELINES:
+                return candidate.strip()
+    return fallback
+
 
 class JobScoringPolicy:
     def __init__(self, *, pipelines: Sequence[str], rubric_fields: Sequence[str], level_reference: str) -> None:
@@ -62,4 +93,4 @@ class JobScoringPolicy:
         try:
             return json.loads(output)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Codex CLI response was not valid JSON: {output[:1000]}") from exc
+            raise RuntimeError("Codex CLI response was not valid JSON. See logs and captures for details.") from exc

@@ -219,21 +219,26 @@ class ApplicationWorkflowTests(unittest.TestCase):
             workflow_app.gpt_scoring_enabled,
             workflow_app.codex_cli_available,
             workflow_app.call_codex_json,
-            workflow_app.score_discovery_with_codex,
+            workflow_app.compose_job_score_service,
         )
         workflow_app.gpt_scoring_enabled = lambda: True
         workflow_app.codex_cli_available = lambda: True
         workflow_app.call_codex_json = lambda *_args, **_kwargs: (
             '{"keywords":"chief architect","location":"Remote","criteria":"strategy","refinement_notes":"narrowed"}'
         )
-        workflow_app.score_discovery_with_codex = lambda *_args, **_kwargs: {
-            "total_score": 85,
-            "scorecard": {field: 8 for field in workflow_app.RUBRIC_FIELDS},
-            "pipeline": "Executive IC",
-            "level_assessment": "IC6-equivalent",
-            "downlevel": False,
-            "rationale": "Strong fit.",
-        }
+
+        class FakeScorer:
+            def score_discovery(self, *_args, **_kwargs):
+                return {
+                    "total_score": 85,
+                    "scorecard": {field: 8 for field in workflow_app.RUBRIC_FIELDS},
+                    "pipeline": "Executive IC",
+                    "level_assessment": "IC6-equivalent",
+                    "downlevel": False,
+                    "rationale": "Strong fit.",
+                }
+
+        workflow_app.compose_job_score_service = lambda *_args: FakeScorer()
         try:
             with workflow_app.connect() as connection:
                 query_id = connection.execute(
@@ -274,7 +279,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 workflow_app.gpt_scoring_enabled,
                 workflow_app.codex_cli_available,
                 workflow_app.call_codex_json,
-                workflow_app.score_discovery_with_codex,
+                workflow_app.compose_job_score_service,
             ) = originals
 
     def test_invalid_refinement_model_output_is_observed_without_query_update(self):
@@ -317,13 +322,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_codex_scoring_persists_a_valid_fake_scorecard(self):
         job_id = self.create_job()
-        original_values = (
-            workflow_app.gpt_scoring_enabled,
-            workflow_app.codex_cli_available,
-            workflow_app.call_codex_json,
-            workflow_app.career_context,
-            workflow_app.calibration_examples,
-        )
+        original_factory = workflow_app.compose_job_score_service
         scorecard = {field: 8 for field in workflow_app.RUBRIC_FIELDS}
         score = {
             "total_score": 88,
@@ -333,23 +332,18 @@ class ApplicationWorkflowTests(unittest.TestCase):
             "downlevel": False,
             "rationale": "Cross-organizational architecture role.",
         }
-        workflow_app.gpt_scoring_enabled = lambda: True
-        workflow_app.codex_cli_available = lambda: True
-        workflow_app.call_codex_json = lambda *_args, **_kwargs: __import__("json").dumps(score)
-        workflow_app.career_context = lambda: "Career context"
-        workflow_app.calibration_examples = lambda _conn: []
+
+        class FakeScorer:
+            def score(self, *_args, **_kwargs):
+                return score
+
+        workflow_app.compose_job_score_service = lambda *_args: FakeScorer()
         try:
             with workflow_app.connect() as connection:
                 persisted = workflow_app.populate_codex_score(connection, job_id)
                 saved = workflow_app.get_job(connection, job_id)
         finally:
-            (
-                workflow_app.gpt_scoring_enabled,
-                workflow_app.codex_cli_available,
-                workflow_app.call_codex_json,
-                workflow_app.career_context,
-                workflow_app.calibration_examples,
-            ) = original_values
+            workflow_app.compose_job_score_service = original_factory
 
         self.assertEqual(persisted["total_score"], 88)
         self.assertEqual(saved["gpt_score"], 88)
@@ -564,7 +558,10 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 """UPDATE jobs SET gpt_score = 70, user_score = 85, user_rationale = ?, posting_text = ? WHERE id = ?""",
                 ("Strategic scope", "A" * 1000, job_id),
             )
-            examples = workflow_app.calibration_examples(connection)
+            scorer = workflow_app.compose_job_score_service(
+                workflow_app.RUNTIME_CONFIG, workflow_app.CODEX_JSON_GATEWAY
+            )
+            examples = scorer.calibration_examples(connection)
 
         self.assertEqual(examples[0]["user_score"], 85)
         self.assertIn("...", examples[0]["posting_excerpt"])

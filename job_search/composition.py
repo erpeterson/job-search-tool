@@ -22,6 +22,14 @@ from job_search.application.contracts import Telemetry
 from job_search.application.discovery_service import DiscoveryService
 from job_search.application.filtering_service import FilteringService
 from job_search.application.initialization_service import InitializationService
+from job_search.application.job_score_service import JobScoreService
+from job_search.application.job_scoring_policy import (
+    ORACLE_IC6_LEVEL_REFERENCE,
+    PIPELINES,
+    RUBRIC_FIELDS,
+    JobScoringPolicy,
+    normalize_pipeline,
+)
 from job_search.application.job_service import JobService
 from job_search.application.level_service import LevelService
 from job_search.application.packet_attachment_service import PacketAttachmentService
@@ -38,6 +46,8 @@ from job_search.data_access.application_packet_catalog import ApplicationPacketC
 from job_search.data_access.board_gateway import CallableBoardGateway
 from job_search.data_access.capture_store import CaptureStore
 from job_search.data_access.codex_cli import CodexCliGateway
+from job_search.data_access.codex_json_gateway import CodexCliError as CodexCliError
+from job_search.data_access.codex_json_gateway import CodexJsonGateway
 from job_search.data_access.company_repository import SqliteCompanyRepository
 from job_search.data_access.console_query_repository import SqliteConsoleQueryRepository
 from job_search.data_access.document_writer import PacketDocumentWriter
@@ -156,6 +166,17 @@ def observability(configuration: RuntimeConfiguration) -> Observability:
         lambda event_type, **fields: telemetry.event(event_type, **fields),
     )
     return Observability(telemetry, captures, correlation_ids, api_logger, event_logger)
+
+
+def codex_json_gateway(configuration: RuntimeConfiguration, observed: Observability) -> CodexJsonGateway:
+    """Compose the model subprocess and redacted replay boundary."""
+    return CodexJsonGateway(
+        CodexCliGateway(configuration.paths.root),
+        observed.captures,
+        observed.telemetry.event,
+        configuration.cli_path,
+        configuration.settings.codex_timeout_seconds,
+    )
 
 
 @dataclass(frozen=True)
@@ -399,12 +420,34 @@ def settings_service(database_path: Path) -> SettingsService:
     return SettingsService(SqliteSettingsRepository(lambda: database_session(database_path)))
 
 
-def filtering_service(database_path: Path, observe: Any = None) -> FilteringService:
+def filtering_service(
+    database_path: Path, observe: Any = None, *, scoring_enabled: bool | None = None
+) -> FilteringService:
     return FilteringService(
         SqliteJobFilterRepository(lambda: database_session(database_path)),
         lambda: int(time.time()),
-        gpt_scoring_enabled=os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1",
+        gpt_scoring_enabled=(
+            os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1" if scoring_enabled is None else scoring_enabled
+        ),
         observe=observe,
+    )
+
+
+def job_score_service(configuration: RuntimeConfiguration, gateway: CodexJsonGateway) -> JobScoreService:
+    sources = source_documents(configuration)
+    policy = JobScoringPolicy(
+        pipelines=PIPELINES, rubric_fields=RUBRIC_FIELDS, level_reference=ORACLE_IC6_LEVEL_REFERENCE
+    )
+    return JobScoreService(
+        policy,
+        enabled=lambda: configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
+        available=configuration.cli_available,
+        cli_path=configuration.cli_path,
+        model=lambda connection: configuration.model() or SqliteReadModels.settings(connection).get("codex_model", ""),
+        career_manual=sources.career_manual,
+        guidance=sources.guidance,
+        examples=SqliteReadModels.calibration_examples,
+        complete=gateway.complete,
     )
 
 
@@ -454,18 +497,37 @@ def packet_generation_service(
 
 class _CodexScoringOperations:
     def __init__(
-        self, connection: Any, job: Any, score: Any, normalize: Any, save: Any, apply_filter: Any, now: Any, log: Any
+        self,
+        database_path: Path,
+        configuration: RuntimeConfiguration,
+        scorer: JobScoreService,
+        telemetry: Telemetry,
     ) -> None:
-        self.connection, self.job, self.score, self.normalize_pipeline = connection, job, score, normalize
-        self.save, self.apply_filter, self.now, self.log = save, apply_filter, now, log
+        self.connection = lambda: database_session(database_path)
+        self.job = SqliteReadModels.job
+        self.score = scorer.score
+        self.normalize_pipeline = normalize_pipeline
+        self.save = SqliteSearchMutations.save_codex_score
+        self.now = lambda: int(time.time())
+        self.log = telemetry.event
+
+        def refresh(connection: Any, job_id: int) -> None:
+            connection.commit()
+            filtering_service(
+                database_path,
+                scoring_enabled=configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
+            ).refresh_job(job_id)
+
+        self.apply_filter = refresh
 
 
 def codex_scoring_workflow(
-    connection: Any, job: Any, score: Any, normalize: Any, save: Any, apply_filter: Any, now: Any, log: Any
+    database_path: Path,
+    configuration: RuntimeConfiguration,
+    scorer: JobScoreService,
+    telemetry: Telemetry,
 ) -> CodexScoringWorkflow:
-    return CodexScoringWorkflow(
-        _CodexScoringOperations(connection, job, score, normalize, save, apply_filter, now, log)
-    )
+    return CodexScoringWorkflow(_CodexScoringOperations(database_path, configuration, scorer, telemetry))
 
 
 class _DiscoveryOperations:

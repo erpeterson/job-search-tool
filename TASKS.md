@@ -199,7 +199,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 - [x] **1.3d — Move discovery.** Replace `_DiscoveryAdapter` with explicit
   ports for refinement, classification, level assessment, and persistence.
   Test discovered-job creation and failed model output with fakes.
-- [ ] **1.3e — Move scoring.** Move Codex scoring orchestration, score
+- [x] **1.3e — Move scoring.** Move Codex scoring orchestration, score
   normalization/storage, and filter refresh decisions into application code.
   Inject the Codex adapter and test success and failure without the CLI.
 - [ ] **1.3f — Move packet generation.** Move packet context/prompt rules,

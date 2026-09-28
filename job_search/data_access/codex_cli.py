@@ -24,7 +24,7 @@ class CodexCliGateway:
 
     def __init__(self, root: Path, run: Callable[..., object] | None = None) -> None:
         self._root = root
-        self._run = run or subprocess.run
+        self._run = run
 
     def execute(self, cli_path: str, model: str, instruction: str, timeout_seconds: int) -> CodexCliResult:
         with tempfile.TemporaryDirectory(prefix="job-search-codex-") as directory:
@@ -32,7 +32,7 @@ class CodexCliGateway:
             command = [cli_path, "exec", "-C", str(self._root), "--sandbox", "read-only", "-o", str(output_path), "-"]
             if model:
                 command[2:2] = ["-m", model]
-            completed = self._run(
+            completed = (self._run or subprocess.run)(
                 command, input=instruction, text=True, capture_output=True, timeout=timeout_seconds, check=False
             )
             stdout = completed.stdout or ""

@@ -2,7 +2,6 @@
 import hashlib
 import json
 import re
-import textwrap
 import time
 import uuid
 from contextlib import nullcontext
@@ -23,7 +22,12 @@ from werkzeug.exceptions import HTTPException
 from job_search.application.company_service import CompanyService
 from job_search.application.discovery_policy import DiscoveryPolicy
 from job_search.application.filtering_service import FilteringService
-from job_search.application.job_scoring_policy import JobScoringPolicy
+from job_search.application.job_scoring_policy import (
+    ORACLE_IC6_LEVEL_REFERENCE,
+    PIPELINES,
+    RUBRIC_FIELDS,
+    normalize_pipeline,
+)
 from job_search.application.job_service import JobService
 from job_search.application.level_service import LevelService, normalize_lookup_text
 from job_search.application.manual_job_service import ManualJobService
@@ -31,19 +35,22 @@ from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
-from job_search.composition import background_task_service as compose_background_task_service
-from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
-from job_search.composition import company_service as compose_company_service
-from job_search.composition import console_query_service as compose_console_query_service
 from job_search.composition import (
+    CodexCliError,
     database_session,
     infrastructure,
     observability,
     parse_model_json,
     runtime_configuration,
 )
+from job_search.composition import background_task_service as compose_background_task_service
+from job_search.composition import codex_json_gateway as compose_codex_json_gateway
+from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
+from job_search.composition import company_service as compose_company_service
+from job_search.composition import console_query_service as compose_console_query_service
 from job_search.composition import discovery_service as compose_discovery_service
 from job_search.composition import filtering_service as compose_filtering_service
+from job_search.composition import job_score_service as compose_job_score_service
 from job_search.composition import job_service as compose_job_service
 from job_search.composition import level_service as compose_level_service
 from job_search.composition import outbound_clients as compose_outbound_clients
@@ -113,6 +120,7 @@ api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
 telemetry = OBSERVABILITY.telemetry
 capture_store = OBSERVABILITY.captures
+CODEX_JSON_GATEWAY = compose_codex_json_gateway(RUNTIME_CONFIG, OBSERVABILITY)
 log_api_call = telemetry.api_call
 log_event = telemetry.event
 capture_path = capture_store.path
@@ -153,32 +161,6 @@ def assign_request_correlation_id():
     return None
 
 
-class CodexCliError(RuntimeError):
-    def __init__(self, operation, returncode=None):
-        self.operation = operation
-        self.returncode = returncode
-        suffix = f" exited with code {returncode}" if returncode is not None else " failed"
-        super().__init__(f"Codex CLI {operation}{suffix}. See logs and captures for details.")
-
-
-RUBRIC_FIELDS = [
-    "interesting_technical_problems",
-    "organizational_influence",
-    "cross_functional_work",
-    "opportunity_to_mentor",
-    "work_life_balance",
-    "low_operational_burden",
-    "compensation",
-    "mission",
-]
-
-PIPELINES = [
-    "Executive IC",
-    "Office of the CTO",
-    "Adjacent industries",
-    "Wildcards",
-]
-
 JOB_STATUSES = {
     "researching",
     "interested",
@@ -192,11 +174,6 @@ JOB_STATUSES = {
 COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_interested"}
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
 
-ORACLE_IC6_LEVEL_REFERENCE = (
-    "Oracle Software Engineer IC-6 is Architect. "
-    "Treat IC6-equivalent as Architect / Principal-plus / Staff-plus scope with broad technical influence, "
-    "cross-team architecture, durable technical direction, or organization-level engineering judgment."
-)
 MIN_ANNUAL_COMPENSATION = 200_000
 UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
 INFRASTRUCTURE = infrastructure()
@@ -356,18 +333,6 @@ def startup_service():
     return dependency("startup_service", lambda: compose_startup_service(DB_PATH, telemetry, DEFAULT_MODEL))
 
 
-def normalize_pipeline(value, fallback=""):
-    """Return a valid pipeline string from model or request data."""
-    if isinstance(value, str):
-        candidate = value.strip()
-        return candidate if candidate in PIPELINES else fallback
-    if isinstance(value, (list, tuple, set)):
-        for candidate in value:
-            if isinstance(candidate, str) and candidate.strip() in PIPELINES:
-                return candidate.strip()
-    return fallback
-
-
 def lookup_level_equivalency(conn, company, title):
     equivalency = level_service(conn).lookup(company, title)
     if not equivalency:
@@ -521,12 +486,6 @@ def list_discoveries(conn, limit=50):
         item["gpt_scorecard"] = parse_json_field(item.pop("gpt_scorecard_json"), {})
         discoveries.append(item)
     return discoveries
-
-
-def career_context():
-    manual = SOURCE_DOCUMENTS.career_manual()
-    guidance = SOURCE_DOCUMENTS.guidance()
-    return textwrap.shorten(manual, width=9000, placeholder="\n[manual truncated]\n") + "\n\n" + guidance
 
 
 def render_inline_markdown(text):
@@ -750,24 +709,6 @@ def generate_application_packet_with_codex(job):
         )
 
 
-def calibration_examples(conn):
-    rows = INFRASTRUCTURE.read_models.calibration_examples(conn)
-    examples = []
-    for row in rows:
-        examples.append(
-            {
-                "company": row["company"],
-                "title": row["title"],
-                "pipeline": row["pipeline"],
-                "gpt_score": row["gpt_score"],
-                "user_score": row["user_score"],
-                "user_rationale": row["user_rationale"],
-                "posting_excerpt": textwrap.shorten(row["posting_text"] or "", width=800, placeholder="..."),
-            }
-        )
-    return examples
-
-
 def selector_text(soup, selectors):
     for selector in selectors:
         element = soup.select_one(selector)
@@ -893,19 +834,6 @@ def dedupe_results(results):
 OUTBOUND_CLIENTS = compose_outbound_clients(OBSERVABILITY, clean_text, clean_url, source_id, dedupe_results)
 
 
-def score_discovery_with_codex(conn, discovery, force_refresh=False):
-    job = {
-        "company": discovery.get("company"),
-        "title": discovery.get("title"),
-        "url": discovery.get("url"),
-        "location": discovery.get("location"),
-        "pipeline": discovery.get("pipeline") or "",
-        "posting_text": discovery.get("snippet"),
-        "notes": f"Source board: {discovery.get('board')}. Search criteria: {discovery.get('criteria', '')}",
-    }
-    return score_with_codex_cli(conn, job, force_refresh=force_refresh)
-
-
 def already_seen(conn, url):
     if not url:
         return False
@@ -938,95 +866,8 @@ def extract_codex_reported_model(output):
 
 
 def call_codex_json(model, prompt, operation, force_refresh=False, return_metadata=False):
-    cli_path = codex_cli_path()
-    request_payload = {
-        "adapter_version": 2,
-        "cli_path": cli_path,
-        "model": model,
-        "prompt": prompt,
-    }
-    cached = read_capture("codex_cli", operation, request_payload, force_refresh=force_refresh)
-    if cached:
-        output_text = cached["response"].get("output_text", "")
-        if return_metadata:
-            return output_text, cached["response"].get("effective_model", "")
-        return output_text
-
-    started = time.monotonic()
-    log_event(
-        "codex_cli_call_started",
-        operation=operation,
-        model=model,
-        cli_path=cli_path,
-        timeout_seconds=CODEX_CLI_TIMEOUT_SECONDS,
-    )
-    completed = None
-    error = None
-    output_text = ""
-    effective_model = ""
-    instruction = (
-        "You are a JSON-only engine for a local job-search app.\n"
-        "Return only one valid JSON object. Do not include markdown fences, prose, or explanations outside JSON.\n\n"
-        f"{json.dumps(prompt, indent=2, sort_keys=True, default=str)}\n"
-    )
-    try:
-        result = INFRASTRUCTURE.codex_gateway(ROOT).execute(cli_path, model, instruction, CODEX_CLI_TIMEOUT_SECONDS)
-        completed = result
-        output_text = result.output_text
-        effective_model = result.effective_model
-        if result.returncode != 0:
-            raise CodexCliError(operation, result.returncode)
-        return (output_text, effective_model) if return_metadata else output_text
-    except Exception as exc:
-        error = exc
-        raise
-    finally:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        response_payload = {
-            "output_text": output_text,
-            "effective_model": effective_model,
-            "returncode": completed.returncode if completed is not None else None,
-            "stdout_excerpt": clean_text(completed.stdout)[:2000]
-            if completed is not None and completed.stdout
-            else None,
-            "stderr_excerpt": clean_text(completed.stderr)[:2000]
-            if completed is not None and completed.stderr
-            else None,
-            "error_type": type(error).__name__ if error else None,
-            "error_message": str(error) if error else None,
-        }
-        log_event(
-            "codex_cli_call_completed",
-            operation=operation,
-            model=model,
-            cli_path=cli_path,
-            ok=error is None,
-            elapsed_ms=elapsed_ms,
-            elapsed_seconds=round(elapsed_ms / 1000, 3),
-            returncode=completed.returncode if completed is not None else None,
-            error_code="CODEX_CLI_CALL_FAILED" if error else None,
-            error_type=type(error).__name__ if error else None,
-            message=str(error)[:1000] if error else None,
-        )
-        write_capture("codex_cli", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})
-
-
-def score_with_codex_cli(conn, job, force_refresh=False):
-    """Invoke the transport adapter with application-owned score policy."""
-    if not gpt_scoring_enabled():
-        raise RuntimeError("Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it.")
-    if not codex_cli_available():
-        raise RuntimeError(
-            f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."
-        )
-    policy = JobScoringPolicy(
-        pipelines=PIPELINES, rubric_fields=RUBRIC_FIELDS, level_reference=ORACLE_IC6_LEVEL_REFERENCE
-    )
-    return policy.score(
-        job,
-        career_context=career_context(),
-        calibration_examples=calibration_examples(conn),
-        invoke=lambda prompt: call_codex_json(codex_model(conn), prompt, "score_job", force_refresh=force_refresh),
+    return CODEX_JSON_GATEWAY.complete(
+        model, prompt, operation, force_refresh=force_refresh, return_metadata=return_metadata
     )
 
 
@@ -1058,14 +899,10 @@ def create_application_packet(_connection, job_id):
 
 def codex_scoring_workflow():
     return compose_codex_scoring_workflow(
-        connect,
-        get_job,
-        score_with_codex_cli,
-        normalize_pipeline,
-        INFRASTRUCTURE.search_mutations.save_codex_score,
-        apply_filter,
-        now,
-        log_event,
+        DB_PATH,
+        RUNTIME_CONFIG,
+        compose_job_score_service(RUNTIME_CONFIG, CODEX_JSON_GATEWAY),
+        telemetry,
     )
 
 
@@ -1075,6 +912,7 @@ def populate_codex_score(conn, job_id, force_refresh=False):
 
 
 def discovery_service():
+    scorer = compose_job_score_service(RUNTIME_CONFIG, CODEX_JSON_GATEWAY)
     return compose_discovery_service(
         DB_PATH,
         telemetry,
@@ -1083,9 +921,7 @@ def discovery_service():
         scoring_enabled=gpt_scoring_enabled,
         scorer_available=codex_cli_available,
         scorer_path=codex_cli_path,
-        score=lambda connection, result, *, force_refresh: score_discovery_with_codex(
-            connection, result, force_refresh=force_refresh
-        ),
+        score=scorer.score_discovery,
         apply_filter=apply_filter,
         normalize_pipeline=normalize_pipeline,
         refine=lambda connection, prompt, *, force_refresh: call_codex_json(
