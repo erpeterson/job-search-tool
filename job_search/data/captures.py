@@ -92,9 +92,27 @@ class CaptureStore:
         log_event("captures_pruned", deleted=deleted, requested=len(paths))
         return deleted
 
-    def write(self, service, operation, request_payload, response_payload, metadata=None):
-        """Atomically write a capture. Never raises for I/O errors, so it cannot mask a caller's error."""
-        path = self.path_for(service, operation, request_payload)
+    def failure_path_for(self, service, operation, request_payload):
+        """A new, never-overwritten path for a failed outcome: ``<digest>.failed.<UTC timestamp>.json``."""
+        success = self.path_for(service, operation, request_payload)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        path = success.with_name(f"{success.stem}.failed.{stamp}.json")
+        counter = 1
+        while path.exists():
+            path = success.with_name(f"{success.stem}.failed.{stamp}-{counter}.json")
+            counter += 1
+        return path
+
+    def write(self, service, operation, request_payload, response_payload, metadata=None, succeeded=True):
+        """Atomically write a capture. Never raises for I/O errors, so it cannot mask a caller's error.
+
+        Successful outcomes replace ``<digest>.json`` (the only file replay reads). Failed outcomes go to
+        their own timestamped file so neither the evidence nor the last good response is overwritten.
+        """
+        if succeeded:
+            path = self.path_for(service, operation, request_payload)
+        else:
+            path = self.failure_path_for(service, operation, request_payload)
         capture = {
             "captured_at": datetime.now(UTC).isoformat(),
             "service": service,

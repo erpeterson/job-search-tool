@@ -113,7 +113,8 @@ class TestHttpAndCaptures:
         capture = captures.path_for(
             "svc", "http_get", {"method": "GET", "url": "https://x.com/a", "headers": REQUEST_HEADERS}
         )
-        assert capture.exists(), "failure captures are kept as evidence"
+        failures = list(capture.parent.glob(f"{capture.stem}.failed.*.json"))
+        assert len(failures) == 1 and not capture.exists(), f"failures get their own file: {failures}"
         with pytest.raises(requests.ConnectionError):
             client.fetch("svc", "https://x.com/a")
         assert len(http.calls) == 2, "a failed capture must not be replayed; the client retries live"
@@ -353,3 +354,35 @@ def test_env_file_concurrent_updates_keep_every_key(tmp_path):
     for thread in threads:
         thread.join()
     assert env.read() == {f"K{n}": str(n) for n in range(20)}, "serialized updates must not lose keys"
+
+
+class TestCaptureEvidence:
+    REQUEST = {"method": "GET", "url": "https://x.com/e", "headers": REQUEST_HEADERS}
+
+    def test_failure_then_success_keeps_both_files(self, captures):
+        http = FakeHttp()
+        http.route("x.com", status_code=503, text="down")
+        client = HttpClient(captures, get=http, resolve=FakeResolver())
+        client.fetch("svc", "https://x.com/e")
+        http.routes.clear()
+        http.route("x.com", text="up")
+        client.fetch("svc", "https://x.com/e")
+        success = captures.path_for("svc", "http_get", self.REQUEST)
+        failures = list(success.parent.glob(f"{success.stem}.failed.*.json"))
+        assert success.exists(), "the success capture is written"
+        assert len(failures) == 1, f"the earlier failure must survive the later success: {failures}"
+
+    def test_success_then_failure_still_replays_success(self, captures):
+        http = FakeHttp()
+        http.route("x.com", text="good")
+        client = HttpClient(captures, get=http, resolve=FakeResolver())
+        client.fetch("svc", "https://x.com/e")
+        http.routes.clear()
+        http.route("x.com", status_code=500, text="bad")
+        client.fetch("svc", "https://x.com/e", force_refresh=True)
+        replay = client.fetch("svc", "https://x.com/e")
+        assert replay.text == "good", f"a later failure must not overwrite the good capture; got {replay.text!r}"
+
+    def test_repeated_failures_never_overwrite_each_other(self, captures):
+        paths = {captures.write("svc", "op", {"a": 1}, {"text": str(n)}, succeeded=False) for n in range(3)}
+        assert len(paths) == 3 and all(p.exists() for p in paths), f"each failure keeps its own file: {paths}"
