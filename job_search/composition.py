@@ -20,7 +20,8 @@ from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
 from job_search.application.company_service import CompanyService
 from job_search.application.console_query_service import ConsoleQueryService
 from job_search.application.contracts import Telemetry
-from job_search.application.discovery_service import DiscoveryService
+from job_search.application.discovery_policy import MIN_ANNUAL_COMPENSATION, DiscoveryPolicy
+from job_search.application.discovery_service import UNKNOWN_LEVEL_ASSESSMENT, DiscoveryService
 from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
 from job_search.application.filtering_service import FilteringService
 from job_search.application.initialization_service import InitializationService
@@ -324,6 +325,46 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         report_manual_failure,
     )
 
+    def apply_discovery_filter(connection: Any, job_id: int) -> None:
+        connection.commit()
+        filtering.refresh_job(job_id)
+
+    def refine_discovery(connection: Any, prompt: Mapping[str, Any], *, force_refresh: bool) -> str:
+        model = configuration.model() or SqliteReadModels.settings(connection).get("codex_model", "")
+        return gateway.complete(model, prompt, "refine_search_query", force_refresh=force_refresh)
+
+    discovery = discovery_service(
+        database_path,
+        observed.telemetry,
+        UNKNOWN_LEVEL_ASSESSMENT,
+        ORACLE_IC6_LEVEL_REFERENCE,
+        scoring_enabled=lambda: configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
+        scorer_available=configuration.cli_available,
+        scorer_path=configuration.cli_path,
+        score=scorer.score_discovery,
+        apply_filter=apply_discovery_filter,
+        normalize_pipeline=normalize_pipeline,
+        refine=refine_discovery,
+        clean_text=clean_text,
+    )
+
+    def already_seen_reason(connection: Any, url: str | None) -> str | None:
+        if url and SqliteReadModels.job_exists_url(connection, url):
+            return "already tracked in jobs"
+        return None
+
+    search = search_run_service(
+        database_path,
+        clients.search_gateway,
+        observed.telemetry,
+        reject_reason=DiscoveryPolicy(MIN_ANNUAL_COMPENSATION).rejection_reason,
+        level_assessment=discovery.assess_level,
+        already_seen_reason=already_seen_reason,
+        classify=discovery.classify,
+        refine=discovery.refine_query,
+        is_refinement_error=lambda error: isinstance(error, CodexCliError),
+    )
+
     def scoring_availability() -> str | None:
         if not configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"):
             return "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."
@@ -365,6 +406,8 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         rescrape_service=rescrape_service(
             adapters.job_repository(connect), scrape, filtering.refresh_job, lambda: int(time.time())
         ),
+        discovery_service=discovery,
+        search_run_service=search,
     )
 
 

@@ -230,7 +230,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     - [x] **1.2a.2b — Inject ingestion workflows.** Compose manual ingestion
       and rescraping with repository, board, filtering, clock, and telemetry
       ports; remove their presentation constructors.
-    - [ ] **1.2a.2c — Inject discovery and search workflows.** Compose the
+    - [x] **1.2a.2c — Inject discovery and search workflows.** Compose the
       remaining model/board/persistence ports and move search-run construction
       out of presentation, with deterministic fake-boundary tests.
     - [ ] **1.2a.2d — Inject runtime and observability ports.** Supply web

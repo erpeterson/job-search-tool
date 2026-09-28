@@ -6,15 +6,22 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from job_search.application.discovery_policy import MIN_ANNUAL_COMPENSATION, DiscoveryPolicy
+from job_search.application.discovery_service import UNKNOWN_LEVEL_ASSESSMENT
+from job_search.application.job_scoring_policy import ORACLE_IC6_LEVEL_REFERENCE, normalize_pipeline
 from job_search.application.manual_job_service import ManualJobService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.composition import (
     codex_scoring_workflow,
+    discovery_service,
+    job_score_service,
     packet_generation_service,
     presentation_dependencies,
+    search_run_service,
 )
 from job_search.data_access.job_repository import SqliteJobRepository
 from job_search.data_access.packet_storage import PacketStorage
+from job_search.data_access.read_models import SqliteReadModels
 from job_search.presentation.factory import create_app
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
@@ -59,6 +66,42 @@ class ApplicationWorkflowTests(unittest.TestCase):
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (1, 1, company, title, url, "Executive IC", "researching", "manual"),
             ).lastrowid
+
+    def make_discovery(self, *, scoring_enabled=False, score=None, refine=None, telemetry=None):
+        return discovery_service(
+            workflow_app.DB_PATH,
+            telemetry or workflow_app.telemetry,
+            UNKNOWN_LEVEL_ASSESSMENT,
+            ORACLE_IC6_LEVEL_REFERENCE,
+            scoring_enabled=lambda: scoring_enabled,
+            scorer_available=lambda: True,
+            scorer_path=lambda: "fake-codex",
+            score=score or (lambda *_args, **_kwargs: {}),
+            apply_filter=lambda *_args: None,
+            normalize_pipeline=normalize_pipeline,
+            refine=refine or (lambda *_args, **_kwargs: None),
+            clean_text=workflow_app.clean_text,
+        )
+
+    def make_search(self, fetch, *, telemetry=None):
+        class FakeBoards:
+            def fetch(self, board, keywords, location, *, force_refresh=False):
+                return fetch(board, keywords, location, force_refresh=force_refresh)
+
+        discovery = self.make_discovery(telemetry=telemetry)
+        return search_run_service(
+            workflow_app.DB_PATH,
+            FakeBoards(),
+            telemetry or workflow_app.telemetry,
+            reject_reason=DiscoveryPolicy(MIN_ANNUAL_COMPENSATION).rejection_reason,
+            level_assessment=discovery.assess_level,
+            already_seen_reason=lambda connection, url: (
+                "already tracked in jobs" if url and SqliteReadModels.job_exists_url(connection, url) else None
+            ),
+            classify=discovery.classify,
+            refine=lambda *_args, **_kwargs: None,
+            is_refinement_error=lambda _error: False,
+        )
 
     def test_company_note_interaction_status_and_user_score_workflow(self):
         job_id = self.create_job()
@@ -127,8 +170,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(accepted.get_json()["deleted_jobs"], 1)
 
     def test_search_run_tracks_valid_discovery_and_records_filter_rejections(self):
-        originals = (workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch, workflow_app.refine_search_query)
-        workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch = lambda *_args, **_kwargs: [
+        results = [
             {
                 "board": "indeed",
                 "company": "SalesCo",
@@ -160,18 +202,13 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 "snippet": "$250,000 per year",
             },
         ]
-        workflow_app.refine_search_query = lambda *_args, **_kwargs: None
-        try:
-            with workflow_app.connect() as connection:
-                connection.execute("UPDATE search_queries SET enabled = 0")
-                connection.execute(
-                    """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
-                       VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'test')"""
-                )
-            with workflow_app.app.app_context():
-                run = workflow_app.run_job_search()
-        finally:
-            workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch, workflow_app.refine_search_query = originals
+        with workflow_app.connect() as connection:
+            connection.execute("UPDATE search_queries SET enabled = 0")
+            connection.execute(
+                """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
+                   VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'test')"""
+            )
+        run = self.make_search(lambda *_args, **_kwargs: results).run(trigger="manual", force_refresh=False)
 
         self.assertEqual(run["found_count"], 4)
         self.assertEqual(run["tracked_count"], 1)
@@ -181,10 +218,11 @@ class ApplicationWorkflowTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0], 4)
 
     def test_search_run_deduplicates_results_and_records_failed_board_call(self):
-        original_fetch = workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch
-        original_refine = workflow_app.refine_search_query
         events = []
-        original_event = workflow_app.telemetry.event
+
+        class FakeTelemetry:
+            def event(self, name, **fields):
+                events.append((name, fields))
 
         def fake_fetch(board, _keywords, _location, *, force_refresh=False):
             if board == "linkedin":
@@ -198,23 +236,15 @@ class ApplicationWorkflowTests(unittest.TestCase):
             }
             return [dict(rejected), dict(rejected)]
 
-        workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch = fake_fetch
-        workflow_app.refine_search_query = lambda *_args, **_kwargs: None
-        workflow_app.telemetry.event = lambda name, **fields: events.append((name, fields))
-        try:
-            with workflow_app.connect() as connection:
-                connection.execute("UPDATE search_queries SET enabled = 0")
-                for board in ("indeed", "linkedin"):
-                    connection.execute(
-                        """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
-                           VALUES (?, 'Executive IC', 'architect', 'Remote', 1, 1, 'test')""",
-                        (board,),
-                    )
-            run = workflow_app.run_job_search()
-        finally:
-            workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch = original_fetch
-            workflow_app.refine_search_query = original_refine
-            workflow_app.telemetry.event = original_event
+        with workflow_app.connect() as connection:
+            connection.execute("UPDATE search_queries SET enabled = 0")
+            for board in ("indeed", "linkedin"):
+                connection.execute(
+                    """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
+                       VALUES (?, 'Executive IC', 'architect', 'Remote', 1, 1, 'test')""",
+                    (board,),
+                )
+        run = self.make_search(fake_fetch, telemetry=FakeTelemetry()).run(trigger="manual", force_refresh=False)
 
         self.assertEqual(run["found_count"], 1, "A repeated URL should be counted only once")
         self.assertEqual(run["rejected_count"], 1)
@@ -225,109 +255,102 @@ class ApplicationWorkflowTests(unittest.TestCase):
             count = connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0]
         self.assertEqual(count, 1, "The duplicate should not persist a second discovery")
 
-    def test_refinement_and_codex_classification_use_fake_model_boundary(self):
-        originals = (
-            workflow_app.gpt_scoring_enabled,
-            workflow_app.codex_cli_available,
-            workflow_app.call_codex_json,
-            workflow_app.compose_job_score_service,
+    def test_search_route_uses_the_injected_runner(self):
+        calls = []
+
+        class FakeSearch:
+            def run(self, *, trigger, force_refresh):
+                calls.append((trigger, force_refresh))
+                return {"status": "complete", "found_count": 0}
+
+        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
+        workflow_app.app.extensions["job_search.dependencies"] = replace(
+            original_dependencies, search_run_service=FakeSearch()
         )
-        workflow_app.gpt_scoring_enabled = lambda: True
-        workflow_app.codex_cli_available = lambda: True
-        workflow_app.call_codex_json = lambda *_args, **_kwargs: (
+        try:
+            response = self.client.post("/api/search/run", json={"force_refresh": True})
+        finally:
+            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, [("manual", True)], "The route should forward validated inputs to the injected runner")
+        self.assertEqual(response.get_json()["run"]["status"], "complete")
+
+    def test_refinement_and_codex_classification_use_fake_model_boundary(self):
+        score = {
+            "total_score": 85,
+            "scorecard": {field: 8 for field in workflow_app.RUBRIC_FIELDS},
+            "pipeline": "Executive IC",
+            "level_assessment": "IC6-equivalent",
+            "downlevel": False,
+            "rationale": "Strong fit.",
+        }
+        refined_output = (
             '{"keywords":"chief architect","location":"Remote","criteria":"strategy","refinement_notes":"narrowed"}'
         )
-
-        class FakeScorer:
-            def score_discovery(self, *_args, **_kwargs):
-                return {
-                    "total_score": 85,
-                    "scorecard": {field: 8 for field in workflow_app.RUBRIC_FIELDS},
+        service = self.make_discovery(
+            scoring_enabled=True,
+            score=lambda *_args, **_kwargs: score,
+            refine=lambda *_args, **_kwargs: refined_output,
+        )
+        with workflow_app.connect() as connection:
+            query_id = connection.execute(
+                """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
+                   VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO discovered_jobs(created_at, board, decision, query_id, company, title)
+                   VALUES (1, 'indeed', 'tracked', ?, 'ExampleCo', 'Architect')""",
+                (query_id,),
+            )
+            service.refine_query(connection, query_id, force_refresh=False)
+            refined = connection.execute(
+                "SELECT keywords, refinement_notes FROM search_queries WHERE id = ?", (query_id,)
+            ).fetchone()
+            decision = service.classify(
+                connection,
+                {
+                    "board": "indeed",
+                    "company": "ExampleCo",
+                    "title": "Architect",
+                    "url": "https://role",
+                    "location": "Remote",
                     "pipeline": "Executive IC",
-                    "level_assessment": "IC6-equivalent",
-                    "downlevel": False,
-                    "rationale": "Strong fit.",
-                }
-
-        workflow_app.compose_job_score_service = lambda *_args: FakeScorer()
-        try:
-            with workflow_app.connect() as connection:
-                query_id = connection.execute(
-                    """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
-                       VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
-                ).lastrowid
-                connection.execute(
-                    """INSERT INTO discovered_jobs(created_at, board, decision, query_id, company, title)
-                       VALUES (1, 'indeed', 'tracked', ?, 'ExampleCo', 'Architect')""",
-                    (query_id,),
-                )
-                workflow_app.refine_search_query(connection, query_id)
-                refined = connection.execute(
-                    "SELECT keywords, refinement_notes FROM search_queries WHERE id = ?", (query_id,)
-                ).fetchone()
-                with workflow_app.app.app_context():
-                    decision = workflow_app.classify_discovery(
-                        connection,
-                        {
-                            "board": "indeed",
-                            "company": "ExampleCo",
-                            "title": "Architect",
-                            "url": "https://role",
-                            "location": "Remote",
-                            "pipeline": "Executive IC",
-                        },
-                    )
-            self.assertEqual(refined["keywords"], "chief architect")
-            self.assertEqual(refined["refinement_notes"], "narrowed")
-            self.assertEqual(decision[0], "tracked")
-            self.assertEqual(decision[3]["total_score"], 85)
-            with workflow_app.connect() as connection:
-                saved = connection.execute(
-                    "SELECT company, gpt_score FROM jobs WHERE id = ?", (decision[2],)
-                ).fetchone()
-            self.assertEqual((saved["company"], saved["gpt_score"]), ("ExampleCo", 85))
-        finally:
-            (
-                workflow_app.gpt_scoring_enabled,
-                workflow_app.codex_cli_available,
-                workflow_app.call_codex_json,
-                workflow_app.compose_job_score_service,
-            ) = originals
+                },
+                force_refresh=False,
+            )
+        self.assertEqual(refined["keywords"], "chief architect")
+        self.assertEqual(refined["refinement_notes"], "narrowed")
+        self.assertEqual(decision[0], "tracked")
+        self.assertEqual(decision[3]["total_score"], 85)
+        with workflow_app.connect() as connection:
+            saved = connection.execute("SELECT company, gpt_score FROM jobs WHERE id = ?", (decision[2],)).fetchone()
+        self.assertEqual((saved["company"], saved["gpt_score"]), ("ExampleCo", 85))
 
     def test_invalid_refinement_model_output_is_observed_without_query_update(self):
-        originals = (
-            workflow_app.gpt_scoring_enabled,
-            workflow_app.codex_cli_available,
-            workflow_app.call_codex_json,
-            workflow_app.telemetry.event,
-        )
         events = []
-        workflow_app.gpt_scoring_enabled = lambda: True
-        workflow_app.codex_cli_available = lambda: True
-        workflow_app.call_codex_json = lambda *_args, **_kwargs: "not-json"
-        workflow_app.telemetry.event = lambda name, **fields: events.append((name, fields))
-        try:
-            with workflow_app.connect() as connection:
-                query_id = connection.execute(
-                    """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
-                       VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
-                ).lastrowid
-                connection.execute(
-                    """INSERT INTO discovered_jobs(created_at, board, decision, query_id, company, title)
-                       VALUES (1, 'indeed', 'tracked', ?, 'ExampleCo', 'Architect')""",
-                    (query_id,),
-                )
-                workflow_app.discovery_service().refine_query(connection, query_id, force_refresh=False)
-                keywords = connection.execute(
-                    "SELECT keywords FROM search_queries WHERE id = ?", (query_id,)
-                ).fetchone()[0]
-        finally:
-            (
-                workflow_app.gpt_scoring_enabled,
-                workflow_app.codex_cli_available,
-                workflow_app.call_codex_json,
-                workflow_app.telemetry.event,
-            ) = originals
+
+        class FakeTelemetry:
+            def event(self, name, **fields):
+                events.append((name, fields))
+
+        service = self.make_discovery(
+            scoring_enabled=True,
+            refine=lambda *_args, **_kwargs: "not-json",
+            telemetry=FakeTelemetry(),
+        )
+        with workflow_app.connect() as connection:
+            query_id = connection.execute(
+                """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
+                   VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO discovered_jobs(created_at, board, decision, query_id, company, title)
+                   VALUES (1, 'indeed', 'tracked', ?, 'ExampleCo', 'Architect')""",
+                (query_id,),
+            )
+            service.refine_query(connection, query_id, force_refresh=False)
+            keywords = connection.execute("SELECT keywords FROM search_queries WHERE id = ?", (query_id,)).fetchone()[0]
 
         self.assertEqual(keywords, "architect", "Invalid model output must not replace the query")
         self.assertEqual(events[0][1]["error_code"], "QUERY_REFINEMENT_INVALID_JSON")
@@ -595,9 +618,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 """UPDATE jobs SET gpt_score = 70, user_score = 85, user_rationale = ?, posting_text = ? WHERE id = ?""",
                 ("Strategic scope", "A" * 1000, job_id),
             )
-            scorer = workflow_app.compose_job_score_service(
-                workflow_app.RUNTIME_CONFIG, workflow_app.CODEX_JSON_GATEWAY
-            )
+            scorer = job_score_service(workflow_app.RUNTIME_CONFIG, workflow_app.CODEX_JSON_GATEWAY)
             examples = scorer.calibration_examples(connection)
 
         self.assertEqual(examples[0]["user_score"], 85)

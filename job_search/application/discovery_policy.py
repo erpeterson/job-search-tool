@@ -6,6 +6,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+MIN_ANNUAL_COMPENSATION = 200_000
+
 SEATTLE_LOCATION_TERMS = (
     "seattle",
     "bellevue",

@@ -6,6 +6,8 @@ import json
 from collections.abc import Mapping
 from typing import Any, Protocol
 
+UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
+
 PIPELINE_CRITERIA = {
     "Executive IC": {
         "description": "Distinguished Engineer, Chief Architect, Technical Fellow, Principal Architect, Senior Principal Engineer roles at cloud, infrastructure, enterprise software, and AI platform companies.",

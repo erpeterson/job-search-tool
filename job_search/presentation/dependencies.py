@@ -33,6 +33,8 @@ class PresentationDependencies:
     packet_generation_service: Any
     manual_job_service: Any
     rescrape_service: Any
+    discovery_service: Any
+    search_run_service: Any
 
     def __post_init__(self) -> None:
         missing = [name for name in self.__dataclass_fields__ if getattr(self, name) is None]

@@ -10,6 +10,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
+from job_search.application.job_scoring_policy import normalize_pipeline
 from job_search.application.packet_draft_service import validate_packet_payload
 from job_search.composition import outbound_clients, runtime_configuration
 from job_search.config import RuntimePaths
@@ -26,7 +27,7 @@ class AppHelperTests(unittest.TestCase):
     def test_text_url_and_pipeline_normalization(self):
         self.assertEqual(helpers_app.clean_text("  one\n two  "), "one two")
         self.assertEqual(helpers_app.clean_url("https://example.test/job?trk=value"), "https://example.test/job")
-        self.assertEqual(helpers_app.normalize_pipeline(["wrong", "Wildcards"]), "Wildcards")
+        self.assertEqual(normalize_pipeline(["wrong", "Wildcards"]), "Wildcards")
         self.assertEqual(helpers_app.normalize_lookup_text("Senior-Principal Engineer!"), "senior principal engineer")
         self.assertEqual(
             helpers_app.source_id("manual", "https://example.test"),

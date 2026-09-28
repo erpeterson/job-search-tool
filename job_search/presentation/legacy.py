@@ -17,14 +17,11 @@ from flask import (
 from werkzeug.exceptions import HTTPException
 
 from job_search.application.company_service import CompanyService
-from job_search.application.discovery_policy import DiscoveryPolicy
 from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
 from job_search.application.filtering_service import FilteringService
 from job_search.application.job_scoring_policy import (
-    ORACLE_IC6_LEVEL_REFERENCE,
     PIPELINES,
     RUBRIC_FIELDS,
-    normalize_pipeline,
 )
 from job_search.application.job_service import JobService
 from job_search.application.level_service import LevelService, normalize_lookup_text
@@ -33,19 +30,15 @@ from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
+from job_search.composition import codex_json_gateway as compose_codex_json_gateway
 from job_search.composition import (
-    CodexCliError,
     database_session,
     infrastructure,
     observability,
     runtime_configuration,
 )
-from job_search.composition import codex_json_gateway as compose_codex_json_gateway
-from job_search.composition import discovery_service as compose_discovery_service
-from job_search.composition import job_score_service as compose_job_score_service
 from job_search.composition import level_service as compose_level_service
 from job_search.composition import outbound_clients as compose_outbound_clients
-from job_search.composition import search_run_service as compose_search_run_service
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
@@ -152,8 +145,6 @@ JOB_STATUSES = {
 COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_interested"}
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
 
-MIN_ANNUAL_COMPENSATION = 200_000
-UNKNOWN_LEVEL_ASSESSMENT = "Unknown - level not assessed"
 INFRASTRUCTURE = infrastructure()
 
 
@@ -215,10 +206,6 @@ def scoring_service() -> ScoringService:
 
 def console_query_service():
     return dependency("console_query_service")
-
-
-def discovery_policy() -> DiscoveryPolicy:
-    return DiscoveryPolicy(MIN_ANNUAL_COMPENSATION)
 
 
 def level_service(connection=None) -> LevelService:
@@ -568,20 +555,6 @@ def clamp_score(value, low=0, high=10):
 OUTBOUND_CLIENTS = compose_outbound_clients(OBSERVABILITY, clean_text, clean_url, source_id, dedupe_results)
 
 
-def already_seen(conn, url):
-    if not url:
-        return False
-    return INFRASTRUCTURE.read_models.job_exists_url(conn, url)
-
-
-def already_seen_reason(conn, url):
-    if not url:
-        return None
-    if INFRASTRUCTURE.read_models.job_exists_url(conn, url):
-        return "already tracked in jobs"
-    return None
-
-
 def extract_codex_reported_model(output):
     match = re.search(r"\bmodel:\s*([^\s]+)", output or "", flags=re.IGNORECASE)
     return match.group(1) if match else ""
@@ -612,53 +585,12 @@ def populate_codex_score(conn, job_id, force_refresh=False):
 
 
 def discovery_service():
-    scorer = compose_job_score_service(RUNTIME_CONFIG, CODEX_JSON_GATEWAY)
-    return compose_discovery_service(
-        DB_PATH,
-        telemetry,
-        UNKNOWN_LEVEL_ASSESSMENT,
-        ORACLE_IC6_LEVEL_REFERENCE,
-        scoring_enabled=gpt_scoring_enabled,
-        scorer_available=codex_cli_available,
-        scorer_path=codex_cli_path,
-        score=scorer.score_discovery,
-        apply_filter=apply_filter,
-        normalize_pipeline=normalize_pipeline,
-        refine=lambda connection, prompt, *, force_refresh: call_codex_json(
-            codex_model(connection), prompt, "refine_search_query", force_refresh=force_refresh
-        ),
-        clean_text=clean_text,
-    )
-
-
-def refine_search_query(conn, query_id, force_refresh=False):
-    """Compatibility entry point backed by the application workflow."""
-    return discovery_service().refine_query(conn, query_id, force_refresh=force_refresh)
-
-
-def classify_discovery(conn, result, force_refresh=False):
-    """Compatibility entry point backed by the application workflow."""
-    return discovery_service().classify(conn, result, force_refresh=force_refresh)
+    return dependency("discovery_service")
 
 
 def run_job_search(trigger="manual", force_refresh=False):
     """Run search through the application-layer orchestration service."""
-    discovery = discovery_service()
-    return compose_search_run_service(
-        DB_PATH,
-        OUTBOUND_CLIENTS.search_gateway,
-        telemetry,
-        reject_reason=discovery_policy().rejection_reason,
-        level_assessment=discovery.assess_level,
-        already_seen_reason=already_seen_reason,
-        classify=lambda connection, result, *, force_refresh: classify_discovery(
-            connection, result, force_refresh=force_refresh
-        ),
-        refine=lambda connection, query_id, *, force_refresh: refine_search_query(
-            connection, query_id, force_refresh=force_refresh
-        ),
-        is_refinement_error=lambda error: isinstance(error, CodexCliError),
-    ).run(trigger=trigger, force_refresh=force_refresh)
+    return dependency("search_run_service").run(trigger=trigger, force_refresh=force_refresh)
 
 
 @routes.get("/")
