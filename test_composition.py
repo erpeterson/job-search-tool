@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import app
 from job_search.composition import (
+    database_session,
     discovery_service,
     observability,
     outbound_clients,
@@ -167,6 +168,31 @@ class CompositionTests(unittest.TestCase):
                 self.assertIsNotNone(dependencies.observability.telemetry)
                 self.assertIsNotNone(dependencies.observability.captures)
             finally:
+                for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
+                    for handler in logger.handlers:
+                        handler.close()
+
+    def test_startup_tasks_and_job_recovery_share_injected_telemetry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dependencies = presentation_dependencies(Path(directory) / "jobs.sqlite3")
+            token = dependencies.observability.correlation_ids.set("run-123")
+            try:
+                with patch.object(dependencies.observability.event_logger, "info") as emit:
+                    dependencies.startup_service.initialize()
+                    dependencies.background_task_service.start("scorecards", [7])
+                    with database_session(dependencies.database_path) as connection:
+                        job_id = connection.execute(
+                            "INSERT INTO jobs(created_at, updated_at, company, title, status, gpt_scorecard_json) VALUES (1, 1, 'Example', 'Architect', 'researching', 'bad-json')"
+                        ).lastrowid
+                    dependencies.job_service.get_job(job_id)
+                records = [json.loads(call.args[0]) for call in emit.call_args_list]
+                event_names = [record["event"] for record in records]
+                self.assertIn("startup_started", event_names)
+                self.assertIn("background_task_queued", event_names)
+                self.assertIn("job_scorecard_parse_recovered", event_names)
+                self.assertTrue(all(record["correlation_id"] == "run-123" for record in records))
+            finally:
+                dependencies.observability.correlation_ids.reset(token)
                 for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
                     for handler in logger.handlers:
                         handler.close()

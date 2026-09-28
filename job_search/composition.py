@@ -252,28 +252,23 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     Route modules consume only this service registry; concrete repository
     construction remains exclusively in this composition module.
     """
-    adapters = infrastructure()
 
     def connect():
         return database_session(database_path)
 
-    def observe(event: str, **fields: Any) -> None:
-        # The web adapter supplies structured event logging.  The composition
-        # root deliberately keeps non-HTTP processes usable without Flask.
-        logging.getLogger("job_search.events").info("%s %s", event, fields)
-
-    @dataclass(frozen=True)
-    class EventTelemetry:
-        event: Callable[..., None]
-
-    packet_catalog = ApplicationPacketCatalog(database_path.parent, database_path.parent / "applications")
     configuration = runtime_configuration(database_path.parent)
     observed = observability(configuration)
+    packets_catalog = packet_catalog(database_path)
+
+    def observe_job(**fields: Any) -> None:
+        event_type = fields.pop("event")
+        observed.telemetry.event(event_type, **fields)
+
     gateway = codex_json_gateway(configuration, observed)
     scorer = job_score_service(configuration, gateway)
     scoring_workflow = codex_scoring_workflow(database_path, configuration, scorer, observed.telemetry)
     draft = packet_draft_service(configuration, observed, gateway)
-    jobs = JobService(adapters.job_repository(connect))
+    jobs = JobService(SqliteJobRepository(connect), observe_job)
     clients = outbound_clients(observed, clean_text, clean_url, source_id, dedupe_results)
 
     filtering = observed_filtering_service(database_path, configuration, observed.telemetry)
@@ -301,7 +296,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         )
 
     manual = ManualJobService(
-        adapters.job_repository(connect),
+        SqliteJobRepository(connect),
         scrape,
         clients.boards.fallback,
         filtering.refresh_job,
@@ -323,27 +318,19 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
 
     return PresentationDependencies(
         job_service=jobs,
-        company_service=CompanyService(adapters.company_repository(connect)),
-        search_query_service=SearchQueryService(adapters.query_repository(connect)),
-        settings_service=SettingsService(adapters.settings_repository(connect)),
-        console_query_service=ConsoleQueryService(adapters.console_query_repository(connect, packet_catalog.list)),
-        packet_catalog=packet_catalog,
-        packet_content_service=PacketContentService(
-            FilesystemPacketContentReader(database_path.parent, database_path.parent / "applications")
-        ),
+        company_service=CompanyService(SqliteCompanyRepository(connect)),
+        search_query_service=SearchQueryService(SqliteSearchQueryRepository(connect)),
+        settings_service=SettingsService(SqliteSettingsRepository(connect)),
+        console_query_service=ConsoleQueryService(SqliteConsoleQueryRepository(connect, packets_catalog.list)),
+        packet_catalog=packets_catalog,
+        packet_content_service=packet_content_service(database_path),
         packet_attachment_service=packet_attachment_service(database_path),
         level_service=level_service(database_path),
-        search_repository=adapters.search_repository(connect),
+        search_repository=search_repository(database_path),
         filtering_service=filtering,
-        background_task_service=BackgroundTaskService(
-            adapters.task_repository(database_path),
-            lambda: int(time.time()),
-            observe,
-        ),
+        background_task_service=background_task_service(database_path, observed.telemetry.event),
         initialization_service=initialization_service(database_path),
-        startup_service=startup_service(
-            database_path, EventTelemetry(observe), runtime_configuration(database_path.parent).model()
-        ),
+        startup_service=startup_service(database_path, observed.telemetry, configuration.model()),
         codex_scoring_workflow=scoring_workflow,
         scoring_service=ScoringService(
             jobs.get_job,
@@ -353,7 +340,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         packet_generation_service=packet_generation_service(database_path, draft, observed.telemetry),
         manual_job_service=manual,
         rescrape_service=rescrape_service(
-            adapters.job_repository(connect), scrape, filtering.refresh_job, lambda: int(time.time())
+            SqliteJobRepository(connect), scrape, filtering.refresh_job, lambda: int(time.time())
         ),
         discovery_service=discovery,
         search_run_service=search,

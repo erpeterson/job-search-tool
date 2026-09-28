@@ -242,7 +242,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.2a.4 — Audit and commit.** Verify no permissive dictionary or
     request-time service fallback remains, run the quality gate, then check
     1.2a.
-- [ ] **1.2b — Build all concrete services in composition.** Wire repositories,
+- [x] **1.2b — Build all concrete services in composition.** Wire repositories,
   SQLite session providers, gateways, telemetry, clocks, policies, and the
   application services extracted in T-1.3. Replace generic
   `**operations`/`__dict__` ports with named, testable contracts. Keep
