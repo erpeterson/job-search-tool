@@ -106,9 +106,12 @@ def test_incomplete_archive_keeps_originals(tmp_path, monkeypatch):
         "job_search.data.captures.tarfile.open",
         lambda name, mode: Truncated(real_open(name, mode)) if mode == "r:gz" else real_open(name, mode),
     )
-    with pytest.raises(OSError, match="incomplete"):
+    from job_search.domain.errors import StorageError
+
+    with pytest.raises(StorageError):
         store.archive_files([path])
     assert path.exists(), "originals must be kept when the archive cannot be verified"
+    assert list((tmp_path / "captures" / "archive").iterdir()) == [], "an unverified archive must not be left behind"
 
 
 def test_prune_rejects_invalid_age(workspace, capsys):
@@ -142,3 +145,61 @@ def test_rotated_logs_are_archived_not_deleted(tmp_path):
             archived += handle.read()
     missing = [index for index in range(30) if f"line {index:03d}" not in archived]
     assert not missing, f"no log lines may be lost across rotations: {missing}"
+
+
+def test_archive_write_failure_leaves_nothing_and_is_recorded(tmp_path, monkeypatch):
+    import tarfile
+
+    import pytest
+
+    from job_search.data.captures import CaptureStore
+    from job_search.domain.errors import StorageError
+    from job_search.observability import METRICS
+
+    store = CaptureStore(tmp_path / "captures", lambda: True)
+    paths = [store.write("svc", "op", {"n": n}, {"text": "x"}) for n in range(3)]
+    real_open = tarfile.open
+
+    class FailingWriter:
+        def __init__(self, bundle):
+            self.bundle, self.added = bundle, 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.bundle.close()
+
+        def add(self, path, arcname):
+            if self.added == 1:
+                raise OSError(28, "No space left on device")
+            self.bundle.add(path, arcname=arcname)
+            self.added += 1
+
+    monkeypatch.setattr(
+        "job_search.data.captures.tarfile.open",
+        lambda name, mode: FailingWriter(real_open(name, mode)) if mode == "w:gz" else real_open(name, mode),
+    )
+    before = METRICS.snapshot().get("blame.capture_archive_failed", 0)
+    with pytest.raises(StorageError) as info:
+        store.archive_files(paths)
+    assert info.value.error_code == "capture_archive_failed", info.value.error_code
+    assert list((tmp_path / "captures" / "archive").iterdir()) == [], "no partial archive may remain"
+    assert all(path.exists() for path in paths), "every original capture must be kept"
+    assert METRICS.snapshot()["blame.capture_archive_failed"] == before + 1, "the failure must be recorded"
+
+
+def test_cli_reports_archive_failure_and_exits_nonzero(workspace, monkeypatch, capsys):
+    from job_search.data.captures import CaptureStore
+    from job_search.domain.errors import StorageError
+
+    app_dir = workspace / "job-search-tool"
+    make_captures(app_dir, [40])
+
+    def fail(self, paths):
+        raise StorageError("Capture archive could not be written; no captures were removed.", "capture_archive_failed")
+
+    monkeypatch.setattr(CaptureStore, "archive_files", fail)
+    code, _ = prune(app_dir, "--older-than", "30", "--yes")
+    assert code == cli.EXIT_FAILURE, f"a failed archive must exit non-zero, got {code}"
+    assert "Capture archive could not be written" in capsys.readouterr().err, "stderr explains the failure"

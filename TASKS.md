@@ -79,7 +79,7 @@ P3 = hygiene or completeness.
 | T-50 | Remove dead code left by the refactors | Code standards | P3 | Done |
 | T-51 | Finish removing profile-specific names and defaults | Configuration | P3 | Done |
 | T-52 | Keep a saved manual job from returning 500 when auto-scoring cannot start | Errors | P2 | Done |
-| T-53 | Write capture archives atomically | Data handling | P3 | Open |
+| T-53 | Write capture archives atomically | Data handling | P3 | Done |
 
 ---
 
