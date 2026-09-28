@@ -133,13 +133,6 @@ class ScoringService:
                 raise NotFoundError("Job not found", "score_request_job_not_found")
         self.ensure_available()
 
-    def score_tracked_job(self, job_id, force_refresh=False):
-        """Score a tracked job on request. Returns ``(updated_job, validated_score)``."""
-        self.check_can_score(job_id)
-        score = self.populate_score(job_id, force_refresh=force_refresh)
-        with self._db.unit_of_work() as uow:
-            return uow.jobs.get(job_id), score
-
     def populate_score(self, job_id, force_refresh=False):
         """Score a tracked job and persist the result, re-applying visibility filters."""
         with operation("codex_score", "domain.scoring", job_id=job_id):

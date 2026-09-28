@@ -44,10 +44,6 @@ def _match(rows, title):
     return None
 
 
-def find_cached_level_equivalency(level_repo, company, title):
-    return _match(level_repo.for_company(normalize_lookup_text(company)), title)
-
-
 def _estimate_and_cache(level_repo, company, title, target):
     """Estimate a calibration and store it. Returns True when one was cached."""
     equivalency = estimate_level_equivalency(title, target)
@@ -82,16 +78,6 @@ def _estimate_and_cache(level_repo, company, title, target):
         source="local_title_taxonomy",
     )
     return True
-
-
-def lookup_level_equivalency(level_repo, company, title, target):
-    """Return a cached calibration, estimating and caching one when possible."""
-    cached = find_cached_level_equivalency(level_repo, company, title)
-    if cached:
-        return cached
-    if not _estimate_and_cache(level_repo, company, title, target):
-        return None
-    return find_cached_level_equivalency(level_repo, company, title)
 
 
 class LevelCalibrationCache:

@@ -23,10 +23,10 @@ _BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "metadata.google.int
 
 
 def validate_posting_url(url):
-    """Allow only public http(s) URLs so the scraper cannot be pointed at local services.
+    """Fast pre-check that a posting URL is public http(s) before any fetch.
 
-    Hostnames are not resolved, so this blocks obvious local targets rather than
-    DNS-based rebinding; the app is intended to bind to localhost only.
+    It rejects obvious local targets from the literal URL. The full SSRF guard is in
+    ``HttpClient``, which resolves the hostname and re-validates every redirect hop.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
