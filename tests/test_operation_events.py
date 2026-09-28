@@ -58,3 +58,18 @@ def test_app_stopped_is_emitted_when_serve_fails(workspace, capsys):
     stopped = [e for e in lines if e["event"] == "app_stopped"]
     assert code == cli.EXIT_FAILURE, f"expected failure exit code, got {code}"
     assert stopped and stopped[-1]["outcome"] == "error", f"app_stopped must report the outcome: {stopped}"
+
+
+def test_single_call_task_events_carry_the_task_correlation_id(client, container, codex_runner, events):
+    from conftest import SCORE_RESPONSE
+
+    container.runtime.update({"JOB_SEARCH_ENABLE_GPT_SCORING": "1"})
+    job_id = insert_job(container)
+    codex_runner.respond(SCORE_RESPONSE)
+    response = client.post(f"/api/jobs/{job_id}/score-gpt", data="{}", content_type="application/json")
+    task_id = response.get_json()["task"]["id"]
+    started = [e for e in events() if e["event"] == "codex_score_started"]
+    assert started, "the scoring task should emit codex_score_started"
+    assert started[-1].get("correlation_id") == f"task-{task_id}", f"expected task correlation: {started[-1]}"
+    codex_calls = [e for e in events() if e["event"] == "codex_cli_call_started"]
+    assert codex_calls and codex_calls[-1].get("correlation_id") == f"task-{task_id}", codex_calls
