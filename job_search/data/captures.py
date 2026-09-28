@@ -9,6 +9,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from job_search.domain.errors import StorageError
 from job_search.observability import log_event, record_exception
 
 ARCHIVE_DIRNAME = "archive"
@@ -93,13 +94,7 @@ class CaptureStore:
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive = archive_dir / f"captures-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}.tar.gz"
         names = [path.relative_to(root).as_posix() for path in resolved]
-        with tarfile.open(archive, "w:gz") as bundle:
-            for path, name in zip(resolved, names, strict=True):
-                bundle.add(path, arcname=name)
-        with tarfile.open(archive, "r:gz") as bundle:
-            archived = set(bundle.getnames())
-        if archived != set(names):
-            raise OSError(f"Capture archive {archive} is incomplete; originals were kept.")
+        self._write_verified_archive(archive, resolved, names)
         removed = 0
         for path in resolved:
             try:
@@ -118,6 +113,39 @@ class CaptureStore:
             removed += 1
         log_event("captures_archived", archive=str(archive), archived=len(names), removed=removed)
         return archive, removed
+
+    @staticmethod
+    def _write_verified_archive(archive, paths, names):
+        """Write to a temporary name, verify every member, then atomically rename to ``archive``.
+
+        On any failure the temporary file is removed and nothing appears under the final name.
+        """
+        temp = archive.with_name(f".{archive.name}.tmp")
+        try:
+            with tarfile.open(temp, "w:gz") as bundle:
+                for path, name in zip(paths, names, strict=True):
+                    bundle.add(path, arcname=name)
+            with tarfile.open(temp, "r:gz") as bundle:
+                archived = set(bundle.getnames())
+            if archived != set(names):
+                raise tarfile.TarError(f"archive is missing {len(set(names) - archived)} member(s)")
+            os.replace(temp, archive)
+        except (OSError, tarfile.TarError) as exc:
+            record_exception(
+                "capture_archive_failed",
+                "data.captures",
+                "archive_files",
+                exc,
+                recovery="Removed the partial archive; all original captures were kept.",
+                archive=str(archive),
+            )
+            if temp.exists():
+                temp.unlink()
+            raise StorageError(
+                "Capture archive could not be written; no captures were removed.",
+                "capture_archive_failed",
+                detail=str(exc),
+            ) from exc
 
     def failure_path_for(self, service, operation, request_payload):
         """A new, never-overwritten path for a failed outcome: ``<digest>.failed.<UTC timestamp>.json``."""

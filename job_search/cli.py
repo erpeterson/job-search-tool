@@ -13,7 +13,7 @@ from job_search.config import DEFAULT_APP_DIR, AppConfig, warn_unknown_variables
 from job_search.container import build_container
 from job_search.data.captures import CaptureStore
 from job_search.data.env_file import EnvFile
-from job_search.domain.errors import ConfigurationError, ValidationError
+from job_search.domain.errors import AppError, ConfigurationError, ValidationError
 from job_search.domain.retention import prune_captures
 from job_search.observability import (
     configure_console_logging,
@@ -123,6 +123,10 @@ def main(argv=None, environ=None, serve=_serve, out=None, app_dir=DEFAULT_APP_DI
         record_exception(exc.error_code, "cli", "startup", exc, recovery="Exiting with configuration error code.")
         print(f"Configuration error: {exc.message}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
+    except AppError as exc:
+        record_exception(exc.error_code, "cli", "run", exc, recovery="Exiting with failure code.")
+        print(f"Error: {exc.message}", file=sys.stderr)
+        return EXIT_FAILURE
     except KeyboardInterrupt as exc:
         record_exception("cli_interrupted", "cli", "run", exc, level=logging.INFO, recovery="User interrupted.")
         return EXIT_INTERRUPTED
