@@ -11,8 +11,8 @@ from job_search.data_access.model_output_parser import parse_model_json
 
 class ModelOutputParserTests(unittest.TestCase):
     def test_parses_fenced_json_and_json_embedded_in_explanation(self):
-        self.assertEqual(parse_model_json("```json\n{\"score\": 8}\n```"), {"score": 8})
-        self.assertEqual(parse_model_json("Result follows: {\"score\": 8} Thanks."), {"score": 8})
+        self.assertEqual(parse_model_json('```json\n{"score": 8}\n```'), {"score": 8})
+        self.assertEqual(parse_model_json('Result follows: {"score": 8} Thanks.'), {"score": 8})
 
     def test_rejects_empty_or_non_json_model_output(self):
         with self.assertRaisesRegex(json.JSONDecodeError, "empty response"):

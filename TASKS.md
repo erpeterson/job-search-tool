@@ -83,6 +83,21 @@ evidence.
     and integration tests showing the injected services preserve current API,
     worker, and scheduler behavior.
 
+  Milestones:
+
+  - [ ] **T-1.1 — Extract presentation-owned configuration, logging, capture,
+    HTTP, parsing, and filesystem adapters.**
+  - [ ] **T-1.2 — Assemble every application service in `composition.py` and
+    remove presentation-layer infrastructure construction and session access.**
+  - [ ] **T-1.3 — Extract search, discovery, scoring, packet,
+    initialization, and durable-task workflow adapters from `legacy.py`.**
+  - [ ] **T-1.4 — Reduce presentation modules to HTTP mapping, validation,
+    response rendering, security hooks, and top-level error handling.**
+  - [ ] **T-1.5 — Rewire the worker and scheduler through composition-owned
+    application services rather than presentation callbacks.**
+  - [ ] **T-1.6 — Add boundary and integration evidence for every T-1 closure
+    criterion, run the quality gate, and close T-1.**
+
 ### P1
 
 - [ ] **T-2 — Make every handled exception observable through an injected
@@ -111,3 +126,174 @@ evidence.
     rationale and event.
   - Add deterministic tests for invalid JSON-LD, worker processor failure, and
     heartbeat renewal failure that assert durable state plus the emitted event.
+
+## Execution plan for T-1 and T-2
+
+Complete the milestones in this dependency order: T-1.1, T-1.3, T-1.2, T-1.5,
+T-1.4, T-1.6, then T-2. Within a milestone, work through its unchecked steps
+in order. Each step names the expected change and the evidence needed to check
+it off. Keep the existing T-1 and T-2
+closure criteria authoritative: a passing test alone does not close a milestone
+if the source still violates its boundary. Commit `03ca591` was an explicitly
+requested intermediate T-1 checkpoint; inspect current Git state before
+editing. Preserve unrelated changes to
+`AGENTS.md`. For each completed T-1 milestone, check its milestone above and
+commit that milestone's code, tests, and checkbox together with a descriptive
+`AI Generated: ` message. Do not check T-1 itself until T-1.6 passes. Complete
+and commit T-2 separately after its own closure audit.
+
+Keep each edit to one adapter, workflow, or route family and update its direct
+tests in the same slice. Run the relevant focused tests after a slice; run the
+full `./quality.sh` at milestone boundaries or when a change affects shared
+startup, security, or dependency wiring. Convert tests that import or patch
+`legacy.py` as their corresponding behavior moves; do not postpone a mass test
+rewrite until deletion. If a step exposes unexpected coupling, add a smaller
+unchecked step here with a concrete exit check instead of adding another
+presentation wrapper. Define the framework-independent telemetry port during
+T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
+
+### T-1.1 — Concrete runtime and data-access adapters
+
+- [ ] **1.1a — Reconcile the checkpoint.** Review `git status`, the T-1 diff,
+  and `./quality.sh`; keep the user-owned `AGENTS.md` edit out of commits. Record
+  any failing gate as the first repair target.
+- [ ] **1.1b — Extract runtime configuration.** Move path discovery, dotenv
+  loading, CLI availability, and environment-backed settings out of
+  `presentation/legacy.py`. Supply a typed configuration object and an injected
+  environment mapping from composition. Test valid/invalid values and `.env`
+  persistence with a temporary file; do not mutate real process environment
+  variables in unit tests.
+- [ ] **1.1c — Compose logging and captures.** Build `StructuredTelemetry`,
+  `CaptureStore`, log handlers, and their correlation-ID provider in
+  `composition.py`; define the framework-independent telemetry port here and
+  inject the resulting ports. Remove their construction and data-access
+  re-exports from presentation. Preserve existing event codes as workflows
+  move. Test redaction, capture replay, corrupt capture recovery, permissions,
+  and correlation propagation.
+- [ ] **1.1d — Compose outbound clients and parsers.** Have composition build
+  `SafeHttpClient`, `CapturingHttpGateway`, `JobBoardClient`, and posting/board
+  parsers with explicit dependencies. Remove presentation-owned HTTP headers,
+  gateway/parser construction, and fetch compatibility wrappers. Verify fake
+  HTTP responses, rejected URLs, capture behavior, and board parsing.
+- [ ] **1.1e — Finish filesystem ownership.** Route source-document reads,
+  packet path validation/catalog reads, atomic packet publication, and startup
+  directory creation through data-access adapters. Test traversal rejection,
+  absent optional files, publish collision, and failed publish cleanup.
+- [ ] **1.1f — Audit and commit.** Inspect every presentation module for direct
+  environment, transport, parser, logging, capture, or filesystem adapter work;
+  account for anything intentionally deferred to T-1.2 or T-1.3. Run
+  `./quality.sh` (including at least 80% coverage), then check T-1.1 and commit.
+
+### T-1.3 — Move workflows to application services
+
+- [ ] **1.3a — Move startup orchestration.** Move database initialization,
+  query seeding, and task recovery decisions from `legacy.py` into an
+  application service; keep SQLite and directory creation in data access. Test
+  fresh startup and recovery using a temporary database.
+- [ ] **1.3b — Move durable-task execution.** Move bulk task progress, skipped
+  item handling, and failure decisions into the application task service. Test
+  one successful, skipped, and failed item with fake scoring/packet ports.
+- [ ] **1.3c — Move search runs.** Replace `_SearchRunAdapter` with explicit
+  application ports for query selection, board calls, persistence, and run
+  status. Test deduplication, filters, and failed board calls with fakes.
+- [ ] **1.3d — Move discovery.** Replace `_DiscoveryAdapter` with explicit
+  ports for refinement, classification, level assessment, and persistence.
+  Test discovered-job creation and failed model output with fakes.
+- [ ] **1.3e — Move scoring.** Move Codex scoring orchestration, score
+  normalization/storage, and filter refresh decisions into application code.
+  Inject the Codex adapter and test success and failure without the CLI.
+- [ ] **1.3f — Move packet generation.** Move packet context/prompt rules,
+  validation, attribution retry, and publish decisions into application code.
+  Inject Codex and packet-storage adapters; test attribution and publication
+  failures without the CLI or Pandoc.
+- [ ] **1.3g — Verify and commit.** Inspect `legacy.py` for the listed workflow
+  decisions and compatibility wrappers, run focused application tests plus
+  `./quality.sh`, check T-1.3, and commit.
+
+### T-1.2 — Complete composition and dependency injection
+
+- [ ] **1.2a — Define the injected contract.** Replace the permissive service
+  dictionary/fallback pattern with a complete, explicit dependency contract
+  for web routes and separate worker/scheduler process builders. A missing
+  required service should fail at construction, not during a request.
+- [ ] **1.2b — Build all concrete services in composition.** Wire repositories,
+  SQLite session providers, gateways, telemetry, clocks, policies, and the
+  application services extracted in T-1.3. Replace generic
+  `**operations`/`__dict__` ports with named, testable contracts. Keep
+  application modules independent of Flask and concrete storage APIs.
+- [ ] **1.2c — Remove presentation construction.** Delete `INFRASTRUCTURE`,
+  `OUTBOUND_HTTP_CLIENT`, `_DatabaseSessionProvider`/`connect`, and every
+  presentation fallback that builds a repository, gateway, session, or service.
+  Update direct-helper tests to construct application services with fakes.
+- [ ] **1.2d — Verify and commit.** AST-inspect all presentation modules for
+  infrastructure/session construction and verify injected API behavior with a
+  temporary database. Run `./quality.sh`, check T-1.2, and commit.
+
+### T-1.5 — Managed process wiring
+
+- [ ] **1.5a — Rewire the worker.** Build a task processor from composition
+  using the CLI's `--database` path; make `worker.py` call the application
+  processor without importing presentation. Preserve claim, heartbeat, and
+  durable completion semantics.
+- [ ] **1.5b — Rewire the scheduler.** Build a search runner from composition
+  using the CLI's `--database` path; make `scheduler.py` invoke the application
+  runner after lease acquisition without importing presentation.
+- [ ] **1.5c — Verify and commit.** Test both CLI entry points with a temporary
+  database and fake external adapters, including failure and lease paths. Run
+  `./quality.sh`, check T-1.5, and commit.
+
+### T-1.4 — Narrow the HTTP layer
+
+- [ ] **1.4a — Move console and read routes.** Register a small module for
+  console, state, and read APIs; migrate its tests to the injected app factory.
+- [ ] **1.4b — Move jobs, companies, and configuration routes.** Register
+  these route families with request validation and response mapping only;
+  migrate their tests to the injected app factory.
+- [ ] **1.4c — Move search, packets, and tasks routes.** Register these route
+  families with rendering and mapping only; migrate their tests to the injected
+  app factory.
+- [ ] **1.4d — Remove `presentation/legacy.py`.** Move any remaining pure
+  domain rules to application and I/O to data access; delete workflow and
+  data-access compatibility wrappers. Update app factory and remaining tests
+  after confirming no process or test imports legacy.
+- [ ] **1.4e — Verify and commit.** Exercise representative success, validation,
+  authentication, and unexpected-error HTTP responses; run `./quality.sh`,
+  check T-1.4, and commit.
+
+### T-1.6 — Boundary proof and T-1 closure
+
+- [ ] **1.6a — Strengthen AST tests.** Scan every presentation module for
+  direct data-access imports, adapter/repository/session construction, SQL,
+  filesystem/transport operations, and application workflow decisions. Assert
+  worker/scheduler do not import presentation and application services do not
+  depend on Flask or concrete infrastructure.
+- [ ] **1.6b — Run integration and quality evidence.** Verify injected API,
+  worker, and scheduler flows with temporary storage and fake HTTP/Codex/Pandoc
+  boundaries. Run `./quality.sh`, confirm at least 80% branch coverage, and
+  inspect the source against every T-1 closure criterion.
+- [ ] **1.6c — Close T-1.** Check T-1.6 and T-1 only when all five closure
+  criteria above have direct evidence; commit the final T-1 proof and checkboxes.
+
+### T-2 — Observable exception handling
+
+- [ ] **2a — Inventory catches and define events.** Enumerate every `except`
+  in `job_search/`; classify rethrow versus recovery. Document a stable unique
+  error code, component, operation, sanitized cause, identifiers, and valid
+  recovery behavior for each handled exception.
+- [ ] **2b — Extend the injected telemetry port.** Reuse the port introduced
+  in 1.1c; thread it through all remaining application services, parsers,
+  worker, and scheduler. Keep its structured logger implementation in
+  data access/composition, without importing Flask or leaking secrets.
+- [ ] **2c — Repair known failures.** Emit one event for malformed JSON-LD in
+  `job_posting_parser.py` and worker processor failures. Handle heartbeat
+  renewal failure so ownership is stopped or safely abandoned, with a durable
+  outcome and one event. Check all other inventoried catches as well.
+- [ ] **2d — Prove the failure paths.** Add deterministic tests for malformed
+  JSON-LD, processor failure, and heartbeat failure that assert both persisted
+  state and event fields. Add an AST inventory test keyed by module/function
+  that fails on unclassified new catches and checks each known catch for event
+  emission or explicit rethrow to a documented top-level handler; document
+  narrowly scoped parsing recovery inline.
+- [ ] **2e — Close T-2.** Run `./quality.sh`, confirm at least 80% branch
+  coverage, audit every T-2 closure criterion, check T-2, and commit its code,
+  tests, and checkbox separately from T-1.

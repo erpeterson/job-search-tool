@@ -11,9 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-def configure_json_file_logging(
-    loggers: Mapping[logging.Logger, Path], *, max_bytes: int, backup_count: int
-) -> None:
+def configure_json_file_logging(loggers: Mapping[logging.Logger, Path], *, max_bytes: int, backup_count: int) -> None:
     """Attach one JSON-lines rotating handler to each supplied logger."""
     for logger, path in loggers.items():
         if logger.handlers:
@@ -44,7 +42,12 @@ class StructuredTelemetry:
         self._redact_content_metadata = redact_content_metadata
 
     def api_call(
-        self, service: str, method: str, url: str, response: Any = None, error: Exception | None = None,
+        self,
+        service: str,
+        method: str,
+        url: str,
+        response: Any = None,
+        error: Exception | None = None,
         elapsed_ms: int | None = None,
     ) -> None:
         status_code = getattr(response, "status_code", None) if response is not None else None

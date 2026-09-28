@@ -64,7 +64,9 @@ class JobBoardClient:
                     "source_job_id": card.get("data-jk") or self._source_id("indeed", href),
                     "company": self._clean_text(company.get_text(" ")) if company else "",
                     "title": self._clean_text(title.get("title") or title.get_text(" ")),
-                    "location": self._clean_text(location_element.get_text(" ")) if location_element else location or "",
+                    "location": self._clean_text(location_element.get_text(" "))
+                    if location_element
+                    else location or "",
                     "url": self._clean_url(href),
                     "snippet": self._clean_text(card.get_text(" "))[:1200],
                 }

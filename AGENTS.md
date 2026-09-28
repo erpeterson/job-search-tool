@@ -7,6 +7,7 @@ This guidance applies to agents working on the job-search-tool codebase. It does
 - Keep work inspectable. Prefer plain files, clear diffs, deterministic scripts, structured logs, and explicit assumptions.
 - Optimize for reproducibility before convenience. Pin dependencies where practical and record deviations.
 - Surface uncertainty early. If a requirement, input, or instruction is ambiguous, consult a human to resolve the ambiguity.
+- "Continuing" replies that do not have a real edit/test result associated with them are not allowed.
 
 ## Autonomous Task Completion
 
@@ -15,10 +16,17 @@ acceptance criteria are met and verified.
 
 Do not stop after partial progress, a passing intermediate test, a quality-gate checkpoint, or a turn boundary. Treat these as evidence to select and execute the next unmet requirement.
 
-Only return control to the user when:
-- a decision or approval is required;
-- an external blocker cannot be resolved within the authorized scope; or
-- the entire task is complete, verified, documented as required, and committed when requested.
+For active implementation goals, every turn must make a concrete, verifiable step: a scoped edit, test, inspection that changes the next action, or a genuine wait. Do not send status-only updates or claim continued work without evidence. If work remains, end with the next concrete subtask and resume it on the next turn. Mark blocked only for a genuine external dependency requiring user input or state change.
+
+Do not mark a goal blocked for task size, context limits, or uncertainty; only for an external dependency requiring user action.
+Before ending a turn, either make and verify a code change, or continue to the next named subtask.
+Maintain a checked-off, concrete subtask list and select the next unchecked item automatically.
+Treat “continue” as authorization to modify any in-project files needed for the stated task.
+Require a completion audit against every closure criterion before reporting completion or committing.
+
+Every completed turn must return a concise, evidence-based message describing the concrete edit, verification, blocker, or next subtask. Do not send empty replies or claim progress without evidence. For active implementation work, proceed to the next actionable subtask on the next turn unless a genuine external blocker or user decision is required.
+
+If returning control to the user without forward progress being made, explain why progress couldn't be made and advise what is necessary to unblock.
 
 Maintain an explicit acceptance-criteria checklist. Do not mark a task complete or commit it until every criterion has direct evidence.
 

@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import textwrap
 import time
 import uuid
@@ -38,17 +37,29 @@ from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
+from job_search.composition import (
+    CaptureStore,
+    JobBoardClient,
+    StructuredTelemetry,
+    configure_json_file_logging,
+    database_session,
+    infrastructure,
+    parse_model_json,
+    read_optional_text,
+    update_environment_file,
+)
 from job_search.composition import background_task_service as compose_background_task_service
 from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
 from job_search.composition import company_service as compose_company_service
 from job_search.composition import console_query_service as compose_console_query_service
-from job_search.composition import database_session, infrastructure
 from job_search.composition import discovery_service as compose_discovery_service
 from job_search.composition import filtering_service as compose_filtering_service
 from job_search.composition import initialization_service as compose_initialization_service
 from job_search.composition import job_service as compose_job_service
 from job_search.composition import level_service as compose_level_service
+from job_search.composition import outbound_http_service as compose_outbound_http_service
 from job_search.composition import packet_attachment_service as compose_packet_attachment_service
+from job_search.composition import packet_catalog as compose_packet_catalog
 from job_search.composition import packet_content_service as compose_packet_content_service
 from job_search.composition import packet_document_writer as compose_packet_document_writer
 from job_search.composition import packet_generation_service as compose_packet_generation_service
@@ -59,11 +70,6 @@ from job_search.composition import search_run_service as compose_search_run_serv
 from job_search.composition import settings_service as compose_settings_service
 from job_search.composition import task_execution_service as compose_task_execution_service
 from job_search.config import load_runtime_settings
-from job_search.data_access.capture_store import CaptureStore
-from job_search.data_access.environment_file import update_environment_file
-from job_search.data_access.job_board_client import JobBoardClient
-from job_search.data_access.model_output_parser import parse_model_json
-from job_search.data_access.telemetry import StructuredTelemetry, configure_json_file_logging
 from job_search.errors import ClientInputError, translate_exception
 from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
 from job_search.security import authorized, csrf_valid, load_request_security, trusted_proxy_peer
@@ -663,8 +669,8 @@ def list_discoveries(conn, limit=50):
 
 
 def career_context():
-    manual = CAREER_MANUAL_PATH.read_text(encoding="utf-8") if CAREER_MANUAL_PATH.exists() else ""
-    guidance = GUIDANCE_PATH.read_text(encoding="utf-8") if GUIDANCE_PATH.exists() else ""
+    manual = read_optional_text(CAREER_MANUAL_PATH)
+    guidance = read_optional_text(GUIDANCE_PATH)
     return textwrap.shorten(manual, width=9000, placeholder="\n[manual truncated]\n") + "\n\n" + guidance
 
 
@@ -771,31 +777,7 @@ def escape_html(value):
 
 
 def list_application_packets(conn):
-    catalog = dependency("packet_catalog", lambda: None)
-    if catalog is not None:
-        return catalog.list(conn)
-    APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    associated_rows = INFRASTRUCTURE.read_models.application_packet_jobs(conn)
-    associated_by_path = {row["application_packet_path"]: row for row in associated_rows}
-    packets = []
-    for path in sorted(APPLICATIONS_DIR.iterdir()):
-        if not path.is_dir():
-            continue
-        markdown_files = list_markdown_files(path)
-        if not markdown_files:
-            continue
-        relative = repo_relative(path)
-        associated_job = associated_by_path.get(relative)
-        packets.append(
-            {
-                "path": relative,
-                "name": path.name,
-                "markdown_files": markdown_files,
-                "associated_job": associated_job,
-                "unassociated": associated_job is None,
-            }
-        )
-    return packets
+    return dependency("packet_catalog", lambda: compose_packet_catalog(DB_PATH)).list(conn)
 
 
 def application_packet_slug(job):
@@ -808,16 +790,16 @@ def application_packet_slug(job):
 
 
 def application_packet_rules():
-    if not CAREER_MANUAL_PATH.exists():
+    manual = read_optional_text(CAREER_MANUAL_PATH)
+    if not manual:
         return ""
-    manual = CAREER_MANUAL_PATH.read_text(encoding="utf-8")
     start = manual.find("# Downstream Artifact Rules")
     end = manual.find("# Open Questions", start)
     return manual[start : end if end >= 0 else None].strip() if start >= 0 else ""
 
 
 def application_packet_context(job):
-    master_resume = MASTER_RESUME_PATH.read_text(encoding="utf-8") if MASTER_RESUME_PATH.exists() else ""
+    master_resume = read_optional_text(MASTER_RESUME_PATH)
     return {
         "packet_creation_date": datetime.now().date().isoformat(),
         "job": {
@@ -913,15 +895,9 @@ def generate_application_packet_with_codex(job):
                 raise RuntimeError(
                     "Codex did not include the exact invoked model in every application-packet attribution."
                 )
-        packet_dir = APPLICATIONS_DIR / application_packet_slug(job)
-        if packet_dir.exists():
-            raise FileExistsError(f"Application packet directory already exists: {repo_relative(packet_dir)}")
-        APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
-        # Publish only after all Markdown and DOCX files were generated successfully.
-        with tempfile.TemporaryDirectory(prefix=".packet-staging-", dir=APPLICATIONS_DIR) as staging_root:
-            staged_packet_dir = Path(staging_root) / packet_dir.name
-            markdown_files = write_application_packet_documents(staged_packet_dir, payload)
-            staged_packet_dir.replace(packet_dir)
+        packet_dir, markdown_files = INFRASTRUCTURE.packet_storage(ROOT, APPLICATIONS_DIR).publish(
+            application_packet_slug(job), payload, write_application_packet_documents
+        )
         return {"output_text": output_text, "packet_dir": packet_dir, "markdown_files": markdown_files}
     except Exception as exc:
         error = exc
@@ -1121,7 +1097,7 @@ def request_headers():
 
 
 def fetch_url(service, url, force_refresh=False):
-    gateway = INFRASTRUCTURE.capture_gateway(
+    gateway = compose_outbound_http_service(
         OUTBOUND_HTTP_CLIENT, request_headers, read_capture, write_capture, log_api_call, redact_headers
     )
     return gateway.get(service, url, force_refresh=force_refresh)

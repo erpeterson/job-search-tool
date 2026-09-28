@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from job_search.data_access.packet_content_reader import FilesystemPacketContentReader
+from job_search.data_access.packet_storage import PacketStorage
 
 
 class PacketContentReaderTests(unittest.TestCase):
@@ -34,3 +35,19 @@ class PacketContentReaderTests(unittest.TestCase):
                 reader.read("../outside", "Resume.md")
             with self.assertRaisesRegex(FileNotFoundError, "Markdown file not found"):
                 reader.read("applications/sample", "Resume.md")
+
+    def test_packet_storage_publishes_only_complete_staged_packet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            storage = PacketStorage(root, root / "applications")
+
+            def write(packet_dir, _payload):
+                packet_dir.mkdir(parents=True)
+                (packet_dir / "Resume.md").write_text("resume", encoding="utf-8")
+                return ["Resume.md"]
+
+            destination, files = storage.publish("example", {}, write)
+            self.assertEqual(files, ["Resume.md"])
+            self.assertTrue((destination / "Resume.md").is_file())
+            with self.assertRaises(FileExistsError):
+                storage.publish("example", {}, write)

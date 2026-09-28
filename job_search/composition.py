@@ -28,17 +28,21 @@ from job_search.application.settings_service import SettingsService
 from job_search.application.task_execution_service import TaskExecutionService
 from job_search.data_access.application_packet_catalog import ApplicationPacketCatalog
 from job_search.data_access.board_gateway import CallableBoardGateway
+from job_search.data_access.capture_store import CaptureStore  # noqa: F401
 from job_search.data_access.codex_cli import CodexCliGateway
 from job_search.data_access.company_repository import SqliteCompanyRepository
 from job_search.data_access.console_query_repository import SqliteConsoleQueryRepository
 from job_search.data_access.document_writer import PacketDocumentWriter
+from job_search.data_access.environment_file import update_environment_file  # noqa: F401
 from job_search.data_access.filter_repository import SqliteJobFilterRepository
 from job_search.data_access.http_gateway import CapturingHttpGateway
 from job_search.data_access.initialization_adapter import SqliteInitializationAdapter
+from job_search.data_access.job_board_client import JobBoardClient  # noqa: F401
 from job_search.data_access.job_board_parser import JobBoardParser
 from job_search.data_access.job_posting_parser import JobPostingParser
 from job_search.data_access.job_repository import SqliteJobRepository
 from job_search.data_access.level_repository import SqliteLevelRepository
+from job_search.data_access.model_output_parser import parse_model_json  # noqa: F401
 from job_search.data_access.packet_content_reader import FilesystemPacketContentReader
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.data_access.read_models import SqliteReadModels
@@ -48,6 +52,8 @@ from job_search.data_access.search_query_repository import SqliteSearchQueryRepo
 from job_search.data_access.search_repository import SqliteSearchRepository
 from job_search.data_access.settings_repository import SqliteSettingsRepository
 from job_search.data_access.sqlite import open_connection
+from job_search.data_access.telemetry import StructuredTelemetry, configure_json_file_logging  # noqa: F401
+from job_search.data_access.text_file_reader import read_optional_text  # noqa: F401
 from job_search.http_client import SafeHttpClient
 from job_search.presentation.dependencies import PresentationDependencies
 from job_search.task_repository import TaskRepository
@@ -181,6 +187,19 @@ def packet_content_service(database_path: Path) -> PacketContentService:
     """Compose packet filesystem reads outside the HTTP layer."""
     root = database_path.parent
     return PacketContentService(FilesystemPacketContentReader(root, root / "applications"))
+
+
+def packet_catalog(database_path: Path) -> ApplicationPacketCatalog:
+    """Compose filesystem packet discovery outside presentation handlers."""
+    root = database_path.parent
+    return ApplicationPacketCatalog(root, root / "applications")
+
+
+def outbound_http_service(
+    client: Any, headers: Any, read_capture: Any, write_capture: Any, log_api_call: Any, redact: Any
+):
+    """Compose the captured outbound HTTP adapter outside presentation."""
+    return CapturingHttpGateway(client, headers, read_capture, write_capture, log_api_call, redact)
 
 
 def packet_attachment_service(database_path: Path) -> PacketAttachmentService:
