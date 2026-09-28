@@ -674,7 +674,7 @@ class LevelEquivalencyRepository:
             """
             INSERT INTO level_equivalencies(
                 company, normalized_company, title_pattern, normalized_title_pattern,
-                source_level, source_level_title, oracle_level, oracle_title, downlevel,
+                source_level, source_level_title, target_level, target_title, downlevel,
                 source_url, notes, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -683,8 +683,8 @@ class LevelEquivalencyRepository:
                 title_pattern = excluded.title_pattern,
                 source_level = excluded.source_level,
                 source_level_title = excluded.source_level_title,
-                oracle_level = excluded.oracle_level,
-                oracle_title = excluded.oracle_title,
+                target_level = excluded.target_level,
+                target_title = excluded.target_title,
                 downlevel = excluded.downlevel,
                 source_url = excluded.source_url,
                 notes = excluded.notes,
@@ -697,8 +697,8 @@ class LevelEquivalencyRepository:
                 fields["normalized_title_pattern"],
                 fields["source_level"],
                 fields["source_level_title"],
-                fields["oracle_level"],
-                fields["oracle_title"],
+                fields["target_level"],
+                fields["target_title"],
                 1 if fields["downlevel"] else 0,
                 fields["source_url"],
                 fields["notes"],

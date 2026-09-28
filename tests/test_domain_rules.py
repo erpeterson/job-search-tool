@@ -159,7 +159,7 @@ class TestLevels:
     )
     def test_estimate(self, profile, title, level):
         estimate = estimate_level_equivalency(title, profile.target_level)
-        assert (estimate["oracle_level"] if estimate else None) == level, f"unexpected level for {title!r}"
+        assert (estimate["target_level"] if estimate else None) == level, f"unexpected level for {title!r}"
 
     def test_assessment_text(self, profile):
         text = level_assessment_from_equivalency(
@@ -168,8 +168,8 @@ class TestLevels:
                 "source_level_title": "Staff Engineer",
                 "title_pattern": "",
                 "source_level": "L6",
-                "oracle_level": "BELOW_IC6",
-                "oracle_title": "Below",
+                "target_level": "BELOW_IC6",
+                "target_title": "Below",
             },
             profile.target_level,
         )

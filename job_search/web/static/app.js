@@ -153,6 +153,7 @@ async function api(path, options = {}) {
 
 async function load() {
   state = await api("/api/state?include_filtered=1");
+  document.getElementById("profile_banner").hidden = !state.profile_is_example;
   document.getElementById("gpt_threshold").value = state.settings.gpt_threshold;
   document.getElementById("user_threshold").value = state.settings.user_threshold;
   document.getElementById("codex_model").value = state.settings.codex_model || "";

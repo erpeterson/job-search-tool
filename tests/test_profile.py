@@ -90,3 +90,62 @@ def test_custom_profile_changes_rules(raw_profile):
     assert allowed and reason == "Austin-based or Austin-area role", reason
     assert not location_filter_decision({"location": "Seattle, WA"}, profile)[0], "the old metro no longer matches"
     assert compensation_filter_decision({"snippet": "$150,000 per year"}, profile)[0], "the lower floor applies"
+
+
+def _build(config, environ):
+    from conftest import FakeResolver
+
+    from job_search.container import build_container
+
+    return build_container(config, environ=environ, resolve_host=FakeResolver())
+
+
+def test_example_profile_logs_a_warning_and_flags_the_ui(workspace, environ):
+    import logging
+
+    from job_search.observability import configure_console_logging
+
+    out = io.StringIO()
+    configure_console_logging(verbose=True, stdout=out, stderr=io.StringIO())
+    config = AppConfig.from_env(environ, app_dir=workspace / "job-search-tool")
+    container = _build(config, environ)
+    events = [json.loads(line) for line in out.getvalue().splitlines() if "search_profile_using_example" in line]
+    assert container.profile_is_example, "the shipped example profile should be flagged"
+    assert events and events[0]["level"] == logging.getLevelName(logging.WARNING), f"expected a warning: {events}"
+
+
+def test_workspace_profile_is_not_flagged(workspace, environ):
+    (workspace / "job-search-profile.json").write_text(PROFILE_EXAMPLE.read_text(), encoding="utf-8")
+    config = AppConfig.from_env(environ, app_dir=workspace / "job-search-tool")
+    assert _build(config, environ).profile_is_example is False, "a real workspace profile is not flagged"
+
+
+def test_state_reports_example_profile(client):
+    assert client.get("/api/state").get_json()["profile_is_example"] is True, "the UI banner needs the flag"
+
+
+def test_legacy_level_columns_are_renamed_with_data(tmp_path):
+    import sqlite3
+
+    from job_search.data.database import Database
+
+    path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE level_equivalencies (id INTEGER PRIMARY KEY, company TEXT NOT NULL, normalized_company TEXT"
+        " NOT NULL, title_pattern TEXT NOT NULL, normalized_title_pattern TEXT NOT NULL, source_level TEXT,"
+        " source_level_title TEXT, oracle_level TEXT NOT NULL, oracle_title TEXT NOT NULL, downlevel INTEGER NOT"
+        " NULL, source_url TEXT, notes TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,"
+        " UNIQUE(normalized_company, normalized_title_pattern))"
+    )
+    conn.execute(
+        "INSERT INTO level_equivalencies(company, normalized_company, title_pattern, normalized_title_pattern,"
+        " oracle_level, oracle_title, downlevel, created_at, updated_at) VALUES ('Co','co','T','t','IC6+','Arch',0,1,1)"
+    )
+    conn.commit()
+    conn.close()
+    Database(path).create_schema()
+    with Database(path).unit_of_work() as uow:
+        row = dict(uow.connection.execute("SELECT * FROM level_equivalencies").fetchone())
+    assert (row["target_level"], row["target_title"]) == ("IC6+", "Arch"), f"data must survive the rename: {row}"
+    assert "oracle_level" not in row, "the legacy column name is gone"

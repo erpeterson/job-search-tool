@@ -260,8 +260,8 @@ class SearchService:
                     "level_equivalency_matched",
                     company=result.get("company"),
                     title=result.get("title"),
-                    oracle_level=equivalency["oracle_level"],
-                    oracle_title=equivalency["oracle_title"],
+                    target_level=equivalency["target_level"],
+                    target_title=equivalency["target_title"],
                     downlevel=bool(equivalency["downlevel"]),
                     source_url=equivalency.get("source_url"),
                 )

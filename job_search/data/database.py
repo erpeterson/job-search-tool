@@ -115,8 +115,8 @@ CREATE TABLE IF NOT EXISTS level_equivalencies (
     normalized_title_pattern TEXT NOT NULL,
     source_level TEXT,
     source_level_title TEXT,
-    oracle_level TEXT NOT NULL,
-    oracle_title TEXT NOT NULL,
+    target_level TEXT NOT NULL,
+    target_title TEXT NOT NULL,
     downlevel INTEGER NOT NULL,
     source_url TEXT,
     notes TEXT,
@@ -139,6 +139,13 @@ CREATE TABLE IF NOT EXISTS company_interests (
     contacts TEXT
 );
 """
+
+# Columns renamed after release: (table, old name, new name). Earlier releases named the
+# target-level columns after the original candidate's employer.
+_RENAMED_COLUMNS = (
+    ("level_equivalencies", "oracle_level", "target_level"),
+    ("level_equivalencies", "oracle_title", "target_title"),
+)
 
 # Columns added after the first release; applied to older databases.
 _ADDED_COLUMNS = (
@@ -220,6 +227,11 @@ class Database:
         with self.unit_of_work() as uow:
             conn = uow.connection
             conn.executescript(SCHEMA)
+            for table, old, new in _RENAMED_COLUMNS:
+                existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if old in existing and new not in existing:
+                    # Names come from the constant above, never from input; RENAME keeps the data.
+                    conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
             for table, column, definition in _ADDED_COLUMNS:
                 existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
                 if column not in existing:

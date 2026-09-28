@@ -1,9 +1,10 @@
 """Composition root: constructs data adapters and domain services from configuration."""
 
+import logging
 import os
 from dataclasses import dataclass
 
-from job_search.config import AppConfig, RuntimeSettings
+from job_search.config import PROFILE_EXAMPLE_PATH, AppConfig, RuntimeSettings
 from job_search.data.captures import CaptureStore
 from job_search.data.codex_client import CodexClient, parse_model_json
 from job_search.data.database import Database
@@ -22,6 +23,7 @@ from job_search.domain.scoring import ScoringService
 from job_search.domain.search import SearchService
 from job_search.domain.settings import SettingsService
 from job_search.domain.tasks import BackgroundTaskRegistry, BulkOperations
+from job_search.observability import log_event
 
 
 @dataclass
@@ -36,6 +38,7 @@ class Container:
     search: SearchService
     settings: SettingsService
     profile: SearchProfile
+    profile_is_example: bool
     packet_store: PacketStore
     tasks: BackgroundTaskRegistry
     bulk: BulkOperations
@@ -68,6 +71,14 @@ def build_container(
         os.environ if environ is None else environ, config.default_codex_cli_path, config.default_codex_model
     )
     profile = profile or load_search_profile(config.profile_path)
+    profile_is_example = config.profile_path.resolve() == PROFILE_EXAMPLE_PATH.resolve()
+    if profile_is_example:
+        log_event(
+            "search_profile_using_example",
+            level=logging.WARNING,
+            path=str(config.profile_path),
+            advice="Copy profile.example.json to <workspace>/job-search-profile.json and edit it for your search.",
+        )
     db = Database(config.db_path, timeout_seconds=config.db_timeout_seconds)
     captures = CaptureStore(config.capture_dir, runtime.capture_cache_enabled)
     http_kwargs = {
@@ -104,6 +115,7 @@ def build_container(
         companies=CompanyService(db),
         scoring=scoring,
         profile=profile,
+        profile_is_example=profile_is_example,
         packet_store=store,
         packets=packets,
         search=search,
