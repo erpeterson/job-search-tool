@@ -50,16 +50,65 @@ def test_prune_without_yes_is_a_dry_run(workspace):
     code, output = prune(app_dir, "--older-than", "30")
     assert code == cli.EXIT_OK, f"dry run should succeed, got {code}"
     assert str(old) in output and str(recent) not in output, f"only old captures are listed: {output}"
-    assert "Dry run: 1 capture files would be deleted" in output, output
+    assert "Dry run: 1 capture files would be archived" in output, output
     assert old.exists() and recent.exists(), "nothing is deleted without --yes"
 
 
-def test_prune_with_yes_deletes_only_old_captures(workspace):
+def test_prune_with_yes_archives_old_captures_instead_of_deleting(workspace):
+    import tarfile
+
     app_dir = workspace / "job-search-tool"
     old, recent = make_captures(app_dir, [40, 1])
+    old_content = old.read_text()
     code, output = prune(app_dir, "--older-than", "30", "--yes")
-    assert code == cli.EXIT_OK and "Deleted 1 of 1 capture files." in output, output
-    assert not old.exists() and recent.exists(), "only captures older than the threshold are deleted"
+    assert code == cli.EXIT_OK and "Archived 1 of 1 capture files into" in output, output
+    assert not old.exists() and recent.exists(), "only captures older than the threshold are moved"
+    [archive] = list((app_dir / "captures" / "archive").glob("captures-*.tar.gz"))
+    with tarfile.open(archive, "r:gz") as bundle:
+        member = bundle.extractfile("svc/op/0.json").read().decode()
+    assert member == old_content, "the pruned capture must be preserved in the archive"
+
+
+def test_pruning_never_touches_existing_archives(workspace):
+    app_dir = workspace / "job-search-tool"
+    make_captures(app_dir, [40])
+    prune(app_dir, "--older-than", "30", "--yes")
+    code, output = prune(app_dir, "--older-than", "1", "--yes")
+    assert "Archived 0 of 0 capture files." in output, f"archives are not re-pruned: {output}"
+    assert len(list((app_dir / "captures" / "archive").glob("*.tar.gz"))) == 1, "the first archive is kept"
+
+
+def test_incomplete_archive_keeps_originals(tmp_path, monkeypatch):
+    import tarfile
+
+    import pytest
+
+    from job_search.data.captures import CaptureStore
+
+    store = CaptureStore(tmp_path / "captures", lambda: True)
+    path = store.write("svc", "op", {"a": 1}, {"text": "x"})
+    real_open = tarfile.open
+
+    class Truncated:
+        def __init__(self, bundle):
+            self.bundle = bundle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.bundle.close()
+
+        def getnames(self):
+            return []
+
+    monkeypatch.setattr(
+        "job_search.data.captures.tarfile.open",
+        lambda name, mode: Truncated(real_open(name, mode)) if mode == "r:gz" else real_open(name, mode),
+    )
+    with pytest.raises(OSError, match="incomplete"):
+        store.archive_files([path])
+    assert path.exists(), "originals must be kept when the archive cannot be verified"
 
 
 def test_prune_rejects_invalid_age(workspace, capsys):
