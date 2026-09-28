@@ -15,7 +15,7 @@ from pathlib import Path
 
 from job_search.domain.errors import ConfigurationError
 from job_search.domain.runtime_policy import RUNTIME_CONFIG_KEYS
-from job_search.observability import record_exception
+from job_search.observability import log_event, record_exception
 
 DEFAULT_APP_DIR = Path(__file__).resolve().parent.parent
 
@@ -76,6 +76,59 @@ def _check_bind_safety(environ, host, debug):
             "Use 127.0.0.1, or set JOB_SEARCH_ALLOW_REMOTE=1 to accept the risk.",
             "config_remote_bind_not_allowed",
         )
+
+
+SUPPORTED_VARIABLES = frozenset(
+    {
+        "CODEX_CLI_PATH",
+        "CODEX_CLI_TIMEOUT_SECONDS",
+        "CODEX_MODEL",
+        "PANDOC_TIMEOUT_SECONDS",
+        "JOB_SEARCH_ALLOWED_HOSTS",
+        "JOB_SEARCH_ALLOW_REMOTE",
+        "JOB_SEARCH_AUTORUN",
+        "JOB_SEARCH_CAPTURE_DIR",
+        "JOB_SEARCH_CAREER_MANUAL_PATH",
+        "JOB_SEARCH_DB_PATH",
+        "JOB_SEARCH_DB_TIMEOUT_SECONDS",
+        "JOB_SEARCH_DEBUG",
+        "JOB_SEARCH_ENABLE_GPT_SCORING",
+        "JOB_SEARCH_GUIDANCE_PATH",
+        "JOB_SEARCH_HOST",
+        "JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES",
+        "JOB_SEARCH_HTTP_TIMEOUT_SECONDS",
+        "JOB_SEARCH_INTERVAL_SECONDS",
+        "JOB_SEARCH_LOG_DIR",
+        "JOB_SEARCH_LOG_MAX_BYTES",
+        "JOB_SEARCH_MASTER_RESUME_PATH",
+        "JOB_SEARCH_MAX_REQUEST_BYTES",
+        "JOB_SEARCH_MAX_RETAINED_TASKS",
+        "JOB_SEARCH_MAX_RUNNING_TASKS",
+        "JOB_SEARCH_PORT",
+        "JOB_SEARCH_PROFILE_PATH",
+        "JOB_SEARCH_USE_CAPTURE_CACHE",
+        "JOB_SEARCH_WORKSPACE_ROOT",
+    }
+)
+REMOVED_VARIABLES = {
+    "JOB_SEARCH_LOG_BACKUP_COUNT": (
+        "Removed: rotated logs are now archived as timestamped .gz files and never deleted; "
+        "JOB_SEARCH_LOG_MAX_BYTES still sets the rotation size."
+    ),
+}
+
+
+def warn_unknown_variables(settings):
+    """Log a warning for each JOB_SEARCH_* setting the app does not read. Returns the unknown names."""
+    unknown = sorted(key for key in settings if key.startswith("JOB_SEARCH_") and key not in SUPPORTED_VARIABLES)
+    for key in unknown:
+        log_event(
+            "config_unknown_variable",
+            level=logging.WARNING,
+            variable=key,
+            advice=REMOVED_VARIABLES.get(key, "Not a supported setting; check the spelling against .env.example."),
+        )
+    return unknown
 
 
 _PATH_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")

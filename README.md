@@ -126,7 +126,10 @@ example a file where a directory is expected) stops startup with exit code `2`.
 | `JOB_SEARCH_HTTP_MAX_RESPONSE_BYTES` | `5242880` | Largest job-board or posting response the app reads; larger responses fail with `http_response_too_large`. |
 | `JOB_SEARCH_DEBUG` | `0` | Flask debug mode. Refused with a non-loopback host because the debugger allows remote code execution. |
 
-Invalid values stop startup with exit code `2` and a message naming the variable.
+Invalid values stop startup with exit code `2` and a message naming the variable. Any `JOB_SEARCH_*` setting the
+app does not recognize (for example a misspelling, or the removed
+`JOB_SEARCH_LOG_BACKUP_COUNT`) is logged at startup as a `config_unknown_variable`
+warning that says what to do instead.
 
 The app is served by the Werkzeug development server and is meant for local,
 single-user use only. It refuses to bind to a non-loopback address unless
