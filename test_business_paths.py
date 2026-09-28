@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_search.data_access import codex_cli
+from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
@@ -23,7 +24,6 @@ class BusinessPathTests(unittest.TestCase):
         self.original_applications_dir = app_module.APPLICATIONS_DIR
         self.original_root = app_module.ROOT
         self.original_env_path = app_module.ENV_PATH
-        self.original_packet_storage = app_module.PACKET_STORAGE
         self.original_runtime_paths = app_module.RUNTIME_CONFIG.paths
         self.original_runtime_environment = app_module.RUNTIME_CONFIG.environment
         app_module.RUNTIME_CONFIG.environment = dict(self.original_runtime_environment)
@@ -38,14 +38,13 @@ class BusinessPathTests(unittest.TestCase):
             environment_file=app_module.ENV_PATH,
             captures=app_module.CAPTURE_DIR,
         )
-        app_module.PACKET_STORAGE = app_module.compose_packet_storage(app_module.RUNTIME_CONFIG)
+        self.packet_storage = PacketStorage(app_module.ROOT, app_module.APPLICATIONS_DIR)
 
     def tearDown(self):
         app_module.CAPTURE_DIR = self.original_capture_dir
         app_module.APPLICATIONS_DIR = self.original_applications_dir
         app_module.ROOT = self.original_root
         app_module.ENV_PATH = self.original_env_path
-        app_module.PACKET_STORAGE = self.original_packet_storage
         app_module.RUNTIME_CONFIG.paths = self.original_runtime_paths
         app_module.RUNTIME_CONFIG.environment = self.original_runtime_environment
         self.tempdir.cleanup()
@@ -62,9 +61,9 @@ class BusinessPathTests(unittest.TestCase):
         packet = app_module.APPLICATIONS_DIR / "example-role"
         packet.mkdir()
 
-        self.assertEqual(app_module.PACKET_STORAGE.packet_directory("applications/example-role"), packet.resolve())
+        self.assertEqual(self.packet_storage.packet_directory("applications/example-role"), packet.resolve())
         with self.assertRaisesRegex(ValueError, "under applications"):
-            app_module.PACKET_STORAGE.packet_directory("../../outside")
+            self.packet_storage.packet_directory("../../outside")
 
     def test_score_coercion_recovery_emits_a_stable_telemetry_code(self):
         events = []

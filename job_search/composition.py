@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from job_search.application.job_service import JobService
 from job_search.application.level_service import LevelService
 from job_search.application.packet_attachment_service import PacketAttachmentService
 from job_search.application.packet_content_service import PacketContentService
+from job_search.application.packet_draft_service import PacketDraftService
 from job_search.application.packet_generation_service import PacketGenerationService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.application.search_query_service import SearchQueryService
@@ -404,6 +406,28 @@ def packet_document_writer() -> PacketDocumentWriter:
     return PacketDocumentWriter()
 
 
+def packet_draft_service(
+    configuration: RuntimeConfiguration, observed: Observability, gateway: CodexJsonGateway
+) -> PacketDraftService:
+    """Compose source reads, model transport, and atomic packet publication."""
+    sources = source_documents(configuration)
+    storage = packet_storage(configuration)
+    writer = PacketDocumentWriter()
+    return PacketDraftService(
+        career_manual=sources.career_manual,
+        master_resume=sources.master_resume,
+        cli_available=configuration.cli_available,
+        cli_path=configuration.cli_path,
+        model=configuration.model,
+        complete=gateway.complete,
+        parse=parse_model_json,
+        publish=lambda name, payload: storage.publish(name, payload, writer.write),
+        relative_path=storage.relative_path,
+        today=date.today,
+        telemetry=observed.telemetry,
+    )
+
+
 def job_service(database_path: Path, observe: Any = None) -> JobService:
     return JobService(SqliteJobRepository(lambda: database_session(database_path)), observe=observe)
 
@@ -479,20 +503,20 @@ def bulk_task_service(database_path: Path, processor: TaskExecutionService, tele
 
 
 class _PacketGenerationOperations:
-    def __init__(self, connection: Any, job: Any, generate: Any, save_path: Any, now: Any, log: Any) -> None:
-        self.connection = connection
-        self.job = job
-        self.generate = generate
-        self.save_path = save_path
-        self.now = now
-        self.log = log
+    def __init__(self, database_path: Path, draft: PacketDraftService, telemetry: Telemetry) -> None:
+        self.connection = lambda: database_session(database_path)
+        self.job = SqliteReadModels.job
+        self.generate = draft.generate
+        self.save_path = SqliteSearchMutations.save_application_packet_path
+        self.now = lambda: int(time.time())
+        self.log = telemetry.event
 
 
 def packet_generation_service(
-    connection: Any, job: Any, generate: Any, save_path: Any, now: Any, log: Any
+    database_path: Path, draft: PacketDraftService, telemetry: Telemetry
 ) -> PacketGenerationService:
-    """Compose packet generation from explicit workflow ports."""
-    return PacketGenerationService(_PacketGenerationOperations(connection, job, generate, save_path, now, log))
+    """Compose packet association persistence after atomic draft publication."""
+    return PacketGenerationService(_PacketGenerationOperations(database_path, draft, telemetry))
 
 
 class _CodexScoringOperations:

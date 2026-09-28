@@ -202,7 +202,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 - [x] **1.3e — Move scoring.** Move Codex scoring orchestration, score
   normalization/storage, and filter refresh decisions into application code.
   Inject the Codex adapter and test success and failure without the CLI.
-- [ ] **1.3f — Move packet generation.** Move packet context/prompt rules,
+- [x] **1.3f — Move packet generation.** Move packet context/prompt rules,
   validation, attribution retry, and publish decisions into application code.
   Inject Codex and packet-storage adapters; test attribution and publication
   failures without the CLI or Pandoc.

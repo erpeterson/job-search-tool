@@ -22,13 +22,12 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.original_env_path = workflow_app.ENV_PATH
         self.original_applications_dir = workflow_app.APPLICATIONS_DIR
         self.original_root = workflow_app.ROOT
-        self.original_packet_storage = workflow_app.PACKET_STORAGE
         self.original_gpt_scoring_enabled = workflow_app.gpt_scoring_enabled
         workflow_app.DB_PATH = Path(self.tempdir.name) / "jobs.sqlite3"
         workflow_app.ENV_PATH = Path(self.tempdir.name) / ".env"
         workflow_app.APPLICATIONS_DIR = Path(self.tempdir.name) / "applications"
         workflow_app.ROOT = Path(self.tempdir.name)
-        workflow_app.PACKET_STORAGE = PacketStorage(workflow_app.ROOT, workflow_app.APPLICATIONS_DIR)
+        self.packet_storage = PacketStorage(workflow_app.ROOT, workflow_app.APPLICATIONS_DIR)
         workflow_app.gpt_scoring_enabled = lambda: False
         workflow_app.startup_service().initialize()
         self.client = workflow_app.app.test_client()
@@ -38,7 +37,6 @@ class ApplicationWorkflowTests(unittest.TestCase):
         workflow_app.ENV_PATH = self.original_env_path
         workflow_app.APPLICATIONS_DIR = self.original_applications_dir
         workflow_app.ROOT = self.original_root
-        workflow_app.PACKET_STORAGE = self.original_packet_storage
         workflow_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
         self.tempdir.cleanup()
 
@@ -374,7 +372,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
         attached = self.client.post(
             f"/api/jobs/{job_id}/application-packet/attach",
-            json={"path": workflow_app.PACKET_STORAGE.relative_path(packet_dir)},
+            json={"path": self.packet_storage.relative_path(packet_dir)},
         )
         content = self.client.get(f"/api/jobs/{job_id}/application-packet/content?file=Resume.md")
         rendered = self.client.get(f"/api/jobs/{job_id}/application-packet/render?file=Resume.md")
@@ -533,18 +531,24 @@ class ApplicationWorkflowTests(unittest.TestCase):
         orphan_dir.mkdir()
         (generated_dir / "Resume.md").write_text("Resume", encoding="utf-8")
         (orphan_dir / "Job-Brief.md").write_text("Brief", encoding="utf-8")
-        original_generator = workflow_app.generate_application_packet_with_codex
-        workflow_app.generate_application_packet_with_codex = lambda _job: {
-            "packet_dir": generated_dir,
-            "markdown_files": ["Resume.md"],
-            "output_text": "{}",
-        }
+        original_factory = workflow_app.compose_packet_draft_service
+
+        class FakeDraft:
+            def generate(self, _job):
+                return {
+                    "path": "applications/generated",
+                    "name": "generated",
+                    "markdown_files": ["Resume.md"],
+                    "codex_output": "{}",
+                }
+
+        workflow_app.compose_packet_draft_service = lambda *_args: FakeDraft()
         try:
             with workflow_app.connect() as connection:
                 created = workflow_app.create_application_packet(connection, job_id)
                 packets = workflow_app.list_application_packets(connection)
         finally:
-            workflow_app.generate_application_packet_with_codex = original_generator
+            workflow_app.compose_packet_draft_service = original_factory
 
         by_name = {packet["name"]: packet for packet in packets}
         self.assertEqual(created["name"], "generated")

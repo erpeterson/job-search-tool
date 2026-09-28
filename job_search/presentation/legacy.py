@@ -5,7 +5,6 @@ import re
 import time
 import uuid
 from contextlib import nullcontext
-from datetime import UTC, datetime
 
 from flask import (
     Blueprint,
@@ -40,7 +39,6 @@ from job_search.composition import (
     database_session,
     infrastructure,
     observability,
-    parse_model_json,
     runtime_configuration,
 )
 from job_search.composition import background_task_service as compose_background_task_service
@@ -57,14 +55,12 @@ from job_search.composition import outbound_clients as compose_outbound_clients
 from job_search.composition import packet_attachment_service as compose_packet_attachment_service
 from job_search.composition import packet_catalog as compose_packet_catalog
 from job_search.composition import packet_content_service as compose_packet_content_service
-from job_search.composition import packet_document_writer as compose_packet_document_writer
+from job_search.composition import packet_draft_service as compose_packet_draft_service
 from job_search.composition import packet_generation_service as compose_packet_generation_service
-from job_search.composition import packet_storage as compose_packet_storage
 from job_search.composition import rescrape_service as compose_rescrape_service
 from job_search.composition import search_query_service as compose_search_query_service
 from job_search.composition import search_run_service as compose_search_run_service
 from job_search.composition import settings_service as compose_settings_service
-from job_search.composition import source_documents as compose_source_documents
 from job_search.composition import startup_service as compose_startup_service
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
@@ -92,8 +88,6 @@ GUIDANCE_PATH = RUNTIME_CONFIG.paths.guidance
 CAREER_MANUAL_PATH = RUNTIME_CONFIG.paths.career_manual
 MASTER_RESUME_PATH = RUNTIME_CONFIG.paths.master_resume
 APPLICATIONS_DIR = RUNTIME_CONFIG.paths.applications
-SOURCE_DOCUMENTS = compose_source_documents(RUNTIME_CONFIG)
-PACKET_STORAGE = compose_packet_storage(RUNTIME_CONFIG)
 
 RUNTIME_SETTINGS = RUNTIME_CONFIG.settings
 DEFAULT_MODEL = RUNTIME_CONFIG.model()
@@ -570,145 +564,6 @@ def list_application_packets(conn):
     return dependency("packet_catalog", lambda: compose_packet_catalog(DB_PATH)).list(conn)
 
 
-def application_packet_slug(job):
-    company = re.sub(r"[^a-z0-9]+", "-", (job.get("company") or "unknown-company").lower()).strip("-")
-    title = re.sub(r"[^a-z0-9]+", "-", (job.get("title") or "unknown-role").lower()).strip("-")
-    identifier = re.sub(r"[^a-z0-9]+", "-", (job.get("source_job_id") or str(job.get("id") or "job")).lower()).strip(
-        "-"
-    )
-    return f"{datetime.now().strftime('%Y-%m')}-{company[:60]}-{title[:90]}-{identifier[:40]}"
-
-
-def application_packet_rules():
-    manual = SOURCE_DOCUMENTS.career_manual()
-    if not manual:
-        return ""
-    start = manual.find("# Downstream Artifact Rules")
-    end = manual.find("# Open Questions", start)
-    return manual[start : end if end >= 0 else None].strip() if start >= 0 else ""
-
-
-def application_packet_context(job):
-    master_resume = SOURCE_DOCUMENTS.master_resume()
-    return {
-        "packet_creation_date": datetime.now().date().isoformat(),
-        "job": {
-            "id": job.get("id"),
-            "company": job.get("company"),
-            "title": job.get("title"),
-            "location": job.get("location"),
-            "url": job.get("url"),
-            "pipeline": job.get("pipeline"),
-            "source_board": job.get("source_board"),
-            "posting_text": job.get("posting_text")
-            or "No posting text was captured. Do not invent requirements beyond the role title and metadata.",
-        },
-        "application_packet_rules": application_packet_rules(),
-        "master_resume": master_resume,
-    }
-
-
-def validate_application_packet_payload(payload):
-    if not isinstance(payload, dict):
-        raise ValueError("Codex packet response must be a JSON object.")
-    required = ("job_brief_markdown", "resume_markdown", "cover_letter_markdown")
-    missing = [field for field in required if not isinstance(payload.get(field), str) or not payload[field].strip()]
-    if missing:
-        raise ValueError(f"Codex packet response is missing required Markdown fields: {', '.join(missing)}.")
-    return {field: payload[field].strip() + "\n" for field in required}
-
-
-def application_packet_has_model_attribution(payload, model):
-    return all(model in content for content in payload.values())
-
-
-def write_application_packet_documents(packet_dir, payload):
-    return compose_packet_document_writer().write(packet_dir, payload)
-
-
-def generate_application_packet_with_codex(job):
-    if not job.get("url"):
-        raise ValueError("Job does not have a URL for Codex packet generation.")
-    if not codex_cli_available():
-        raise RuntimeError(
-            f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."
-        )
-
-    context = application_packet_context(job)
-    prompt = {
-        "task": "Generate exactly one application packet as JSON. Do not access the network or filesystem; use only the supplied context.",
-        "workflow": [
-            "First formulate the job brief, including high-signal requirements, tailoring strategy, achievement map, and likely objections.",
-            "Then draft one tailored resume and one cover letter using only source-backed evidence from the supplied master resume and rules.",
-            "Finally append an objection remediation outcome to the job brief. Perform this remediation cycle once only.",
-        ],
-        "output_contract": {
-            "job_brief_markdown": "Complete Job-Brief.md content. Include source trace naming the supplied Career Manual, Master Resume, and local tracked job.",
-            "resume_markdown": "Complete Resume.md content. One employer-facing, ATS-readable tailored resume.",
-            "cover_letter_markdown": "Complete Cover-Letter.md content. Direct, practical, evidence-oriented, and low hype.",
-        },
-        "constraints": [
-            "Return only one valid JSON object with exactly the three output_contract keys.",
-            "Do not use Markdown fences around the JSON.",
-            "Do not create files, propose filenames, or discuss this instruction.",
-            "Do not invent accomplishments, metrics, technologies, dates, or domain experience.",
-            "Do not generate separate ATS resume artifacts.",
-        ],
-        "context": context,
-    }
-    cli_path = codex_cli_path()
-    started = time.monotonic()
-    error = None
-    output_text = ""
-    model = codex_model()
-    try:
-        output_text, model = call_codex_json(
-            model, prompt, "generate_application_packet", force_refresh=True, return_metadata=True
-        )
-        if not model:
-            raise RuntimeError("Codex CLI did not report the model used to generate the application packet.")
-        payload = validate_application_packet_payload(parse_model_json(output_text))
-        if not application_packet_has_model_attribution(payload, model):
-            context["codex_generation_metadata"] = {
-                "generation_date": datetime.now(UTC).date().isoformat(),
-                "model": model,
-            }
-            output_text, retry_model = call_codex_json(
-                model, prompt, "generate_application_packet", force_refresh=True, return_metadata=True
-            )
-            if retry_model != model:
-                raise RuntimeError(
-                    "Codex CLI used a different model while regenerating the application packet attribution."
-                )
-            payload = validate_application_packet_payload(parse_model_json(output_text))
-            if not application_packet_has_model_attribution(payload, model):
-                raise RuntimeError(
-                    "Codex did not include the exact invoked model in every application-packet attribution."
-                )
-        packet_dir, markdown_files = PACKET_STORAGE.publish(
-            application_packet_slug(job), payload, write_application_packet_documents
-        )
-        return {"output_text": output_text, "packet_dir": packet_dir, "markdown_files": markdown_files}
-    except Exception as exc:
-        error = exc
-        raise
-    finally:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        log_event(
-            "codex_cli_application_packet",
-            job_id=job.get("id"),
-            url=job.get("url"),
-            cli_path=cli_path,
-            ok=error is None,
-            elapsed_ms=elapsed_ms,
-            output_excerpt=clean_text(output_text)[:2000] if output_text else None,
-            model=model,
-            error_code="APPLICATION_PACKET_GENERATION_FAILED" if error else None,
-            error_type=type(error).__name__ if error else None,
-            message=str(error)[:1000] if error else None,
-        )
-
-
 def selector_text(soup, selectors):
     for selector in selectors:
         element = soup.select_one(selector)
@@ -872,23 +727,10 @@ def call_codex_json(model, prompt, operation, force_refresh=False, return_metada
 
 
 def packet_generation_service():
-    def generate(job):
-        result = generate_application_packet_with_codex(job)
-        packet_dir = result["packet_dir"]
-        return {
-            "path": PACKET_STORAGE.relative_path(packet_dir),
-            "name": packet_dir.name,
-            "markdown_files": result.get("markdown_files", PACKET_STORAGE.markdown_files(packet_dir)),
-            "codex_output": result.get("output_text", ""),
-        }
-
     return compose_packet_generation_service(
-        connect,
-        get_job,
-        generate,
-        INFRASTRUCTURE.search_mutations.save_application_packet_path,
-        now,
-        log_event,
+        DB_PATH,
+        compose_packet_draft_service(RUNTIME_CONFIG, OBSERVABILITY, CODEX_JSON_GATEWAY),
+        telemetry,
     )
 
 

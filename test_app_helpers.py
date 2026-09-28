@@ -10,11 +10,11 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
+from job_search.application.packet_draft_service import validate_packet_payload
 from job_search.composition import outbound_clients, runtime_configuration
 from job_search.config import RuntimePaths
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
-from job_search.data_access.packet_storage import PacketStorage
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("helpers_app", APP_PATH)
@@ -74,11 +74,11 @@ class AppHelperTests(unittest.TestCase):
             "cover_letter_markdown": "Letter",
             "generation_metadata": {"model": "test", "generation_date": "2026-09-24"},
         }
-        self.assertEqual(helpers_app.validate_application_packet_payload(valid)["resume_markdown"], "Resume\n")
+        self.assertEqual(validate_packet_payload(valid)["resume_markdown"], "Resume\n")
         with self.assertRaisesRegex(ValueError, "missing"):
-            helpers_app.validate_application_packet_payload({})
+            validate_packet_payload({})
         with self.assertRaisesRegex(ValueError, "object"):
-            helpers_app.validate_application_packet_payload([])
+            validate_packet_payload([])
 
     def test_scrape_and_board_adapters_use_fake_response(self):
         def fake_fetch(service, *_args, **_kwargs):
@@ -130,7 +130,7 @@ class AppHelperTests(unittest.TestCase):
             document_writer.shutil.which = lambda command: "/fake/pandoc" if command == "pandoc" else None
             document_writer.subprocess.run = lambda command, **_kwargs: (commands.append(command) or CompletedProcess())
             try:
-                files = helpers_app.write_application_packet_documents(
+                files = document_writer.PacketDocumentWriter().write(
                     Path(directory) / "packet",
                     {
                         "job_brief_markdown": "Brief",
@@ -173,49 +173,6 @@ class AppHelperTests(unittest.TestCase):
         self.assertIn("CODEX_MODEL=test-model", contents)
         self.assertIn("CODEX_CLI_PATH=codex", contents)
         self.assertEqual(config.model(), "test-model", "Updates should refresh the injected snapshot")
-
-    def test_packet_generation_orchestration_uses_fake_draft_and_writer(self):
-        with tempfile.TemporaryDirectory() as directory:
-            originals = (
-                helpers_app.APPLICATIONS_DIR,
-                helpers_app.PACKET_STORAGE,
-                helpers_app.call_codex_json,
-                helpers_app.write_application_packet_documents,
-            )
-            helpers_app.APPLICATIONS_DIR = Path(directory) / "applications"
-            helpers_app.PACKET_STORAGE = PacketStorage(Path(directory), helpers_app.APPLICATIONS_DIR)
-            payload = {
-                "job_brief_markdown": "Brief\nGenerated with test-model",
-                "resume_markdown": "Resume\nGenerated with test-model",
-                "cover_letter_markdown": "Letter\nGenerated with test-model",
-            }
-            helpers_app.call_codex_json = lambda *_args, **_kwargs: (__import__("json").dumps(payload), "test-model")
-
-            def fake_writer(directory_path, _payload):
-                directory_path.mkdir(parents=True)
-                (directory_path / "Resume.md").write_text("Resume", encoding="utf-8")
-                return ["Resume.md"]
-
-            helpers_app.write_application_packet_documents = fake_writer
-            try:
-                result = helpers_app.generate_application_packet_with_codex(
-                    {
-                        "id": 1,
-                        "company": "ExampleCo",
-                        "title": "Principal Architect",
-                        "url": "https://role",
-                        "posting_text": "Role",
-                    }
-                )
-                self.assertTrue(result["packet_dir"].exists())
-                self.assertEqual(result["markdown_files"], ["Resume.md"])
-            finally:
-                (
-                    helpers_app.APPLICATIONS_DIR,
-                    helpers_app.PACKET_STORAGE,
-                    helpers_app.call_codex_json,
-                    helpers_app.write_application_packet_documents,
-                ) = originals
 
     def test_codex_cli_adapter_uses_fake_subprocess_and_extracts_model(self):
         original_run = codex_cli.subprocess.run
