@@ -49,6 +49,17 @@ class DiscoveryPolicy:
     def __init__(self, minimum_annual_compensation: int) -> None:
         self._minimum_annual_compensation = minimum_annual_compensation
 
+    def rejection_reason(self, result: Mapping[str, Any]) -> tuple[str, str] | None:
+        for name, decision in (
+            ("sales_role", self.sales_role),
+            ("location", self.location),
+            ("compensation", self.compensation),
+        ):
+            allowed, reason = decision(result)
+            if not allowed:
+                return name, reason
+        return None
+
     def location(self, result: Mapping[str, Any]) -> tuple[bool, str]:
         location = _clean(result.get("location", ""))
         combined = f" {location} {result.get('snippet', '')[:500]} ".lower()

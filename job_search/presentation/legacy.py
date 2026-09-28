@@ -703,18 +703,6 @@ def already_seen_reason(conn, url):
     return None
 
 
-def location_filter_decision(result):
-    return discovery_policy().location(result)
-
-
-def compensation_filter_decision(result):
-    return discovery_policy().compensation(result)
-
-
-def sales_role_filter_decision(result):
-    return discovery_policy().sales_role(result)
-
-
 def extract_codex_reported_model(output):
     match = re.search(r"\bmodel:\s*([^\s]+)", output or "", flags=re.IGNORECASE)
     return match.group(1) if match else ""
@@ -783,18 +771,6 @@ def classify_discovery(conn, result, force_refresh=False):
     return discovery_service().classify(conn, result, force_refresh=force_refresh)
 
 
-def search_rejection_reason(result):
-    for name, decision in (
-        ("sales_role", sales_role_filter_decision),
-        ("location", location_filter_decision),
-        ("compensation", compensation_filter_decision),
-    ):
-        allowed, reason = decision(result)
-        if not allowed:
-            return name, reason
-    return None
-
-
 def run_job_search(trigger="manual", force_refresh=False):
     """Run search through the application-layer orchestration service."""
     discovery = discovery_service()
@@ -802,7 +778,7 @@ def run_job_search(trigger="manual", force_refresh=False):
         DB_PATH,
         OUTBOUND_CLIENTS.search_gateway,
         telemetry,
-        reject_reason=search_rejection_reason,
+        reject_reason=discovery_policy().rejection_reason,
         level_assessment=discovery.assess_level,
         already_seen_reason=already_seen_reason,
         classify=lambda connection, result, *, force_refresh: classify_discovery(

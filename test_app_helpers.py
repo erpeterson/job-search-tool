@@ -42,10 +42,29 @@ class AppHelperTests(unittest.TestCase):
         self.assertTrue(policy.compensation({"snippet": "$250k per year"})[0])
 
     def test_listing_filters_and_deduplication(self):
-        self.assertTrue(helpers_app.location_filter_decision({"location": "Remote - US"})[0])
-        self.assertFalse(helpers_app.location_filter_decision({"location": "Paris, France"})[0])
-        self.assertTrue(helpers_app.compensation_filter_decision({"snippet": "$250,000 per year"})[0])
-        self.assertFalse(helpers_app.sales_role_filter_decision({"title": "Sales Director"})[0])
+        policy = DiscoveryPolicy(200_000)
+        self.assertTrue(policy.location({"location": "Remote - US"})[0])
+        self.assertFalse(policy.location({"location": "Paris, France"})[0])
+        self.assertTrue(policy.compensation({"snippet": "$250,000 per year"})[0])
+        self.assertFalse(policy.sales_role({"title": "Sales Director"})[0])
+        self.assertEqual(
+            policy.rejection_reason({"title": "Sales Director", "location": "Paris, France"})[0],
+            "sales_role",
+            "Sales-role exclusion should take precedence over location rejection.",
+        )
+        self.assertEqual(
+            policy.rejection_reason({"title": "Architect", "location": "Paris, France"})[0],
+            "location",
+            "Location rejection should precede compensation checks.",
+        )
+        self.assertEqual(
+            policy.rejection_reason({"title": "Architect", "location": "Seattle, WA", "snippet": "$150,000 per year"})[
+                0
+            ],
+            "compensation",
+            "Below-threshold compensation should reject an otherwise eligible role.",
+        )
+        self.assertIsNone(policy.rejection_reason({"title": "Architect", "location": "Seattle, WA"}))
         values = helpers_app.dedupe_results(
             [{"url": "a"}, {"url": "a"}, {"source_job_id": "b"}, {"source_job_id": "b"}]
         )

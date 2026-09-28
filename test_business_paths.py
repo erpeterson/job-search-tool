@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from job_search.application.discovery_policy import DiscoveryPolicy
 from job_search.data_access import codex_cli
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
@@ -50,11 +51,12 @@ class BusinessPathTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_location_compensation_and_sales_filters_cover_boundary_cases(self):
-        self.assertEqual(app_module.location_filter_decision({"location": "Seattle, WA"})[0], True)
-        self.assertEqual(app_module.location_filter_decision({"location": "London, UK"})[0], False)
-        self.assertEqual(app_module.compensation_filter_decision({"snippet": "$150,000 per year"})[0], False)
-        self.assertEqual(app_module.compensation_filter_decision({"snippet": "Compensation not listed"})[0], True)
-        self.assertEqual(app_module.sales_role_filter_decision({"title": "Account Executive"})[0], False)
+        policy = DiscoveryPolicy(200_000)
+        self.assertEqual(policy.location({"location": "Seattle, WA"})[0], True)
+        self.assertEqual(policy.location({"location": "London, UK"})[0], False)
+        self.assertEqual(policy.compensation({"snippet": "$150,000 per year"})[0], False)
+        self.assertEqual(policy.compensation({"snippet": "Compensation not listed"})[0], True)
+        self.assertEqual(policy.sales_role({"title": "Account Executive"})[0], False)
 
     def test_packet_path_disallows_traversal_and_accepts_packet_directory(self):
         app_module.APPLICATIONS_DIR.mkdir()
