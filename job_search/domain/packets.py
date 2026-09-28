@@ -154,12 +154,12 @@ class PacketService:
             raise ExternalServiceError(
                 "Codex packet response was not valid JSON.", "packet_payload_invalid_json"
             ) from exc
-        return payload, result.effective_model, result.output_text
+        return payload, result.effective_model
 
     def _generate_documents(self, job):
         """Draft packet Markdown with Codex, retrying once to ensure exact model attribution.
 
-        Returns ``(documents_by_filename, raw_codex_output)``.
+        Returns ``{filename: markdown}``; the raw Codex output stays in the capture, not the task result.
         """
         context = self._context(job)
         prompt = {
@@ -169,7 +169,7 @@ class PacketService:
             "constraints": PACKET_CONSTRAINTS,
             "context": context,
         }
-        payload, model, output_text = self._draft(self._runtime.codex_model(), prompt)
+        payload, model = self._draft(self._runtime.codex_model(), prompt)
         if not model:
             raise ExternalServiceError(
                 "Codex CLI did not report the model used to generate the application packet.", "packet_model_unreported"
@@ -179,7 +179,7 @@ class PacketService:
                 "generation_date": datetime.now(UTC).date().isoformat(),
                 "model": model,
             }
-            payload, retry_model, output_text = self._draft(model, prompt)
+            payload, retry_model = self._draft(model, prompt)
             if retry_model != model:
                 raise ExternalServiceError(
                     "Codex CLI used a different model while regenerating the application packet attribution.",
@@ -190,7 +190,7 @@ class PacketService:
                     "Codex did not include the exact invoked model in every application-packet attribution.",
                     "packet_model_attribution_missing",
                 )
-        return {PACKET_FIELDS[field]: content for field, content in payload.items()}, output_text
+        return {PACKET_FIELDS[field]: content for field, content in payload.items()}
 
     def check_can_generate(self, job_id):
         """Raise if a packet cannot be generated for ``job_id``; return the job otherwise."""
@@ -214,7 +214,7 @@ class PacketService:
                 return None
         job = self.check_can_generate(job_id)
         with operation("application_packet_generation", "domain.packets", job_id=job_id, url=job.get("url")):
-            documents, output_text = self._generate_documents(job)
+            documents = self._generate_documents(job)
             packet_dir = self._store.publish(application_packet_slug(job), documents)
             relative = self._store.relative(packet_dir)
             with self._db.unit_of_work() as uow:
@@ -224,7 +224,6 @@ class PacketService:
             "path": relative,
             "name": packet_dir.name,
             "markdown_files": list(documents),
-            "codex_output": output_text,
         }
 
     @traced("application_packet_attach", "domain.packets", id_arg="job_id")
