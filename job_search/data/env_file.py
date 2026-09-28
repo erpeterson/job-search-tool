@@ -24,7 +24,7 @@ class EnvFile:
         """Return the file's key/value pairs, or ``{}`` when it does not exist."""
         if not self.path.exists():
             return {}
-        return {key: value for key, value in dotenv_values(self.path).items() if value is not None}
+        return {key: value for key, value in dotenv_values(self.path, interpolate=False).items() if value is not None}
 
     def update(self, updates):
         """Set keys, preserving comments, order, and untouched lines. Updated values are quoted.
