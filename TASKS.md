@@ -154,7 +154,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 
 ### T-1.1 — Concrete runtime and data-access adapters
 
-- [ ] **1.1a — Reconcile the checkpoint.** Review `git status`, the T-1 diff,
+- [x] **1.1a — Reconcile the checkpoint.** Review `git status`, the T-1 diff,
   and `./quality.sh`; keep the user-owned `AGENTS.md` edit out of commits. Record
   any failing gate as the first repair target.
 - [ ] **1.1b — Extract runtime configuration.** Move path discovery, dotenv
