@@ -181,9 +181,9 @@ def test_level_equivalency_cache_is_populated_without_network(container):
         second = cache.lookup("ExampleCo", "Senior Software Engineer II")
         assert uow.levels.count() == 1, "ambiguous titles are not cached; matching prefixes reuse the cache"
         preloaded = LevelCalibrationCache(uow.levels, target, ["ExampleCo"]).lookup("ExampleCo", "Staff Engineer")
-    levels = {first["oracle_level"], second["oracle_level"]}
+    levels = {first["target_level"], second["target_level"]}
     assert levels == {"BELOW_IC6"}, f"both titles map below the target level: {levels}"
-    assert preloaded["oracle_level"] == "BELOW_IC6", "a new cache instance estimates an uncached title"
+    assert preloaded["target_level"] == "BELOW_IC6", "a new cache instance estimates an uncached title"
 
 
 class TestScheduler:

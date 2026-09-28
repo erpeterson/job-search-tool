@@ -15,8 +15,7 @@ _ESTIMATE_NOTE = "Estimated locally from title taxonomy because Levels.fyi runti
 def estimate_level_equivalency(title, target):
     """Classify a title against ``target`` (a ``TargetLevel``); None when ambiguous.
 
-    Results are stored in the ``oracle_level``/``oracle_title`` columns, which hold
-    target-level values for whichever level system the profile uses.
+    Results use the profile's level system, stored as ``target_level``/``target_title``.
     """
     normalized_title = normalize_lookup_text(title)
     if not normalized_title:
@@ -25,12 +24,12 @@ def estimate_level_equivalency(title, target):
     if any(pattern.search(normalized_title) for pattern in target.at_or_above_title_patterns):
         return {
             **base,
-            "oracle_level": target.at_or_above_level,
-            "oracle_title": target.at_or_above_title,
+            "target_level": target.at_or_above_level,
+            "target_title": target.at_or_above_title,
             "downlevel": False,
         }
     if any(pattern.search(normalized_title) for pattern in target.below_title_patterns):
-        return {**base, "oracle_level": target.below_level, "oracle_title": target.below_title, "downlevel": True}
+        return {**base, "target_level": target.below_level, "target_title": target.below_title, "downlevel": True}
     return None
 
 
@@ -71,8 +70,8 @@ def _estimate_and_cache(level_repo, company, title, target):
         title=title,
         source_level=equivalency["source_level"],
         source_level_title=equivalency["source_level_title"],
-        oracle_level=equivalency["oracle_level"],
-        oracle_title=equivalency["oracle_title"],
+        target_level=equivalency["target_level"],
+        target_title=equivalency["target_title"],
         downlevel=bool(equivalency["downlevel"]),
         source_url=equivalency["source_url"],
         source="local_title_taxonomy",
@@ -105,6 +104,6 @@ def level_assessment_from_equivalency(equivalency, target):
     source_level = f" {equivalency['source_level']}" if equivalency.get("source_level") else ""
     return (
         f"{equivalency['company']} {equivalency['source_level_title'] or equivalency['title_pattern']}{source_level} "
-        f"maps to {target.system} {equivalency['oracle_level']} {equivalency['oracle_title']} "
+        f"maps to {target.system} {equivalency['target_level']} {equivalency['target_title']} "
         "per cached level calibration."
     )
