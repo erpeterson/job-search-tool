@@ -60,7 +60,6 @@ from job_search.composition import search_run_service as compose_search_run_serv
 from job_search.composition import settings_service as compose_settings_service
 from job_search.composition import source_documents as compose_source_documents
 from job_search.composition import startup_service as compose_startup_service
-from job_search.composition import task_execution_service as compose_task_execution_service
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
@@ -477,23 +476,8 @@ def list_background_tasks(limit=10):
     return background_task_service().list(limit)
 
 
-def update_background_task(task_id, **updates):
-    return background_task_service().update(task_id, **updates)
-
-
-def update_background_task_item(task_id, job_id, **updates):
-    return background_task_service().update_item(task_id, job_id, **updates)
-
-
 def start_background_task(operation, job_ids):
     return background_task_service().start(operation, job_ids)
-
-
-def process_background_task_item(claim):
-    """Worker callback delegated to the application-layer task dispatcher."""
-    return compose_task_execution_service(
-        console_query_service(), codex_scoring_workflow(), packet_generation_service()
-    ).process(claim)
 
 
 def masked_config():
@@ -788,66 +772,6 @@ def generate_application_packet_with_codex(job):
             error_type=type(error).__name__ if error else None,
             message=str(error)[:1000] if error else None,
         )
-
-
-def _bulk_task_worker(task_id, job_ids, operation, *, running_message, success_verb, error_code, component):
-    update_background_task(task_id, status="running", started_at=now(), message=running_message)
-    completed = failed = skipped = 0
-    for job_id in job_ids:
-        update_background_task(task_id, current_job_id=job_id)
-        update_background_task_item(task_id, job_id, status="running", message=running_message)
-        try:
-            status, message = process_background_task_item({"operation": operation, "job_id": job_id})
-            if status == "complete":
-                completed += 1
-            elif status == "skipped":
-                skipped += 1
-            else:
-                failed += 1
-            update_background_task_item(task_id, job_id, status=status, message=message)
-        except Exception as exc:
-            failed += 1
-            update_background_task_item(task_id, job_id, status="error", message=str(exc)[:1000])
-            log_event(
-                error_code.lower(),
-                error_code=error_code,
-                component=component,
-                operation=operation,
-                task_id=task_id,
-                job_id=job_id,
-                error_type=type(exc).__name__,
-                message=str(exc)[:1000],
-            )
-        finally:
-            update_background_task(task_id, completed=completed, failed=failed, skipped=skipped)
-    status = "complete" if failed == 0 else "error"
-    message = f"Complete: {completed} {success_verb}, {skipped} skipped, {failed} failed."
-    update_background_task(task_id, status=status, completed_at=now(), current_job_id=None, message=message)
-    log_event("background_task_finished", task_id=task_id, operation=operation, status=status, message=message)
-
-
-def bulk_score_worker(task_id, job_ids):
-    return _bulk_task_worker(
-        task_id,
-        job_ids,
-        "scorecards",
-        running_message="Scoring with Codex",
-        success_verb="scored",
-        error_code="BULK_CODEX_SCORE_FAILED",
-        component="business.bulk_scoring",
-    )
-
-
-def bulk_packet_worker(task_id, job_ids):
-    return _bulk_task_worker(
-        task_id,
-        job_ids,
-        "application_packets",
-        running_message="Generating application packet with Codex",
-        success_verb="generated",
-        error_code="BULK_APPLICATION_PACKET_FAILED",
-        component="business.bulk_packets",
-    )
 
 
 def calibration_examples(conn):

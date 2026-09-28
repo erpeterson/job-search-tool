@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from dotenv import dotenv_values
 
 from job_search.application.background_task_service import BackgroundTaskService
+from job_search.application.bulk_task_service import BulkTaskService
 from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
 from job_search.application.company_service import CompanyService
 from job_search.application.console_query_service import ConsoleQueryService
@@ -426,6 +427,12 @@ class _TaskExecutionOperations:
 def task_execution_service(console: Any, scoring: Any, packets: Any) -> TaskExecutionService:
     """Compose durable-task operations from application services, not HTTP callbacks."""
     return TaskExecutionService(_TaskExecutionOperations(console, scoring, packets))
+
+
+def bulk_task_service(database_path: Path, processor: TaskExecutionService, telemetry: Telemetry) -> BulkTaskService:
+    """Compose durable bulk-task progress with the application item processor."""
+    progress = background_task_service(database_path, telemetry.event)
+    return BulkTaskService(progress, processor, lambda: int(time.time()), telemetry)
 
 
 class _PacketGenerationOperations:

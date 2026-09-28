@@ -190,7 +190,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   query seeding, and task recovery decisions from `legacy.py` into an
   application service; keep SQLite and directory creation in data access. Test
   fresh startup and recovery using a temporary database.
-- [ ] **1.3b — Move durable-task execution.** Move bulk task progress, skipped
+- [x] **1.3b — Move durable-task execution.** Move bulk task progress, skipped
   item handling, and failure decisions into the application task service. Test
   one successful, skipped, and failed item with fake scoring/packet ports.
 - [ ] **1.3c — Move search runs.** Replace `_SearchRunAdapter` with explicit
