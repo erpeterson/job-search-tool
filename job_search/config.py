@@ -118,7 +118,10 @@ def _allowed_hosts(environ, host, port):
     """Host header values the web app accepts, guarding against DNS rebinding."""
     raw = environ.get("JOB_SEARCH_ALLOWED_HOSTS", "").strip()
     if not raw:
-        defaults = [f"127.0.0.1:{port}", f"localhost:{port}", f"{host.lower()}:{port}"]
+        bare = host.lower().strip("[]")
+        # Browsers send IPv6 literals bracketed in the Host header, e.g. "[::1]:5050".
+        configured = f"[{bare}]:{port}" if ":" in bare else f"{bare}:{port}"
+        defaults = [f"127.0.0.1:{port}", f"localhost:{port}", configured]
         return tuple(dict.fromkeys(defaults))
     entries = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
     invalid = [entry for entry in entries if not _HOST_ENTRY_PATTERN.match(entry)]
