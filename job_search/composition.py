@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from job_search.application.background_task_service import BackgroundTaskService
 from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
 from job_search.application.company_service import CompanyService
 from job_search.application.console_query_service import ConsoleQueryService
+from job_search.application.contracts import Telemetry
 from job_search.application.discovery_service import DiscoveryService
 from job_search.application.filtering_service import FilteringService
 from job_search.application.initialization_service import InitializationService
@@ -32,7 +34,7 @@ from job_search.application.task_execution_service import TaskExecutionService
 from job_search.config import RuntimeConfiguration, RuntimePaths, load_runtime_settings
 from job_search.data_access.application_packet_catalog import ApplicationPacketCatalog
 from job_search.data_access.board_gateway import CallableBoardGateway
-from job_search.data_access.capture_store import CaptureStore  # noqa: F401
+from job_search.data_access.capture_store import CaptureStore
 from job_search.data_access.codex_cli import CodexCliGateway
 from job_search.data_access.company_repository import SqliteCompanyRepository
 from job_search.data_access.console_query_repository import SqliteConsoleQueryRepository
@@ -56,10 +58,11 @@ from job_search.data_access.search_query_repository import SqliteSearchQueryRepo
 from job_search.data_access.search_repository import SqliteSearchRepository
 from job_search.data_access.settings_repository import SqliteSettingsRepository
 from job_search.data_access.sqlite import open_connection
-from job_search.data_access.telemetry import StructuredTelemetry, configure_json_file_logging  # noqa: F401
+from job_search.data_access.telemetry import StructuredTelemetry, configure_json_file_logging
 from job_search.data_access.text_file_reader import read_optional_text  # noqa: F401
 from job_search.http_client import SafeHttpClient
 from job_search.presentation.dependencies import PresentationDependencies
+from job_search.redaction import redact_content_metadata, redact_url, redact_value
 from job_search.security import load_request_security
 from job_search.task_repository import TaskRepository
 
@@ -89,6 +92,57 @@ def runtime_configuration(
         executable=executable or (lambda path: os.access(path, os.X_OK)),
         persist=update_environment_file,
     )
+
+
+class CorrelationIds:
+    """Per-request correlation context without a Flask dependency."""
+
+    def __init__(self) -> None:
+        self._value: ContextVar[str | None] = ContextVar("job_search_correlation_id", default=None)
+
+    def get(self) -> str | None:
+        return self._value.get()
+
+    def set(self, value: str) -> Token[str | None]:
+        return self._value.set(value)
+
+    def reset(self, token: Token[str | None]) -> None:
+        self._value.reset(token)
+
+
+@dataclass(frozen=True)
+class Observability:
+    telemetry: Telemetry
+    captures: CaptureStore
+    correlation_ids: CorrelationIds
+    api_logger: logging.Logger
+    event_logger: logging.Logger
+
+
+def observability(configuration: RuntimeConfiguration) -> Observability:
+    """Build logging, correlation, and redacted captures at the composition edge."""
+    api_logger = logging.getLogger("job_search.api")
+    event_logger = logging.getLogger("job_search.events")
+    for logger in (api_logger, event_logger):
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    configure_json_file_logging(
+        {api_logger: configuration.paths.api_log, event_logger: configuration.paths.app_log},
+        max_bytes=configuration.settings.log_max_bytes,
+        backup_count=configuration.settings.log_backup_count,
+    )
+    correlation_ids = CorrelationIds()
+    telemetry = StructuredTelemetry(
+        api_logger, event_logger, correlation_ids.get, redact_url, redact_value, redact_content_metadata
+    )
+    captures = CaptureStore(
+        lambda: configuration.paths.captures,
+        lambda: configuration.enabled("JOB_SEARCH_USE_CAPTURE_CACHE"),
+        lambda: configuration.enabled("JOB_SEARCH_ENABLE_FULL_CAPTURE"),
+        redact_value,
+        lambda event_type, **fields: telemetry.event(event_type, **fields),
+    )
+    return Observability(telemetry, captures, correlation_ids, api_logger, event_logger)
 
 
 @dataclass(frozen=True)

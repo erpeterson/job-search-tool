@@ -55,6 +55,22 @@ class Clock(Protocol):
     def now(self) -> int: ...
 
 
+class Telemetry(Protocol):
+    """Framework-independent event sink for application workflows."""
+
+    def event(self, event_type: str, **fields: Any) -> None: ...
+
+    def api_call(
+        self,
+        service: str,
+        method: str,
+        url: str,
+        response: Any = None,
+        error: Exception | None = None,
+        elapsed_ms: int | None = None,
+    ) -> None: ...
+
+
 class SearchQueryRepository(Protocol):
     def create(self, values: Mapping[str, Any]) -> int: ...
 

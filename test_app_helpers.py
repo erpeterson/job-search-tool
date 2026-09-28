@@ -3,6 +3,7 @@
 import importlib.util
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -144,16 +145,18 @@ class AppHelperTests(unittest.TestCase):
 
     def test_capture_round_trip_uses_temporary_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            original_capture_dir = helpers_app.CAPTURE_DIR
-            helpers_app.CAPTURE_DIR = Path(directory)
-            try:
-                with patch.object(helpers_app.RUNTIME_CONFIG, "environment", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}):
-                    payload = {"request": "value"}
-                    helpers_app.write_capture("test", "operation", payload, {"status_code": 200})
-                    replay = helpers_app.read_capture("test", "operation", payload)
-                self.assertEqual(replay["response"]["status_code"], 200)
-            finally:
-                helpers_app.CAPTURE_DIR = original_capture_dir
+            with (
+                patch.object(
+                    helpers_app.RUNTIME_CONFIG,
+                    "paths",
+                    replace(helpers_app.RUNTIME_CONFIG.paths, captures=Path(directory)),
+                ),
+                patch.object(helpers_app.RUNTIME_CONFIG, "environment", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}),
+            ):
+                payload = {"request": "value"}
+                helpers_app.write_capture("test", "operation", payload, {"status_code": 200})
+                replay = helpers_app.read_capture("test", "operation", payload)
+            self.assertEqual(replay["response"]["status_code"], 200)
 
     def test_environment_file_update_preserves_comments_and_replaces_values(self):
         with tempfile.TemporaryDirectory() as directory:

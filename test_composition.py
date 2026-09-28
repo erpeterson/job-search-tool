@@ -1,13 +1,60 @@
+import json
+import logging
+import stat
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import app
-from job_search.composition import discovery_service, task_execution_service
+from job_search.composition import discovery_service, observability, runtime_configuration, task_execution_service
 from job_search.presentation import legacy
 from job_search.presentation.dependencies import PresentationDependencies
 from job_search.presentation.factory import create_app
 
 
 class CompositionTests(unittest.TestCase):
+    def test_http_request_correlation_reaches_telemetry_and_is_cleared(self):
+        with patch.object(legacy.event_logger, "info") as emit:
+            response = app.app.test_client().post(
+                "/api/jobs", json={"url": "invalid"}, headers={"X-Request-ID": "request-456"}
+            )
+
+        self.assertEqual(response.status_code, 400)
+        event = json.loads(emit.call_args.args[0])
+        self.assertEqual(event["correlation_id"], "request-456")
+        self.assertIsNone(legacy.OBSERVABILITY.correlation_ids.get(), "Request context must be cleared")
+
+    def test_observability_composes_redacted_captures_and_request_correlation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = runtime_configuration(root, {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"})
+            api_logger = logging.Logger("test.job_search.api")
+            event_logger = logging.Logger("test.job_search.events")
+            loggers = {"job_search.api": api_logger, "job_search.events": event_logger}
+            with patch("job_search.composition.logging.getLogger", side_effect=loggers.__getitem__):
+                ports = observability(config)
+            try:
+                token = ports.correlation_ids.set("request-123")
+                ports.telemetry.event("operation_started", operation="test")
+                request = {"url": "https://example.test/job?token=secret", "prompt": "private prompt"}
+                path = ports.captures.write("board", "get", request, {"status_code": 200})
+                replay = ports.captures.read("board", "get", request)
+                ports.correlation_ids.reset(token)
+                ports.telemetry.event("operation_finished", operation="test")
+
+                records = [json.loads(line) for line in config.paths.app_log.read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(records[0]["correlation_id"], "request-123")
+                self.assertEqual(records[-1]["correlation_id"], None, "Correlation context must not leak")
+                self.assertEqual(replay["request"]["prompt"], "[REDACTED]")
+                self.assertEqual(replay["request"]["url"], "https://example.test/job")
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600, "Captures must be private")
+                self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700, "Capture directories must be private")
+            finally:
+                for logger in (api_logger, event_logger):
+                    for handler in logger.handlers:
+                        handler.close()
+
     def test_root_composes_the_presentation_application(self):
         self.assertEqual(app.app.name, "job_search.presentation.factory")
         self.assertIsNotNone(app.create_app)

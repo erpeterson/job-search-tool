@@ -163,7 +163,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   environment mapping from composition. Test valid/invalid values and `.env`
   persistence with a temporary file; do not mutate real process environment
   variables in unit tests.
-- [ ] **1.1c — Compose logging and captures.** Build `StructuredTelemetry`,
+- [x] **1.1c — Compose logging and captures.** Build `StructuredTelemetry`,
   `CaptureStore`, log handlers, and their correlation-ID provider in
   `composition.py`; define the framework-independent telemetry port here and
   inject the resulting ports. Remove their construction and data-access

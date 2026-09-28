@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
 import json
-import logging
 import re
 import textwrap
 import time
@@ -15,7 +14,6 @@ from flask import (
     current_app,
     g,
     has_app_context,
-    has_request_context,
     jsonify,
     render_template,
     request,
@@ -34,12 +32,10 @@ from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
 from job_search.composition import (
-    CaptureStore,
     JobBoardClient,
-    StructuredTelemetry,
-    configure_json_file_logging,
     database_session,
     infrastructure,
+    observability,
     parse_model_json,
     read_optional_text,
     runtime_configuration,
@@ -66,7 +62,7 @@ from job_search.composition import search_run_service as compose_search_run_serv
 from job_search.composition import settings_service as compose_settings_service
 from job_search.composition import task_execution_service as compose_task_execution_service
 from job_search.errors import ClientInputError, translate_exception
-from job_search.redaction import redact_content_metadata, redact_headers, redact_url, redact_value
+from job_search.redaction import redact_headers
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
     RequestValidationError,
@@ -113,18 +109,23 @@ CONFIG_KEYS = [
 
 routes = Blueprint("job_search", __name__)
 REQUEST_SECURITY = RUNTIME_CONFIG.security
-api_logger = logging.getLogger("job_search.api")
-api_logger.setLevel(logging.INFO)
-api_logger.propagate = False
-event_logger = logging.getLogger("job_search.events")
-event_logger.setLevel(logging.INFO)
-event_logger.propagate = False
+OBSERVABILITY = observability(RUNTIME_CONFIG)
+api_logger = OBSERVABILITY.api_logger
+event_logger = OBSERVABILITY.event_logger
+telemetry = OBSERVABILITY.telemetry
+capture_store = OBSERVABILITY.captures
+log_api_call = telemetry.api_call
+log_event = telemetry.event
+capture_path = capture_store.path
+read_capture = capture_store.read
+write_capture = capture_store.write
 
 
 @routes.before_request
 def enforce_request_security():
     """Protect all external bindings before any route can mutate local state."""
     g.correlation_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    g.correlation_token = OBSERVABILITY.correlation_ids.set(g.correlation_id)
     if not REQUEST_SECURITY.enabled:
         return None
     if not trusted_proxy_peer(request.remote_addr, REQUEST_SECURITY):
@@ -140,6 +141,13 @@ def enforce_request_security():
     return None
 
 
+@routes.teardown_request
+def clear_request_correlation_id(_error):
+    token = getattr(g, "correlation_token", None)
+    if token is not None:
+        OBSERVABILITY.correlation_ids.reset(token)
+
+
 @routes.before_request
 def assign_request_correlation_id():
     # The security hook initializes this first so rejected requests are traced.
@@ -153,10 +161,6 @@ class CodexCliError(RuntimeError):
         suffix = f" exited with code {returncode}" if returncode is not None else " failed"
         super().__init__(f"Codex CLI {operation}{suffix}. See logs and captures for details.")
 
-
-configure_json_file_logging(
-    {api_logger: API_LOG_PATH, event_logger: APP_LOG_PATH}, max_bytes=LOG_MAX_BYTES, backup_count=LOG_BACKUP_COUNT
-)
 
 RUBRIC_FIELDS = [
     "interesting_technical_problems",
@@ -558,30 +562,6 @@ def process_background_task_item(claim):
 
 def masked_config():
     return RUNTIME_CONFIG.masked(CONFIG_KEYS)
-
-
-telemetry = StructuredTelemetry(
-    api_logger,
-    event_logger,
-    lambda: getattr(g, "correlation_id", None) if has_request_context() else None,
-    redact_url,
-    redact_value,
-    redact_content_metadata,
-)
-log_api_call = telemetry.api_call
-log_event = telemetry.event
-
-
-capture_store = CaptureStore(
-    lambda: CAPTURE_DIR,
-    capture_cache_enabled,
-    full_capture_enabled,
-    redact_value,
-    lambda event_type, **fields: log_event(event_type, **fields),
-)
-capture_path = capture_store.path
-read_capture = capture_store.read
-write_capture = capture_store.write
 
 
 def apply_filter(_connection, job_id):

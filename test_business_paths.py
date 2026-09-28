@@ -30,7 +30,9 @@ class BusinessPathTests(unittest.TestCase):
         app_module.APPLICATIONS_DIR = Path(self.tempdir.name) / "applications"
         app_module.ROOT = Path(self.tempdir.name)
         app_module.ENV_PATH = Path(self.tempdir.name) / ".env"
-        app_module.RUNTIME_CONFIG.paths = replace(self.original_runtime_paths, environment_file=app_module.ENV_PATH)
+        app_module.RUNTIME_CONFIG.paths = replace(
+            self.original_runtime_paths, environment_file=app_module.ENV_PATH, captures=app_module.CAPTURE_DIR
+        )
 
     def tearDown(self):
         app_module.CAPTURE_DIR = self.original_capture_dir
@@ -75,12 +77,12 @@ class BusinessPathTests(unittest.TestCase):
             path.parent.mkdir(parents=True)
             path.write_text("not-json", encoding="utf-8")
             events = []
-            original_log_event = app_module.log_event
-            app_module.log_event = lambda event_type, **fields: events.append((event_type, fields))
-            try:
+            with patch.object(
+                app_module.telemetry,
+                "event",
+                side_effect=lambda event_type, **fields: events.append((event_type, fields)),
+            ):
                 self.assertIsNone(app_module.read_capture("manual", "http_get", payload))
-            finally:
-                app_module.log_event = original_log_event
         self.assertEqual(events[0][1]["error_code"], "CAPTURE_CORRUPTION_RECOVERED")
 
     def test_config_endpoint_persists_validated_value(self):
