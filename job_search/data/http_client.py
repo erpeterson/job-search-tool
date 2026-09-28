@@ -196,4 +196,11 @@ class HttpClient:
                 "error_type": type(error).__name__ if error else None,
                 "error_message": str(error) if error else None,
             }
-            self._captures.write(service, "http_get", request_payload, response_payload, {"elapsed_ms": elapsed_ms})
+            self._captures.write(
+                service,
+                "http_get",
+                request_payload,
+                response_payload,
+                {"elapsed_ms": elapsed_ms},
+                succeeded=_http_succeeded(response_payload),
+            )
