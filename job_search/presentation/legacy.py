@@ -33,7 +33,6 @@ from job_search.application.settings_service import SettingsService
 from job_search.composition import codex_json_gateway as compose_codex_json_gateway
 from job_search.composition import (
     database_session,
-    infrastructure,
     observability,
     runtime_configuration,
 )
@@ -129,8 +128,6 @@ JOB_STATUSES = {
 }
 COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_interested"}
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
-
-INFRASTRUCTURE = infrastructure()
 
 
 class _DatabaseSessionProvider:
@@ -231,25 +228,6 @@ def row_to_dict(row):
     return dict(row) if row else None
 
 
-def parse_json_field(value, fallback):
-    if not value:
-        return fallback
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        log_event(
-            "stored_json_parse_recovered",
-            error_code="STORED_JSON_PARSE_RECOVERED",
-            component="data_access.serialization",
-            operation="parse_json_field",
-        )
-        return fallback
-
-
-def settings(conn):
-    return INFRASTRUCTURE.read_models.settings(conn)
-
-
 def gpt_scoring_enabled():
     return dependency("configuration").enabled("JOB_SEARCH_ENABLE_GPT_SCORING")
 
@@ -260,15 +238,6 @@ def codex_cli_path():
 
 def codex_cli_available():
     return dependency("configuration").cli_available()
-
-
-def codex_model(conn=None):
-    env_model = dependency("configuration").model()
-    if env_model:
-        return env_model
-    if conn is not None:
-        return (settings(conn).get("codex_model") or "").strip()
-    return DEFAULT_MODEL
 
 
 def capture_cache_enabled():
@@ -305,62 +274,6 @@ def apply_filter(_connection, job_id):
     # before the repository-backed filtering use case opens its own session.
     _connection.commit()
     return filtering_service().refresh_job(job_id)
-
-
-def list_jobs(conn, include_filtered=False):
-    jobs = []
-    for row in INFRASTRUCTURE.read_models.jobs(conn, include_filtered):
-        item = dict(row)
-        item["gpt_scorecard"] = parse_json_field(item.pop("gpt_scorecard_json"), {})
-        item["user_scorecard"] = parse_json_field(item.pop("user_scorecard_json"), {})
-        jobs.append(item)
-    return jobs
-
-
-def list_company_interests(conn):
-    return list(INFRASTRUCTURE.read_models.company_interests(conn))
-
-
-def get_company_interest(conn, company_id):
-    return INFRASTRUCTURE.read_models.company_interest(conn, company_id)
-
-
-def get_job(conn, job_id):
-    job = INFRASTRUCTURE.read_models.job(conn, job_id)
-    if not job:
-        return None
-    job["gpt_scorecard"] = parse_json_field(job.pop("gpt_scorecard_json"), {})
-    job["user_scorecard"] = parse_json_field(job.pop("user_scorecard_json"), {})
-    return job
-
-
-def list_search_queries(conn):
-    return list(INFRASTRUCTURE.read_models.search_queries(conn))
-
-
-def list_search_runs(conn):
-    return list(INFRASTRUCTURE.read_models.search_runs(conn))
-
-
-def search_schedule_state(conn):
-    last_search_at = int(settings(conn).get("last_search_at", "0") or 0)
-    interval = dependency("configuration").settings.search_interval_seconds
-    next_run_at = last_search_at + interval if last_search_at else now()
-    return {
-        "autorun_enabled": AUTORUN,
-        "interval_seconds": interval,
-        "last_search_at": last_search_at,
-        "next_run_at": next_run_at if AUTORUN else None,
-    }
-
-
-def list_discoveries(conn, limit=50):
-    discoveries = []
-    for row in INFRASTRUCTURE.read_models.discoveries(conn, limit):
-        item = dict(row)
-        item["gpt_scorecard"] = parse_json_field(item.pop("gpt_scorecard_json"), {})
-        discoveries.append(item)
-    return discoveries
 
 
 def render_inline_markdown(text):

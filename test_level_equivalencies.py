@@ -25,7 +25,6 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.original_scrape_job_from_url = job_search_app.OUTBOUND_CLIENTS.boards.scrape
         self.original_gpt_scoring_enabled = job_search_app.gpt_scoring_enabled
         self.original_codex_cli_available = job_search_app.codex_cli_available
-        self.original_codex_model = job_search_app.codex_model
         self.original_populate_codex_score = job_search_app.populate_codex_score
         job_search_app.DB_PATH = Path(self.tmpdir.name) / "job_search.sqlite3"
         job_search_app.app = create_app(
@@ -40,7 +39,6 @@ class LevelEquivalencyTests(unittest.TestCase):
         job_search_app.OUTBOUND_CLIENTS.boards.scrape = self.original_scrape_job_from_url
         job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
         job_search_app.codex_cli_available = self.original_codex_cli_available
-        job_search_app.codex_model = self.original_codex_model
         job_search_app.populate_codex_score = self.original_populate_codex_score
         self.tmpdir.cleanup()
 

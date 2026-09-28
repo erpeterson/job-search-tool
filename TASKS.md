@@ -251,6 +251,15 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   `OUTBOUND_HTTP_CLIENT`, `_DatabaseSessionProvider`/`connect`, and every
   presentation fallback that builds a repository, gateway, session, or service.
   Update direct-helper tests to construct application services with fakes.
+  - [x] **1.2c.1 — Remove the obsolete infrastructure bundle and read wrappers.**
+    Delete presentation-owned `INFRASTRUCTURE` and unused read-model helpers;
+    keep the one direct persistence assertion at the read-model boundary.
+  - [ ] **1.2c.2 — Remove eager outbound and Codex gateways.** Rehome direct
+    gateway tests at the adapter/composition boundary and eliminate the
+    presentation globals and compatibility wrapper.
+  - [ ] **1.2c.3 — Remove session and service construction.** Replace the
+    presentation session provider and any remaining construction/fallbacks;
+    migrate direct-helper tests and verify the entire presentation package.
 - [ ] **1.2d — Verify and commit.** AST-inspect all presentation modules for
   infrastructure/session construction and verify injected API behavior with a
   temporary database. Run `./quality.sh`, check T-1.2, and commit.

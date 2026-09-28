@@ -186,66 +186,6 @@ def codex_json_gateway(configuration: RuntimeConfiguration, observed: Observabil
     )
 
 
-@dataclass(frozen=True)
-class Infrastructure:
-    """Concrete adapters exposed only through the composition boundary.
-
-    Presentation code receives this opaque dependency bundle instead of importing
-    storage, parser, HTTP, or subprocess adapters itself.
-    """
-
-    html_parser: Any
-    board_gateway: Any
-    capture_gateway: Any
-    codex_gateway: Any
-    board_parser: Any
-    posting_parser: Any
-    packet_writer: Any
-    packet_storage: Any
-    http_client: Any
-    company_repository: Any
-    console_query_repository: Any
-    filter_repository: Any
-    job_repository: Any
-    level_repository: Any
-    query_repository: Any
-    search_repository: Any
-    search_mutations: Any
-    settings_repository: Any
-    read_models: Any
-    task_repository: Any
-    schema_initializer: Any
-    connection_factory: Any
-
-
-def infrastructure() -> Infrastructure:
-    """Return the concrete adapters assembled at the application's edge."""
-    return Infrastructure(
-        html_parser=BeautifulSoup,
-        board_gateway=CallableBoardGateway,
-        capture_gateway=CapturingHttpGateway,
-        codex_gateway=CodexCliGateway,
-        board_parser=JobBoardParser,
-        posting_parser=JobPostingParser,
-        packet_writer=PacketDocumentWriter,
-        packet_storage=PacketStorage,
-        http_client=SafeHttpClient,
-        company_repository=SqliteCompanyRepository,
-        console_query_repository=SqliteConsoleQueryRepository,
-        filter_repository=SqliteJobFilterRepository,
-        job_repository=SqliteJobRepository,
-        level_repository=SqliteLevelRepository,
-        query_repository=SqliteSearchQueryRepository,
-        search_repository=SqliteSearchRepository,
-        search_mutations=SqliteSearchMutations,
-        settings_repository=SqliteSettingsRepository,
-        read_models=SqliteReadModels,
-        task_repository=TaskRepository,
-        schema_initializer=initialize_schema,
-        connection_factory=open_connection,
-    )
-
-
 def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     """Assemble request-facing services at the composition boundary.
 
@@ -918,7 +858,6 @@ __all__ = [
     "TaskRepository",
     "open_connection",
     "initialize_schema",
-    "infrastructure",
     "database_session",
     "presentation_dependencies",
     "background_task_service",

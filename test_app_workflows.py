@@ -376,7 +376,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         )
         with workflow_app.connect() as connection:
             persisted = service.populate(connection, job_id, force_refresh=False)
-            saved = workflow_app.get_job(connection, job_id)
+            saved = SqliteReadModels.job(connection, job_id)
 
         self.assertEqual(persisted["total_score"], 88)
         self.assertEqual(saved["gpt_score"], 88)
