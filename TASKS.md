@@ -68,7 +68,7 @@ P3 = hygiene or completeness.
 | T-42 | Audit the full lock file, not just direct dependencies | Dependencies | P2 | Done |
 | T-43 | Stop `.env` reads from expanding `${VAR}` references | Configuration / Security | P3 | Done |
 | T-44 | Decide whether `prune-captures` may delete Codex call records | Data handling | P3 | Done |
-| T-45 | Keep large task results out of `/api/state` | Performance | P3 | Open |
+| T-45 | Keep large task results out of `/api/state` | Performance | P3 | Done |
 | T-46 | Release the task slot when a worker thread fails to start | Errors | P3 | Open |
 | T-47 | Accept IPv6 loopback in the default Host allowlist | Security / Configuration | P3 | Open |
 | T-48 | Warn about removed or unknown `JOB_SEARCH_*` variables | Configuration | P3 | Open |

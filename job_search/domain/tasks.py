@@ -36,9 +36,13 @@ class BackgroundTaskRegistry:
             return _snapshot(task) if task else None
 
     def list(self, limit=10):
+        """Recent task summaries without ``result``; the full result comes from ``get``."""
         with self._lock:
             tasks = sorted(self._tasks.values(), key=lambda task: task["created_at"], reverse=True)
-            return [_snapshot(task) for task in tasks[:limit]]
+            summaries = [_snapshot(task) for task in tasks[:limit]]
+        for summary in summaries:
+            summary.pop("result", None)
+        return summaries
 
     def update(self, task_id, **updates):
         with self._lock:

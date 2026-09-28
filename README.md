@@ -198,7 +198,8 @@ List responses (`/api/state`, and the job lists returned after delete, purge,
 and threshold changes) carry job summaries only; posting text, notes,
 rationales, and scorecards come from `GET /api/jobs/<id>`. Job listings accept
 `limit` (default 2000, maximum 5000) and `offset`, and `/api/state` reports
-`jobs_total`. With 1,000 jobs, `/api/state` stays under 1 MB (checked in
+`jobs_total`. Task entries in `/api/state` and `/api/codex-tasks` omit `result`;
+fetch `GET /api/codex-tasks/<id>` for it. With 1,000 jobs, `/api/state` stays under 1 MB (checked in
 `tests/test_response_bounds.py`). GET requests never create directories; the
 `applications/` folder is created at startup.
 
@@ -227,7 +228,7 @@ error statuses for all routes are `400` (validation), `403` (host/origin),
 | POST | `/api/jobs/<job_id>/notes` | `note` (required) | `201` job | `404` |
 | POST | `/api/jobs/<job_id>/status` | `status` (one of the job statuses) | `200` job | `404` |
 | POST | `/api/admin/purge-jobs` | `confirm: "PURGE"` | `200` `deleted_jobs`, jobs, discoveries | — |
-| GET | `/api/codex-tasks` | — | `200` recent tasks | — |
+| GET | `/api/codex-tasks` | — | `200` recent task summaries (no `result`) | — |
 | GET | `/api/codex-tasks/<task_id>` | — | `200` task (`status`, `items`, `result`, `message`, `error_code`) | `404` |
 | POST | `/api/jobs/bulk/score-gpt` | `job_ids` (1-1000 integers) | `202` task | `409` job already in a task, `429`, `503` |
 | POST | `/api/jobs/bulk/application-packets/generate` | `job_ids` (1-1000 integers) | `202` task | `409`, `429`, `503` |
