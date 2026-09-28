@@ -70,7 +70,8 @@ class BackgroundTaskRegistry:
         for task in finished[: max(0, len(self._tasks) - self._max_retained)]:
             del self._tasks[task["id"]]
 
-    def start(self, operation_name, job_ids, worker):
+    def start(self, operation_name, job_ids, worker, exclusive=False):
+        """Register and start a task. ``exclusive`` refuses a second active task of the same operation."""
         task_id = uuid.uuid4().hex
         created_at = now()
         task = {
@@ -93,6 +94,13 @@ class BackgroundTaskRegistry:
         }
         with self._lock:
             active = [t for t in self._tasks.values() if t["status"] in ACTIVE_STATUSES]
+            running_same = [t for t in active if t["operation"] == operation_name]
+            if exclusive and running_same:
+                raise ConflictError(
+                    f"A {operation_name} task is already running.",
+                    f"{operation_name}_in_progress",
+                    response_fields={"task": _snapshot(running_same[0])},
+                )
             if len(active) >= self._max_running:
                 raise CapacityError(
                     f"{len(active)} background tasks are already running; try again when one finishes.",
@@ -111,7 +119,7 @@ class BackgroundTaskRegistry:
         thread.start()
         return _snapshot(task)
 
-    def start_call(self, operation_name, call, job_ids=()):
+    def start_call(self, operation_name, call, job_ids=(), exclusive=False):
         """Run ``call()`` in the background as a single task and store its return value as ``result``."""
 
         def worker(task_id, _job_ids):
@@ -143,7 +151,7 @@ class BackgroundTaskRegistry:
                 return
             self._finish(task_id, "complete", f"{operation_name} complete", result=result)
 
-        return self.start(operation_name, list(job_ids), worker)
+        return self.start(operation_name, list(job_ids), worker, exclusive=exclusive)
 
     def _finish(self, task_id, status, message, **fields):
         counts = {"completed": 1} if status == "complete" else {"failed": 1}
@@ -199,7 +207,8 @@ class BulkOperations:
         def call():
             return {"run": self._search.run(trigger="manual", force_refresh=force_refresh)}
 
-        return self._registry.start_call("search_run", call)
+        # Only one search at a time: concurrent runs would score the same results twice.
+        return self._registry.start_call("search_run", call, exclusive=True)
 
     def start_packet(self, job_id):
         self._packets.check_can_generate(job_id)

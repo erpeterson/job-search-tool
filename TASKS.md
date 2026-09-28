@@ -62,7 +62,7 @@ P3 = hygiene or completeness.
 | T-36 | Add assertion messages to bare test asserts | Tests | P2 | Done |
 | T-37 | Cover untested boundary and failure paths | Tests | P3 | Done |
 | T-38 | Document the HTTP API and fix README inaccuracies | Documentation | P3 | Done |
-| T-39 | Allow only one search run at a time; survive duplicate-URL inserts | Integrity / Performance | P2 | Open |
+| T-39 | Allow only one search run at a time; survive duplicate-URL inserts | Integrity / Performance | P2 | Done |
 | T-40 | Bind a correlation ID inside single-call background tasks | Observability | P2 | Open |
 | T-41 | Keep failure captures instead of overwriting them | Integrity / Evidence | P2 | Open |
 | T-42 | Audit the full lock file, not just direct dependencies | Dependencies | P2 | Open |

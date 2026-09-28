@@ -55,6 +55,10 @@ class CapacityError(AppError):
     """Too much work is already in progress; retry later."""
 
 
+class DuplicateUrlError(ConflictError):
+    """A job with this URL was inserted concurrently (the unique URL index rejected the insert)."""
+
+
 class DependencyUnavailableError(AppError):
     """A required local dependency (Codex CLI, feature flag) is unavailable."""
 
