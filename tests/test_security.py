@@ -340,3 +340,27 @@ def test_ui_has_no_inline_script_and_csp_forbids_it():
     assert "<script>" not in html, "scripts must load from /static/app.js"
     script_src = SECURITY_HEADERS["Content-Security-Policy"].split("script-src")[1].split(";")[0]
     assert "unsafe-inline" not in script_src, f"script-src must not allow inline script: {script_src}"
+
+
+def test_ipv6_loopback_host_is_allowed_by_default(config, environ, http, codex_runner, profile, workspace):
+    from conftest import FakeResolver, make_client
+
+    from job_search.container import build_container
+
+    ipv6_config = AppConfig.from_env({**environ, "JOB_SEARCH_HOST": "::1"}, app_dir=workspace / "job-search-tool")
+    assert "[::1]:5050" in ipv6_config.allowed_hosts, f"IPv6 hosts must be bracketed: {ipv6_config.allowed_hosts}"
+    client = make_client(
+        build_container(
+            ipv6_config,
+            environ=environ,
+            http_get=http,
+            codex_runner=codex_runner,
+            resolve_host=FakeResolver(),
+            profile=profile,
+        )
+    )
+    response = client.get("/api/metrics", headers={"Host": "[::1]:5050"})
+    assert response.status_code == 200, f"Host [::1]:5050 should be allowed, got {response.status_code}"
+    assert client.get("/api/metrics", headers={"Host": "::1:5050"}).status_code == 403, (
+        "unbracketed form is not a valid Host"
+    )
