@@ -190,6 +190,49 @@ rationales, and scorecards come from `GET /api/jobs/<id>`. Job listings accept
 `tests/test_response_bounds.py`). GET requests never create directories; the
 `applications/` folder is created at startup.
 
+## HTTP API
+
+All endpoints are local JSON APIs used by the UI. State-changing requests must
+send `Content-Type: application/json` (or no body) from an allowed host and
+origin. Every error response is `{"error": ..., "request_id": ...}`; common
+error statuses for all routes are `400` (validation), `403` (host/origin),
+`413`, `415`, and `500`. The table lists route-specific statuses.
+"Task" means the response is `202` with a background `task` to poll via
+`GET /api/codex-tasks/<task_id>`.
+
+| Method | Path | Body / query | Success | Other statuses |
+| --- | --- | --- | --- | --- |
+| GET | `/` | — | `200` HTML UI | — |
+| GET | `/api/state` | query `include_filtered=1`, `limit` (1-5000, default 2000), `offset` | `200` jobs (summaries), `jobs_total`, companies, searches, runs, discoveries, packets, tasks, settings, masked config | — |
+| GET | `/api/metrics` | — | `200` blame-metric counters | — |
+| GET | `/api/jobs/<job_id>` | — | `200` full job with notes and interactions | `404` |
+| POST | `/api/jobs` | `url`, `pipeline` (required); `company`, `title`, `location`, `status`, `posting_text`, `notes`, `force_refresh` | `201` job, `scrape_error`, `score_error`, `score_task` | `409` duplicate URL (body includes the existing `job`) |
+| DELETE | `/api/jobs/<job_id>` | `confirm: "DELETE"` | `200` `deleted_job_id`, jobs | `404` |
+| POST | `/api/jobs/<job_id>/scrape` | `force_refresh` (default true) | `200` job, scraped fields | `404`, `502` fetch failure |
+| POST | `/api/jobs/<job_id>/score-gpt` | — | `202` task (result `raw_score`) | `404`, `429`, `503` scoring disabled or Codex unavailable |
+| POST | `/api/jobs/<job_id>/score-user` | `scorecard` (rubric fields 0-10), `total_score` (0-100, optional), `user_rationale` | `200` job | `404` |
+| POST | `/api/jobs/<job_id>/interactions` | `occurred_on` (YYYY-MM-DD, required), `person_name`, `person_role`, `channel`, `summary`, `notes_to_self`, `next_step` | `201` job | `404` |
+| POST | `/api/jobs/<job_id>/notes` | `note` (required) | `201` job | `404` |
+| POST | `/api/jobs/<job_id>/status` | `status` (one of the job statuses) | `200` job | `404` |
+| POST | `/api/admin/purge-jobs` | `confirm: "PURGE"` | `200` `deleted_jobs`, jobs, discoveries | — |
+| GET | `/api/codex-tasks` | — | `200` recent tasks | — |
+| GET | `/api/codex-tasks/<task_id>` | — | `200` task (`status`, `items`, `result`, `message`, `error_code`) | `404` |
+| POST | `/api/jobs/bulk/score-gpt` | `job_ids` (1-1000 integers) | `202` task | `409` job already in a task, `429`, `503` |
+| POST | `/api/jobs/bulk/application-packets/generate` | `job_ids` (1-1000 integers) | `202` task | `409`, `429`, `503` |
+| GET | `/api/application-packets` | — | `200` packet folders with associations | — |
+| POST | `/api/jobs/<job_id>/application-packet/generate` | — | `202` task (result `packet`) | `404`, `409` already associated, `429`, `503` |
+| POST | `/api/jobs/<job_id>/application-packet/attach` | `path` (under `applications/`) | `200` job, packets | `404` |
+| GET | `/api/jobs/<job_id>/application-packet/content` | query `file` (a `.md` name, max 255 chars) | `200` Markdown content and file list | `404` |
+| GET | `/api/jobs/<job_id>/application-packet/render` | query `file` | `200` HTML preview | `404` |
+| GET | `/api/companies/<company_id>` | — | `200` company with matching jobs | `404` |
+| POST | `/api/companies` | `company` (required), `status`, `interest_score` (0-100), `rationale`, `notes`, `next_step`, `contacts` | `201` company, companies (upserts by normalized name) | — |
+| POST | `/api/companies/<company_id>` | any company fields (omitted fields are kept) | `200` company, companies | `404` |
+| POST | `/api/search/run` | `force_refresh` | `202` task (result `run`) | `429` |
+| POST | `/api/search/queries` | `board` (`linkedin`/`indeed`), `keywords` (required), `pipeline`, `location`, `criteria`, `enabled` | `201` search queries | — |
+| POST | `/api/search/queries/<query_id>` | any query fields | `200` search queries | `404` |
+| POST | `/api/settings` | `gpt_threshold`, `user_threshold` (0-100), `codex_model` | `200` settings, jobs | — |
+| POST | `/api/config` | `CODEX_CLI_PATH`, `CODEX_MODEL`, `JOB_SEARCH_ENABLE_GPT_SCORING`, `JOB_SEARCH_USE_CAPTURE_CACHE` | `200` masked config and settings | — |
+
 ## Errors, Logs, And Troubleshooting
 
 - State-changing requests must send JSON (`Content-Type: application/json`) or
@@ -299,8 +342,8 @@ request.
 
 Manual searches include a `Force refresh` checkbox. When checked, the search
 bypasses replay and makes live LinkedIn, Indeed, and Codex CLI requests, then
-writes the fresh responses back to captures. Scheduled searches always force
-refresh so daily automation checks the boards instead of replaying old responses.
+writes the fresh responses back to captures. (When scheduled searches are
+re-enabled, they always force refresh.)
 
 Codex scoring is disabled by default. To re-enable it, set this in the app's
 Configuration panel or in `job-search-tool/.env`:
@@ -365,7 +408,7 @@ Scheduled daily searches are currently disabled in code (`SCHEDULER_SUPPORTED` i
 `job_search/config.py`) because the scheduler has known bugs and consumes Codex
 credits unattended. `JOB_SEARCH_AUTORUN` is ignored until it is re-enabled.
 
-Set `JOB_SEARCH_INTERVAL_SECONDS` to change the cadence.
+`JOB_SEARCH_INTERVAL_SECONDS` will set the cadence once the scheduler is re-enabled; it has no effect today.
 
 Each time a saved search runs, the app uses the scored discoveries from that pipeline and board to refine the saved keywords and criteria. The refinement loop is intentionally based on the pipeline descriptions and score outcomes in this tool, not on your LinkedIn or Indeed profile searches.
 
@@ -450,5 +493,5 @@ Discovery rule:
 - Track company-level interest separately from individual roles.
 - Track people, conversations, notes, and next steps.
 - Filter low-fit jobs.
-- Run saved LinkedIn and Indeed searches on demand or daily, with the next scheduled run shown in the UI.
+- Run saved LinkedIn and Indeed searches on demand (scheduled daily runs are currently disabled).
 - Hide downlevel discoveries by default while retaining them in tracked jobs.

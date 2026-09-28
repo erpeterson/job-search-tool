@@ -48,3 +48,22 @@ def test_env_example_is_a_valid_configuration(tmp_path):
     settings = EnvFile(REPO / ".env.example").read()
     config = AppConfig.from_env(settings, app_dir=tmp_path / "app")
     assert (config.host, config.port) == ("127.0.0.1", 5050), "the example must load with its documented defaults"
+
+
+def test_readme_documents_every_route():
+    from flask import Flask
+
+    from job_search.web.routes import bp
+
+    app = Flask("docs-check")
+    app.register_blueprint(bp)
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    missing = []
+    for rule in app.url_map.iter_rules():
+        if rule.endpoint == "static":
+            continue
+        path = re.sub(r"<(?:int:)?([a-z_]+)>", r"<\1>", rule.rule)
+        for method in sorted(rule.methods - {"HEAD", "OPTIONS"}):
+            if f"| {method} | `{path}` |" not in readme:
+                missing.append(f"{method} {path}")
+    assert not missing, f"README HTTP API table is missing: {missing}"
