@@ -2,16 +2,34 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class PresentationDependencies:
-    """Application services made available to request handlers.
+    """Required web services supplied by the composition root.
 
-    The presentation package owns only the contract.  The composition root
-    provides the concrete service instances or factories.
+    These named fields are the migration contract for route registration. The
+    compatibility mapping is removed as routes stop using legacy helpers.
     """
 
-    services: dict[str, Any] = field(default_factory=dict)
+    job_service: Any
+    company_service: Any
+    search_query_service: Any
+    settings_service: Any
+    console_query_service: Any
+    packet_catalog: Any
+    packet_content_service: Any
+    packet_attachment_service: Any
+    level_service: Any
+    search_repository: Any
+    filtering_service: Any
+    background_task_service: Any
+    initialization_service: Any
+    startup_service: Any
+
+    def __post_init__(self) -> None:
+        missing = [name for name in self.__dataclass_fields__ if getattr(self, name) is None]
+        if missing:
+            raise ValueError(f"Missing required web dependencies: {', '.join(missing)}")

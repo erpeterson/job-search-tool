@@ -3,6 +3,7 @@ import logging
 import stat
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from job_search.composition import (
     discovery_service,
     observability,
     outbound_clients,
+    presentation_dependencies,
     runtime_configuration,
     task_execution_service,
 )
@@ -128,13 +130,22 @@ class CompositionTests(unittest.TestCase):
     def test_factory_injects_service_without_constructing_flask_bound_dependencies(self):
         fake_service = object()
         web_app = create_app(
-            dependencies=PresentationDependencies({"job_service": fake_service}), route_blueprint=legacy.routes
+            dependencies=replace(presentation_dependencies(Path("unused.sqlite3")), job_service=fake_service),
+            route_blueprint=legacy.routes,
         )
 
         with web_app.app_context():
             self.assertIs(
                 legacy.job_service(), fake_service, "The composition root must honor an injected service fake."
             )
+
+    def test_factory_rejects_missing_dependencies_at_construction(self):
+        with self.assertRaisesRegex(ValueError, "Web dependencies"):
+            create_app(route_blueprint=legacy.routes)
+        with self.assertRaisesRegex(TypeError, "required positional"):
+            PresentationDependencies(job_service=object())
+        with self.assertRaisesRegex(ValueError, "job_service"):
+            replace(presentation_dependencies(Path("unused.sqlite3")), job_service=None)
 
     def test_task_processor_is_composed_from_application_services(self):
         class Console:

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from job_search.composition import presentation_dependencies
 from job_search.presentation.factory import create_app
 from job_search.security import load_request_security
 
@@ -11,7 +12,6 @@ APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "le
 SPEC = importlib.util.spec_from_file_location("job_search_app", APP_PATH)
 job_search_app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(job_search_app)
-job_search_app.app = create_app(route_blueprint=job_search_app.routes)
 
 
 class LevelEquivalencyTests(unittest.TestCase):
@@ -25,7 +25,11 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.original_codex_model = job_search_app.codex_model
         self.original_populate_codex_score = job_search_app.populate_codex_score
         job_search_app.DB_PATH = Path(self.tmpdir.name) / "job_search.sqlite3"
-        job_search_app.startup_service().initialize()
+        job_search_app.app = create_app(
+            dependencies=presentation_dependencies(job_search_app.DB_PATH), route_blueprint=job_search_app.routes
+        )
+        with job_search_app.app.app_context():
+            job_search_app.startup_service().initialize()
 
     def tearDown(self):
         job_search_app.DB_PATH = self.original_db_path

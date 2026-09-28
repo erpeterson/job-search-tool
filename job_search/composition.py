@@ -257,36 +257,39 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         # root deliberately keeps non-HTTP processes usable without Flask.
         logging.getLogger("job_search.events").info("%s %s", event, fields)
 
+    @dataclass(frozen=True)
+    class EventTelemetry:
+        event: Callable[..., None]
+
     packet_catalog = ApplicationPacketCatalog(database_path.parent, database_path.parent / "applications")
 
     return PresentationDependencies(
-        {
-            "job_service": JobService(adapters.job_repository(connect)),
-            "company_service": CompanyService(adapters.company_repository(connect)),
-            "search_query_service": SearchQueryService(adapters.query_repository(connect)),
-            "settings_service": SettingsService(adapters.settings_repository(connect)),
-            "console_query_service": ConsoleQueryService(
-                adapters.console_query_repository(connect, packet_catalog.list)
-            ),
-            "packet_catalog": packet_catalog,
-            "packet_content_service": PacketContentService(
-                FilesystemPacketContentReader(database_path.parent, database_path.parent / "applications")
-            ),
-            "packet_attachment_service": packet_attachment_service(database_path),
-            "level_service": level_service(database_path),
-            "search_repository": adapters.search_repository(connect),
-            "filtering_service": FilteringService(
-                adapters.filter_repository(connect),
-                lambda: int(time.time()),
-                gpt_scoring_enabled=os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1",
-            ),
-            "background_task_service": BackgroundTaskService(
-                adapters.task_repository(database_path),
-                lambda: int(time.time()),
-                observe,
-            ),
-            "initialization_service": initialization_service(database_path),
-        }
+        job_service=JobService(adapters.job_repository(connect)),
+        company_service=CompanyService(adapters.company_repository(connect)),
+        search_query_service=SearchQueryService(adapters.query_repository(connect)),
+        settings_service=SettingsService(adapters.settings_repository(connect)),
+        console_query_service=ConsoleQueryService(adapters.console_query_repository(connect, packet_catalog.list)),
+        packet_catalog=packet_catalog,
+        packet_content_service=PacketContentService(
+            FilesystemPacketContentReader(database_path.parent, database_path.parent / "applications")
+        ),
+        packet_attachment_service=packet_attachment_service(database_path),
+        level_service=level_service(database_path),
+        search_repository=adapters.search_repository(connect),
+        filtering_service=FilteringService(
+            adapters.filter_repository(connect),
+            lambda: int(time.time()),
+            gpt_scoring_enabled=os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1",
+        ),
+        background_task_service=BackgroundTaskService(
+            adapters.task_repository(database_path),
+            lambda: int(time.time()),
+            observe,
+        ),
+        initialization_service=initialization_service(database_path),
+        startup_service=startup_service(
+            database_path, EventTelemetry(observe), runtime_configuration(database_path.parent).model()
+        ),
     )
 
 

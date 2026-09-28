@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from job_search.composition import presentation_dependencies
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
 
@@ -12,7 +13,6 @@ APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "le
 SPEC = importlib.util.spec_from_file_location("workflow_app", APP_PATH)
 workflow_app = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(workflow_app)
-workflow_app.app = create_app(route_blueprint=workflow_app.routes)
 
 
 class ApplicationWorkflowTests(unittest.TestCase):
@@ -29,7 +29,11 @@ class ApplicationWorkflowTests(unittest.TestCase):
         workflow_app.ROOT = Path(self.tempdir.name)
         self.packet_storage = PacketStorage(workflow_app.ROOT, workflow_app.APPLICATIONS_DIR)
         workflow_app.gpt_scoring_enabled = lambda: False
-        workflow_app.startup_service().initialize()
+        workflow_app.app = create_app(
+            dependencies=presentation_dependencies(workflow_app.DB_PATH), route_blueprint=workflow_app.routes
+        )
+        with workflow_app.app.app_context():
+            workflow_app.startup_service().initialize()
         self.client = workflow_app.app.test_client()
 
     def tearDown(self):
@@ -156,7 +160,8 @@ class ApplicationWorkflowTests(unittest.TestCase):
                     """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
                        VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'test')"""
                 )
-            run = workflow_app.run_job_search()
+            with workflow_app.app.app_context():
+                run = workflow_app.run_job_search()
         finally:
             workflow_app.OUTBOUND_CLIENTS.search_gateway.fetch, workflow_app.refine_search_query = originals
 
@@ -252,17 +257,18 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 refined = connection.execute(
                     "SELECT keywords, refinement_notes FROM search_queries WHERE id = ?", (query_id,)
                 ).fetchone()
-                decision = workflow_app.classify_discovery(
-                    connection,
-                    {
-                        "board": "indeed",
-                        "company": "ExampleCo",
-                        "title": "Architect",
-                        "url": "https://role",
-                        "location": "Remote",
-                        "pipeline": "Executive IC",
-                    },
-                )
+                with workflow_app.app.app_context():
+                    decision = workflow_app.classify_discovery(
+                        connection,
+                        {
+                            "board": "indeed",
+                            "company": "ExampleCo",
+                            "title": "Architect",
+                            "url": "https://role",
+                            "location": "Remote",
+                            "pipeline": "Executive IC",
+                        },
+                    )
             self.assertEqual(refined["keywords"], "chief architect")
             self.assertEqual(refined["refinement_notes"], "narrowed")
             self.assertEqual(decision[0], "tracked")
@@ -544,9 +550,10 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
         workflow_app.compose_packet_draft_service = lambda *_args: FakeDraft()
         try:
-            with workflow_app.connect() as connection:
-                created = workflow_app.create_application_packet(connection, job_id)
-                packets = workflow_app.list_application_packets(connection)
+            with workflow_app.app.app_context():
+                with workflow_app.connect() as connection:
+                    created = workflow_app.create_application_packet(connection, job_id)
+                    packets = workflow_app.list_application_packets(connection)
         finally:
             workflow_app.compose_packet_draft_service = original_factory
 

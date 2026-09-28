@@ -216,6 +216,19 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   dictionary/fallback pattern with a complete, explicit dependency contract
   for web routes and separate worker/scheduler process builders. A missing
   required service should fail at construction, not during a request.
+  - [x] **1.2a.1 — Require the existing web services.** Replace the permissive
+    dictionary and fallback lookup with named required fields, fail app
+    construction when dependencies are absent, and migrate direct web tests
+    to the injected factory. Run the quality gate.
+  - [ ] **1.2a.2 — Complete the web contract.** Add all remaining route-facing
+    workflows and configuration/telemetry ports to the named contract; remove
+    their presentation-side construction and test missing-field failures.
+  - [ ] **1.2a.3 — Define process builders.** Give worker and scheduler separate
+    composition builders keyed by the supplied database path, with focused
+    tests that no web dependency bundle is required.
+  - [ ] **1.2a.4 — Audit and commit.** Verify no permissive dictionary or
+    request-time service fallback remains, run the quality gate, then check
+    1.2a.
 - [ ] **1.2b — Build all concrete services in composition.** Wire repositories,
   SQLite session providers, gateways, telemetry, clocks, policies, and the
   application services extracted in T-1.3. Replace generic

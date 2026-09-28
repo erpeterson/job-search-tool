@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from job_search.application.discovery_policy import DiscoveryPolicy
+from job_search.composition import presentation_dependencies
 from job_search.data_access import codex_cli
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.presentation.factory import create_app
@@ -15,13 +16,13 @@ APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "le
 SPEC = importlib.util.spec_from_file_location("business_paths_app", APP_PATH)
 app_module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(app_module)
-app_module.app = create_app(route_blueprint=app_module.routes)
 
 
 class BusinessPathTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_capture_dir = app_module.CAPTURE_DIR
+        self.original_db_path = app_module.DB_PATH
         self.original_applications_dir = app_module.APPLICATIONS_DIR
         self.original_root = app_module.ROOT
         self.original_env_path = app_module.ENV_PATH
@@ -29,6 +30,7 @@ class BusinessPathTests(unittest.TestCase):
         self.original_runtime_environment = app_module.RUNTIME_CONFIG.environment
         app_module.RUNTIME_CONFIG.environment = dict(self.original_runtime_environment)
         app_module.CAPTURE_DIR = Path(self.tempdir.name) / "captures"
+        app_module.DB_PATH = Path(self.tempdir.name) / "jobs.sqlite3"
         app_module.APPLICATIONS_DIR = Path(self.tempdir.name) / "applications"
         app_module.ROOT = Path(self.tempdir.name)
         app_module.ENV_PATH = Path(self.tempdir.name) / ".env"
@@ -40,9 +42,15 @@ class BusinessPathTests(unittest.TestCase):
             captures=app_module.CAPTURE_DIR,
         )
         self.packet_storage = PacketStorage(app_module.ROOT, app_module.APPLICATIONS_DIR)
+        app_module.app = create_app(
+            dependencies=presentation_dependencies(app_module.DB_PATH), route_blueprint=app_module.routes
+        )
+        with app_module.app.app_context():
+            app_module.startup_service().initialize()
 
     def tearDown(self):
         app_module.CAPTURE_DIR = self.original_capture_dir
+        app_module.DB_PATH = self.original_db_path
         app_module.APPLICATIONS_DIR = self.original_applications_dir
         app_module.ROOT = self.original_root
         app_module.ENV_PATH = self.original_env_path

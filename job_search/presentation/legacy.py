@@ -11,7 +11,6 @@ from flask import (
     Response,
     current_app,
     g,
-    has_app_context,
     jsonify,
     render_template,
     request,
@@ -41,27 +40,16 @@ from job_search.composition import (
     observability,
     runtime_configuration,
 )
-from job_search.composition import background_task_service as compose_background_task_service
 from job_search.composition import codex_json_gateway as compose_codex_json_gateway
 from job_search.composition import codex_scoring_workflow as compose_codex_scoring_workflow
-from job_search.composition import company_service as compose_company_service
-from job_search.composition import console_query_service as compose_console_query_service
 from job_search.composition import discovery_service as compose_discovery_service
-from job_search.composition import filtering_service as compose_filtering_service
 from job_search.composition import job_score_service as compose_job_score_service
-from job_search.composition import job_service as compose_job_service
 from job_search.composition import level_service as compose_level_service
 from job_search.composition import outbound_clients as compose_outbound_clients
-from job_search.composition import packet_attachment_service as compose_packet_attachment_service
-from job_search.composition import packet_catalog as compose_packet_catalog
-from job_search.composition import packet_content_service as compose_packet_content_service
 from job_search.composition import packet_draft_service as compose_packet_draft_service
 from job_search.composition import packet_generation_service as compose_packet_generation_service
 from job_search.composition import rescrape_service as compose_rescrape_service
-from job_search.composition import search_query_service as compose_search_query_service
 from job_search.composition import search_run_service as compose_search_run_service
-from job_search.composition import settings_service as compose_settings_service
-from job_search.composition import startup_service as compose_startup_service
 from job_search.errors import ClientInputError, translate_exception
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
@@ -183,31 +171,26 @@ class _DatabaseSessionProvider:
 connect = _DatabaseSessionProvider()
 
 
-def dependency(name, fallback):
-    """Resolve a service factory supplied by the composition root when present."""
-    if has_app_context():
-        services = current_app.extensions["job_search.dependencies"].services
-        configured = services.get(name)
-        if configured is not None:
-            return configured() if callable(configured) else configured
-    return fallback()
+def dependency(name):
+    """Resolve a required service supplied by the composition root."""
+    return getattr(current_app.extensions["job_search.dependencies"], name)
 
 
 def job_service() -> JobService:
     """Compose the framework-independent job use case for a request."""
-    return dependency("job_service", lambda: compose_job_service(DB_PATH, log_event))
+    return dependency("job_service")
 
 
 def company_service() -> CompanyService:
-    return dependency("company_service", lambda: compose_company_service(DB_PATH))
+    return dependency("company_service")
 
 
 def search_query_service() -> SearchQueryService:
-    return dependency("search_query_service", lambda: compose_search_query_service(DB_PATH))
+    return dependency("search_query_service")
 
 
 def settings_service() -> SettingsService:
-    return dependency("settings_service", lambda: compose_settings_service(DB_PATH))
+    return dependency("settings_service")
 
 
 def filtering_service() -> FilteringService:
@@ -225,10 +208,7 @@ def filtering_service() -> FilteringService:
                 gpt_scoring_enabled=gpt_scoring_enabled(),
             )
 
-    return dependency(
-        "filtering_service",
-        lambda: compose_filtering_service(DB_PATH, observe),
-    )
+    return dependency("filtering_service")
 
 
 def manual_job_service() -> ManualJobService:
@@ -285,14 +265,11 @@ def rescrape_service() -> RescrapeService:
 
 
 def packet_attachment_service():
-    return dependency("packet_attachment_service", lambda: compose_packet_attachment_service(DB_PATH))
+    return dependency("packet_attachment_service")
 
 
 def packet_content_service():
-    return dependency(
-        "packet_content_service",
-        lambda: compose_packet_content_service(DB_PATH),
-    )
+    return dependency("packet_content_service")
 
 
 def scoring_service() -> ScoringService:
@@ -310,7 +287,7 @@ def scoring_service() -> ScoringService:
 
 
 def console_query_service():
-    return dependency("console_query_service", lambda: compose_console_query_service(DB_PATH))
+    return dependency("console_query_service")
 
 
 def discovery_policy() -> DiscoveryPolicy:
@@ -320,11 +297,11 @@ def discovery_policy() -> DiscoveryPolicy:
 def level_service(connection=None) -> LevelService:
     if connection is not None:
         return compose_level_service(DB_PATH, connection)
-    return dependency("level_service", lambda: compose_level_service(DB_PATH))
+    return dependency("level_service")
 
 
 def startup_service():
-    return dependency("startup_service", lambda: compose_startup_service(DB_PATH, telemetry, DEFAULT_MODEL))
+    return dependency("startup_service")
 
 
 def lookup_level_equivalency(conn, company, title):
@@ -400,7 +377,7 @@ def full_capture_enabled():
 
 
 def background_task_service():
-    return dependency("background_task_service", lambda: compose_background_task_service(DB_PATH, log_event))
+    return dependency("background_task_service")
 
 
 def get_background_task(task_id):
@@ -561,7 +538,7 @@ def escape_html(value):
 
 
 def list_application_packets(conn):
-    return dependency("packet_catalog", lambda: compose_packet_catalog(DB_PATH)).list(conn)
+    return dependency("packet_catalog").list(conn)
 
 
 def selector_text(soup, selectors):

@@ -17,9 +17,11 @@ def create_app(
     route_blueprint: Any = routes,
 ) -> Flask:
     """Create the delivery application with services supplied by composition."""
+    if dependencies is None:
+        raise ValueError("Web dependencies must be supplied by the composition root.")
     application = Flask(__name__)
     if test_config:
         application.config.update(test_config)
-    application.extensions["job_search.dependencies"] = dependencies or PresentationDependencies()
+    application.extensions["job_search.dependencies"] = dependencies
     application.register_blueprint(route_blueprint)
     return application
