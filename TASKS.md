@@ -236,7 +236,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     - [x] **1.2a.2d — Inject runtime and observability ports.** Supply web
       configuration, security, correlation, logging, and capture dependencies
       through the named contract and verify missing-field failures.
-  - [ ] **1.2a.3 — Define process builders.** Give worker and scheduler separate
+  - [x] **1.2a.3 — Define process builders.** Give worker and scheduler separate
     composition builders keyed by the supplied database path, with focused
     tests that no web dependency bundle is required.
   - [ ] **1.2a.4 — Audit and commit.** Verify no permissive dictionary or

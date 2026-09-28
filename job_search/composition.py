@@ -70,6 +70,7 @@ from job_search.data_access.model_output_parser import parse_model_json  # noqa:
 from job_search.data_access.packet_content_reader import FilesystemPacketContentReader
 from job_search.data_access.packet_storage import PacketStorage
 from job_search.data_access.read_models import SqliteReadModels
+from job_search.data_access.scheduler_repository import SchedulerLeaseRepository
 from job_search.data_access.schema import initialize_schema
 from job_search.data_access.search_mutations import SqliteSearchMutations
 from job_search.data_access.search_query_repository import SqliteSearchQueryRepository
@@ -275,23 +276,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     jobs = JobService(adapters.job_repository(connect))
     clients = outbound_clients(observed, clean_text, clean_url, source_id, dedupe_results)
 
-    def observe_filter(job: Mapping[str, Any], decision: Any) -> None:
-        if decision.filtered:
-            observed.telemetry.event(
-                "job_filtered",
-                job_id=job.get("id"),
-                company=job["company"],
-                title=job["title"],
-                reasons=decision.reasons,
-                gpt_score=job["gpt_score"],
-                user_score=job["user_score"],
-                downlevel=bool(job["downlevel"]),
-                gpt_scoring_enabled=configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
-            )
-
-    filtering = filtering_service(
-        database_path, observe_filter, scoring_enabled=configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING")
-    )
+    filtering = observed_filtering_service(database_path, configuration, observed.telemetry)
 
     def scrape(url: str, force_refresh: bool):
         return clients.boards.scrape(url, force_refresh=force_refresh)
@@ -325,44 +310,8 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         report_manual_failure,
     )
 
-    def apply_discovery_filter(connection: Any, job_id: int) -> None:
-        connection.commit()
-        filtering.refresh_job(job_id)
-
-    def refine_discovery(connection: Any, prompt: Mapping[str, Any], *, force_refresh: bool) -> str:
-        model = configuration.model() or SqliteReadModels.settings(connection).get("codex_model", "")
-        return gateway.complete(model, prompt, "refine_search_query", force_refresh=force_refresh)
-
-    discovery = discovery_service(
-        database_path,
-        observed.telemetry,
-        UNKNOWN_LEVEL_ASSESSMENT,
-        ORACLE_IC6_LEVEL_REFERENCE,
-        scoring_enabled=lambda: configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
-        scorer_available=configuration.cli_available,
-        scorer_path=configuration.cli_path,
-        score=scorer.score_discovery,
-        apply_filter=apply_discovery_filter,
-        normalize_pipeline=normalize_pipeline,
-        refine=refine_discovery,
-        clean_text=clean_text,
-    )
-
-    def already_seen_reason(connection: Any, url: str | None) -> str | None:
-        if url and SqliteReadModels.job_exists_url(connection, url):
-            return "already tracked in jobs"
-        return None
-
-    search = search_run_service(
-        database_path,
-        clients.search_gateway,
-        observed.telemetry,
-        reject_reason=DiscoveryPolicy(MIN_ANNUAL_COMPENSATION).rejection_reason,
-        level_assessment=discovery.assess_level,
-        already_seen_reason=already_seen_reason,
-        classify=discovery.classify,
-        refine=discovery.refine_query,
-        is_refinement_error=lambda error: isinstance(error, CodexCliError),
+    discovery, search = compose_search_workflows(
+        database_path, configuration, observed, gateway, scorer, clients.search_gateway, filtering
     )
 
     def scoring_availability() -> str | None:
@@ -580,6 +529,30 @@ def filtering_service(
             os.environ.get("JOB_SEARCH_ENABLE_GPT_SCORING", "0") == "1" if scoring_enabled is None else scoring_enabled
         ),
         observe=observe,
+    )
+
+
+def observed_filtering_service(
+    database_path: Path, configuration: RuntimeConfiguration, telemetry: Telemetry
+) -> FilteringService:
+    """Preserve filter-decision telemetry in every composed process."""
+
+    def observe(job: Mapping[str, Any], decision: Any) -> None:
+        if decision.filtered:
+            telemetry.event(
+                "job_filtered",
+                job_id=job.get("id"),
+                company=job["company"],
+                title=job["title"],
+                reasons=decision.reasons,
+                gpt_score=job["gpt_score"],
+                user_score=job["user_score"],
+                downlevel=bool(job["downlevel"]),
+                gpt_scoring_enabled=configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
+            )
+
+    return filtering_service(
+        database_path, observe, scoring_enabled=configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING")
     )
 
 
@@ -822,6 +795,117 @@ def search_run_service(
     )
 
 
+def compose_search_workflows(
+    database_path: Path,
+    configuration: RuntimeConfiguration,
+    observed: Observability,
+    gateway: CodexJsonGateway,
+    scorer: JobScoreService,
+    boards: CallableBoardGateway,
+    filtering: FilteringService,
+) -> tuple[DiscoveryService, SearchRunService]:
+    """Build the same search workflows for web and managed scheduler processes."""
+
+    def apply_discovery_filter(connection: Any, job_id: int) -> None:
+        connection.commit()
+        filtering.refresh_job(job_id)
+
+    def refine_discovery(connection: Any, prompt: Mapping[str, Any], *, force_refresh: bool) -> str:
+        model = configuration.model() or SqliteReadModels.settings(connection).get("codex_model", "")
+        return gateway.complete(model, prompt, "refine_search_query", force_refresh=force_refresh)
+
+    discovery = discovery_service(
+        database_path,
+        observed.telemetry,
+        UNKNOWN_LEVEL_ASSESSMENT,
+        ORACLE_IC6_LEVEL_REFERENCE,
+        scoring_enabled=lambda: configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
+        scorer_available=configuration.cli_available,
+        scorer_path=configuration.cli_path,
+        score=scorer.score_discovery,
+        apply_filter=apply_discovery_filter,
+        normalize_pipeline=normalize_pipeline,
+        refine=refine_discovery,
+        clean_text=clean_text,
+    )
+
+    def already_seen_reason(connection: Any, url: str | None) -> str | None:
+        if url and SqliteReadModels.job_exists_url(connection, url):
+            return "already tracked in jobs"
+        return None
+
+    search = search_run_service(
+        database_path,
+        boards,
+        observed.telemetry,
+        reject_reason=DiscoveryPolicy(MIN_ANNUAL_COMPENSATION).rejection_reason,
+        level_assessment=discovery.assess_level,
+        already_seen_reason=already_seen_reason,
+        classify=discovery.classify,
+        refine=discovery.refine_query,
+        is_refinement_error=lambda error: isinstance(error, CodexCliError),
+    )
+    return discovery, search
+
+
+@dataclass(frozen=True)
+class WorkerProcessDependencies:
+    database_path: Path
+    repository: TaskRepository
+    processor: TaskExecutionService
+    observability: Observability
+
+
+def worker_process_dependencies(
+    database_path: Path,
+    *,
+    configuration: RuntimeConfiguration | None = None,
+    observed: Observability | None = None,
+    scorer: JobScoreService | None = None,
+    draft: PacketDraftService | None = None,
+) -> WorkerProcessDependencies:
+    """Build only the durable-task process graph for the supplied database."""
+    configuration = configuration or runtime_configuration(database_path.parent)
+    observed = observed or observability(configuration)
+    gateway = codex_json_gateway(configuration, observed) if scorer is None or draft is None else None
+    scorer = scorer or job_score_service(configuration, gateway)
+    draft = draft or packet_draft_service(configuration, observed, gateway)
+    scoring = codex_scoring_workflow(database_path, configuration, scorer, observed.telemetry)
+    packets = packet_generation_service(database_path, draft, observed.telemetry)
+    processor = task_execution_service(console_query_service(database_path), scoring, packets)
+    return WorkerProcessDependencies(database_path, TaskRepository(database_path), processor, observed)
+
+
+@dataclass(frozen=True)
+class SchedulerProcessDependencies:
+    database_path: Path
+    lease: SchedulerLeaseRepository
+    search: SearchRunService
+    observability: Observability
+
+
+def scheduler_process_dependencies(
+    database_path: Path,
+    *,
+    configuration: RuntimeConfiguration | None = None,
+    observed: Observability | None = None,
+    gateway: CodexJsonGateway | None = None,
+    scorer: JobScoreService | None = None,
+    boards: CallableBoardGateway | None = None,
+) -> SchedulerProcessDependencies:
+    """Build only lease and search services for the supplied database."""
+    configuration = configuration or runtime_configuration(database_path.parent)
+    observed = observed or observability(configuration)
+    gateway = gateway or codex_json_gateway(configuration, observed)
+    scorer = scorer or job_score_service(configuration, gateway)
+    boards = boards or outbound_clients(observed, clean_text, clean_url, source_id, dedupe_results).search_gateway
+    filtering = observed_filtering_service(database_path, configuration, observed.telemetry)
+    _discovery, search = compose_search_workflows(
+        database_path, configuration, observed, gateway, scorer, boards, filtering
+    )
+    return SchedulerProcessDependencies(database_path, SchedulerLeaseRepository(database_path), search, observed)
+
+
 def rescrape_service(repository: Any, scraper: Any, refresh_filter: Any, clock: Any) -> RescrapeService:
     return RescrapeService(repository, scraper, refresh_filter, clock)
 
@@ -868,5 +952,10 @@ __all__ = [
     "codex_scoring_workflow",
     "discovery_service",
     "search_run_service",
+    "compose_search_workflows",
+    "WorkerProcessDependencies",
+    "worker_process_dependencies",
+    "SchedulerProcessDependencies",
+    "scheduler_process_dependencies",
     "rescrape_service",
 ]
