@@ -1,6 +1,5 @@
 """Deterministic API workflow tests using a temporary SQLite database."""
 
-import importlib.util
 import tempfile
 import unittest
 from dataclasses import replace
@@ -27,43 +26,25 @@ from job_search.data_access.packet_storage import PacketStorage
 from job_search.data_access.read_models import SqliteReadModels
 from job_search.presentation.factory import create_app
 
-APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
-SPEC = importlib.util.spec_from_file_location("workflow_app", APP_PATH)
-workflow_app = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(workflow_app)
-
 
 class ApplicationWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.original_db_path = workflow_app.DB_PATH
-        self.original_env_path = workflow_app.ENV_PATH
-        self.original_applications_dir = workflow_app.APPLICATIONS_DIR
-        self.original_root = workflow_app.ROOT
-        self.original_gpt_scoring_enabled = workflow_app.gpt_scoring_enabled
-        workflow_app.DB_PATH = Path(self.tempdir.name) / "jobs.sqlite3"
-        workflow_app.ENV_PATH = Path(self.tempdir.name) / ".env"
-        workflow_app.APPLICATIONS_DIR = Path(self.tempdir.name) / "applications"
-        workflow_app.ROOT = Path(self.tempdir.name)
-        self.packet_storage = PacketStorage(workflow_app.ROOT, workflow_app.APPLICATIONS_DIR)
-        workflow_app.gpt_scoring_enabled = lambda: False
-        workflow_app.app = create_app(
-            dependencies=presentation_dependencies(workflow_app.DB_PATH), route_blueprint=workflow_app.routes
-        )
-        with workflow_app.app.app_context():
-            workflow_app.startup_service().initialize()
-        self.client = workflow_app.app.test_client()
+        self.addCleanup(self.tempdir.cleanup)
+        self.root = Path(self.tempdir.name)
+        self.database = self.root / "jobs.sqlite3"
+        self.applications = self.root / "applications"
+        self.packet_storage = PacketStorage(self.root, self.applications)
+        self.dependencies = presentation_dependencies(self.database, {"JOB_SEARCH_ENABLE_GPT_SCORING": "0"})
+        self.app = create_app(dependencies=self.dependencies)
+        self.dependencies.startup_service.initialize()
+        self.client = self.app.test_client()
 
-    def tearDown(self):
-        workflow_app.DB_PATH = self.original_db_path
-        workflow_app.ENV_PATH = self.original_env_path
-        workflow_app.APPLICATIONS_DIR = self.original_applications_dir
-        workflow_app.ROOT = self.original_root
-        workflow_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
-        self.tempdir.cleanup()
+    def client_with(self, **overrides):
+        return create_app(dependencies=replace(self.dependencies, **overrides)).test_client()
 
     def create_job(self, *, company="ExampleCo", title="Principal Engineer", url="https://example.com/role"):
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             return connection.execute(
                 """INSERT INTO jobs(created_at, updated_at, company, title, url, pipeline, status, source_board)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -72,8 +53,8 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def make_discovery(self, *, scoring_enabled=False, score=None, refine=None, telemetry=None):
         return discovery_service(
-            workflow_app.DB_PATH,
-            telemetry or workflow_app.telemetry,
+            self.database,
+            telemetry or self.dependencies.observability.telemetry,
             UNKNOWN_LEVEL_ASSESSMENT,
             ORACLE_IC6_LEVEL_REFERENCE,
             scoring_enabled=lambda: scoring_enabled,
@@ -93,9 +74,9 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
         discovery = self.make_discovery(telemetry=telemetry)
         return search_run_service(
-            workflow_app.DB_PATH,
+            self.database,
             FakeBoards(),
-            telemetry or workflow_app.telemetry,
+            telemetry or self.dependencies.observability.telemetry,
             reject_reason=DiscoveryPolicy(MIN_ANNUAL_COMPENSATION).rejection_reason,
             level_assessment=discovery.assess_level,
             already_seen_reason=lambda connection, url: (
@@ -205,7 +186,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 "snippet": "$250,000 per year",
             },
         ]
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             connection.execute("UPDATE search_queries SET enabled = 0")
             connection.execute(
                 """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
@@ -216,7 +197,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(run["found_count"], 4)
         self.assertEqual(run["tracked_count"], 1)
         self.assertEqual(run["rejected_count"], 3)
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0], 4)
 
@@ -239,7 +220,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             }
             return [dict(rejected), dict(rejected)]
 
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             connection.execute("UPDATE search_queries SET enabled = 0")
             for board in ("indeed", "linkedin"):
                 connection.execute(
@@ -254,7 +235,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertIn("board unavailable", run["message"])
         self.assertIn("job_search_query_failed", [name for name, _ in events])
         self.assertIn("discovery_skipped", [name for name, _ in events])
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             count = connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0]
         self.assertEqual(count, 1, "The duplicate should not persist a second discovery")
 
@@ -266,14 +247,9 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 calls.append((trigger, force_refresh))
                 return {"status": "complete", "found_count": 0}
 
-        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
-        workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies, search_run_service=FakeSearch()
+        response = self.client_with(search_run_service=FakeSearch()).post(
+            "/api/search/run", json={"force_refresh": True}
         )
-        try:
-            response = self.client.post("/api/search/run", json={"force_refresh": True})
-        finally:
-            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls, [("manual", True)], "The route should forward validated inputs to the injected runner")
@@ -296,7 +272,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             score=lambda *_args, **_kwargs: score,
             refine=lambda *_args, **_kwargs: refined_output,
         )
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             query_id = connection.execute(
                 """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
                    VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
@@ -326,7 +302,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(refined["refinement_notes"], "narrowed")
         self.assertEqual(decision[0], "tracked")
         self.assertEqual(decision[3]["total_score"], 85)
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             saved = connection.execute("SELECT company, gpt_score FROM jobs WHERE id = ?", (decision[2],)).fetchone()
         self.assertEqual((saved["company"], saved["gpt_score"]), ("ExampleCo", 85))
 
@@ -342,7 +318,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             refine=lambda *_args, **_kwargs: "not-json",
             telemetry=FakeTelemetry(),
         )
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             query_id = connection.execute(
                 """INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria)
                    VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'old')"""
@@ -375,9 +351,9 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 return score
 
         service = codex_scoring_workflow(
-            workflow_app.DB_PATH, workflow_app.RUNTIME_CONFIG, FakeScorer(), workflow_app.telemetry
+            self.database, self.dependencies.configuration, FakeScorer(), self.dependencies.observability.telemetry
         )
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             persisted = service.populate(connection, job_id, force_refresh=False)
             saved = SqliteReadModels.job(connection, job_id)
 
@@ -404,7 +380,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_packet_content_render_attach_and_delete_use_safe_paths(self):
         job_id = self.create_job()
-        packet_dir = workflow_app.APPLICATIONS_DIR / "example-packet"
+        packet_dir = self.applications / "example-packet"
         packet_dir.mkdir(parents=True)
         (packet_dir / "Resume.md").write_text("# Resume\n\nSafe content", encoding="utf-8")
 
@@ -443,9 +419,8 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 "source_job_id": "abc",
             }
 
-        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
-        repository = SqliteJobRepository(lambda: database_session(workflow_app.DB_PATH))
-        filtering = original_dependencies.filtering_service
+        repository = SqliteJobRepository(lambda: database_session(self.database))
+        filtering = self.dependencies.filtering_service
         manual = ManualJobService(
             repository,
             fake_scrape,
@@ -457,25 +432,21 @@ class ApplicationWorkflowTests(unittest.TestCase):
             lambda *_args: None,
             lambda: 100,
         )
-        workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies,
+        client = self.client_with(
             manual_job_service=manual,
             rescrape_service=RescrapeService(
                 repository, fake_scrape, filtering.refresh_job, lambda: 1, lambda *_args, **_kwargs: None
             ),
         )
-        try:
-            rescraped = self.client.post(f"/api/jobs/{job_id}/scrape", json={"force_refresh": True})
-            created = self.client.post(
-                "/api/jobs",
-                json={"url": "https://example.com/failure", "pipeline": "Executive IC"},
-            )
-            duplicate = self.client.post(
-                "/api/jobs",
-                json={"url": "https://example.com/failure", "pipeline": "Executive IC"},
-            )
-        finally:
-            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
+        rescraped = client.post(f"/api/jobs/{job_id}/scrape", json={"force_refresh": True})
+        created = client.post(
+            "/api/jobs",
+            json={"url": "https://example.com/failure", "pipeline": "Executive IC"},
+        )
+        duplicate = client.post(
+            "/api/jobs",
+            json={"url": "https://example.com/failure", "pipeline": "Executive IC"},
+        )
 
         self.assertEqual(rescraped.get_json()["job"]["company"], "RefreshedCo")
         self.assertEqual(created.status_code, 201)
@@ -485,29 +456,23 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_bulk_endpoints_validate_availability_and_start_fake_tasks(self):
         job_id = self.create_job()
-        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
 
         class FakeTasks:
             def start(self, kind, ids):
                 return {"kind": kind, "job_ids": ids}
 
-        workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies,
+        available_client = self.client_with(
             task_submission_service=TaskSubmissionService(FakeTasks(), lambda: True, lambda: True, lambda: "fake"),
         )
-        try:
-            score = self.client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
-            packets = self.client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})
-            workflow_app.app.extensions["job_search.dependencies"] = replace(
-                original_dependencies,
-                task_submission_service=TaskSubmissionService(
-                    FakeTasks(), lambda: False, lambda: False, lambda: "missing-codex"
-                ),
-            )
-            disabled_score = self.client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
-            missing_cli = self.client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})
-        finally:
-            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
+        score = available_client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
+        packets = available_client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})
+        unavailable_client = self.client_with(
+            task_submission_service=TaskSubmissionService(
+                FakeTasks(), lambda: False, lambda: False, lambda: "missing-codex"
+            ),
+        )
+        disabled_score = unavailable_client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
+        missing_cli = unavailable_client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})
 
         self.assertEqual(score.status_code, 202)
         self.assertEqual(score.get_json()["task"]["kind"], "scorecards")
@@ -523,7 +488,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             f"/api/companies/{company_id}",
             json={"status": "target", "interest_score": 95, "contacts": "Taylor"},
         )
-        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
+        jobs = self.dependencies.job_service
 
         class FakeSearchRunService:
             def run(self, *, trigger, force_refresh):
@@ -538,7 +503,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                     (),
                     {
                         "state": "scored",
-                        "job": original_dependencies.job_service.get_job(current_job_id),
+                        "job": jobs.get_job(current_job_id),
                         "raw_score": {"total_score": 89},
                     },
                 )()
@@ -548,18 +513,14 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 return {"path": "applications/generated", "name": "generated", "markdown_files": ["Resume.md"]}
 
         fake_search = FakeSearchRunService()
-        workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies,
+        client = self.client_with(
             scoring_service=FakeScoringService(),
             search_run_service=fake_search,
             packet_generation_service=FakePacketService(),
         )
-        try:
-            search = self.client.post("/api/search/run", json={"force_refresh": True})
-            score = self.client.post(f"/api/jobs/{job_id}/score-gpt", json={})
-            packet = self.client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
-        finally:
-            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
+        search = client.post("/api/search/run", json={"force_refresh": True})
+        score = client.post(f"/api/jobs/{job_id}/score-gpt", json={})
+        packet = client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
 
         self.assertEqual(updated_company.get_json()["company"]["status"], "target")
         self.assertEqual(updated_company.get_json()["company"]["interest_score"], 95)
@@ -570,27 +531,20 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_error_routes_cover_disabled_unavailable_and_not_found_responses(self):
         job_id = self.create_job()
-        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
 
         class NoTaskExpected:
             def start(self, *_args):
                 raise AssertionError("Unavailable operations must not queue tasks")
 
-        workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies,
+        client = self.client_with(
             task_submission_service=TaskSubmissionService(
                 NoTaskExpected(), lambda: False, lambda: False, lambda: "missing-codex"
             ),
         )
-        try:
-            disabled_score = self.client.post(f"/api/jobs/{job_id}/score-gpt", json={})
-            disabled_bulk = self.client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
-            unavailable_packet = self.client.post(
-                "/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]}
-            )
-            missing_packet = self.client.post("/api/jobs/99999/application-packet/generate", json={})
-        finally:
-            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
+        disabled_score = client.post(f"/api/jobs/{job_id}/score-gpt", json={})
+        disabled_bulk = client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
+        unavailable_packet = client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})
+        missing_packet = client.post("/api/jobs/99999/application-packet/generate", json={})
 
         self.assertEqual(disabled_score.status_code, 409)
         self.assertEqual(disabled_bulk.status_code, 409)
@@ -599,8 +553,8 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_packet_repository_associates_generated_packet_and_lists_orphans(self):
         job_id = self.create_job()
-        generated_dir = workflow_app.APPLICATIONS_DIR / "generated"
-        orphan_dir = workflow_app.APPLICATIONS_DIR / "orphan"
+        generated_dir = self.applications / "generated"
+        orphan_dir = self.applications / "orphan"
         generated_dir.mkdir(parents=True)
         orphan_dir.mkdir()
         (generated_dir / "Resume.md").write_text("Resume", encoding="utf-8")
@@ -615,18 +569,13 @@ class ApplicationWorkflowTests(unittest.TestCase):
                     "codex_output": "{}",
                 }
 
-        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
-        workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies,
+        client = self.client_with(
             packet_generation_service=packet_generation_service(
-                workflow_app.DB_PATH, FakeDraft(), workflow_app.telemetry
+                self.database, FakeDraft(), self.dependencies.observability.telemetry
             ),
         )
-        try:
-            response = self.client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
-            duplicate = self.client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
-        finally:
-            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
+        response = client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
+        duplicate = client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(duplicate.status_code, 409, "An associated packet must not be generated again.")
@@ -639,7 +588,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_calibration_examples_include_saved_user_feedback(self):
         job_id = self.create_job()
-        with database_session(workflow_app.DB_PATH) as connection:
+        with database_session(self.database) as connection:
             connection.execute(
                 """UPDATE jobs SET gpt_score = 70, user_score = 85, user_rationale = ?, posting_text = ? WHERE id = ?""",
                 ("Strategic scope", "A" * 1000, job_id),
@@ -649,7 +598,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 def complete(self, *_args, **_kwargs):
                     raise AssertionError("Calibration examples must not invoke Codex")
 
-            scorer = job_score_service(workflow_app.RUNTIME_CONFIG, UnusedGateway())
+            scorer = job_score_service(self.dependencies.configuration, UnusedGateway())
             examples = scorer.calibration_examples(connection)
 
         self.assertEqual(examples[0]["user_score"], 85)
