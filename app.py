@@ -1177,7 +1177,7 @@ def add_model_attribution(markdown, model, generation_date):
     """Add verified attribution deterministically after the Codex draft."""
     section = (
         "## AI Generation Attribution\n\n"
-        f"AI generated this artifact on {generation_date} using `{model}`."
+        f"AI generated this artifact from human-authored source material on {generation_date} using `{model}`."
     )
     without_existing = re.sub(
         r"\n## AI Generation Attribution\n.*?(?=\n## |\Z)", "", markdown, flags=re.DOTALL
