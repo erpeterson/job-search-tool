@@ -53,7 +53,7 @@ evidence.
 
 ### P0
 
-- [ ] **T-1 — Complete real dependency injection at the presentation boundary.**
+- [x] **T-1 — Complete real dependency injection at the presentation boundary.**
   `job_search/presentation/legacy.py` is still a 2,460-line composition and
   workflow module. It directly constructs `INFRASTRUCTURE = infrastructure()`,
   instantiates repositories/adapters through that bundle, opens database
@@ -95,7 +95,7 @@ evidence.
     response rendering, security hooks, and top-level error handling.**
   - [x] **T-1.5 — Rewire the worker and scheduler through composition-owned
     application services rather than presentation callbacks.**
-  - [ ] **T-1.6 — Add boundary and integration evidence for every T-1 closure
+  - [x] **T-1.6 — Add boundary and integration evidence for every T-1 closure
     criterion, run the quality gate, and close T-1.**
 
 ### P1
@@ -354,7 +354,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   worker, and scheduler flows with temporary storage and fake HTTP/Codex/Pandoc
   boundaries. Run `./quality.sh`, confirm at least 80% branch coverage, and
   inspect the source against every T-1 closure criterion.
-- [ ] **1.6c — Close T-1.** Check T-1.6 and T-1 only when all five closure
+- [x] **1.6c — Close T-1.** Check T-1.6 and T-1 only when all five closure
   criteria above have direct evidence; commit the final T-1 proof and checkboxes.
 
 ### T-2 — Observable exception handling
