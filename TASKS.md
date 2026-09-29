@@ -315,6 +315,16 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   domain rules to application and I/O to data access; delete workflow and
   data-access compatibility wrappers. Update app factory and remaining tests
   after confirming no process or test imports legacy.
+  - [x] **1.4d.1 — Eliminate duplicate legacy helpers.** Point direct parser,
+    Codex-model, and rendering tests at their owning adapters; remove tests
+    that exercise only dead compatibility behavior, then commit.
+  - [ ] **1.4d.2 — Migrate test fixtures off legacy globals.** Construct
+    configuration, observability, sessions, and injected app dependencies in
+    tests without mutating presentation module state; commit per test family.
+  - [ ] **1.4d.3 — Replace legacy route registration.** Move security hooks,
+    correlation handling, top-level error mapping, and CLI startup into a small
+    presentation entry module; switch app/factory imports, delete `legacy.py`,
+    verify no imports remain, and commit.
 - [ ] **1.4e — Verify and commit.** Exercise representative success, validation,
   authentication, and unexpected-error HTTP responses; run `./quality.sh`,
   check T-1.4, and commit.

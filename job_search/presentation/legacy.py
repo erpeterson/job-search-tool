@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-import json
-import re
 import uuid
 
 from flask import (
@@ -12,7 +10,6 @@ from flask import (
 )
 from werkzeug.exceptions import HTTPException
 
-from job_search.application.discovery_utils import clean_text
 from job_search.application.filtering_service import FilteringService
 from job_search.application.job_service import JobService
 from job_search.composition import observability, runtime_configuration
@@ -156,108 +153,6 @@ def apply_filter(_connection, job_id):
     # before the repository-backed filtering use case opens its own session.
     _connection.commit()
     return filtering_service().refresh_job(job_id)
-
-
-def selector_text(soup, selectors):
-    for selector in selectors:
-        element = soup.select_one(selector)
-        if element:
-            value = clean_text(element.get("title") or element.get_text(" "))
-            if value:
-                return value
-    return ""
-
-
-def meta_content(soup, properties):
-    for prop in properties:
-        element = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
-        if element and element.get("content"):
-            return clean_text(element["content"])
-    return ""
-
-
-def nested_value(value, *keys):
-    current = value
-    for key in keys:
-        if not isinstance(current, dict):
-            return ""
-        current = current.get(key)
-    if isinstance(current, str):
-        return current
-    return ""
-
-
-def extract_job_json_ld(soup):
-    for script in soup.find_all("script", type="application/ld+json"):
-        text = script.string or script.get_text()
-        if not text:
-            continue
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            log_event(
-                "json_ld_parse_recovered",
-                error_code="JSON_LD_PARSE_RECOVERED",
-                component="business.posting_parser",
-                operation="extract_job_json_ld",
-            )
-            continue
-        candidates = payload if isinstance(payload, list) else [payload]
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            graph = candidate.get("@graph")
-            if isinstance(graph, list):
-                candidates.extend(graph)
-            type_value = candidate.get("@type")
-            types = type_value if isinstance(type_value, list) else [type_value]
-            if any("JobPosting" in str(item) for item in types):
-                return candidate
-    return {}
-
-
-def location_from_json_ld(payload):
-    location = payload.get("jobLocation") if isinstance(payload, dict) else None
-    if isinstance(location, list):
-        location = location[0] if location else None
-    if not isinstance(location, dict):
-        return ""
-    address = location.get("address")
-    if isinstance(address, dict):
-        parts = [address.get("addressLocality"), address.get("addressRegion"), address.get("addressCountry")]
-        return clean_text(", ".join(str(part) for part in parts if part))
-    return nested_value(location, "name")
-
-
-def append_note_text(existing, addition):
-    existing = clean_text(existing)
-    addition = clean_text(addition)
-    if not existing:
-        return addition
-    if not addition:
-        return existing
-    return f"{existing} {addition}"
-
-
-def clamp_score(value, low=0, high=10):
-    try:
-        parsed = int(round(float(value)))
-    except (TypeError, ValueError) as exc:
-        log_event(
-            "score_value_coercion_recovered",
-            error_code="SCORE_VALUE_COERCION_RECOVERED",
-            component="business.scoring",
-            operation="clamp_score",
-            value_type=type(value).__name__,
-            error_type=type(exc).__name__,
-        )
-        return low
-    return max(low, min(high, parsed))
-
-
-def extract_codex_reported_model(output):
-    match = re.search(r"\bmodel:\s*([^\s]+)", output or "", flags=re.IGNORECASE)
-    return match.group(1) if match else ""
 
 
 def codex_scoring_workflow():

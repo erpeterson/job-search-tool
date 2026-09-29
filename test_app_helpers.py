@@ -7,8 +7,6 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from bs4 import BeautifulSoup
-
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
 from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
 from job_search.application.job_scoring_policy import normalize_pipeline
@@ -18,6 +16,7 @@ from job_search.composition import codex_json_gateway, outbound_clients, runtime
 from job_search.config import RuntimePaths
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
+from job_search.data_access.job_posting_parser import JobPostingParser
 from job_search.presentation.packet_rendering import escape_html, markdown_to_html, render_inline_markdown
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
@@ -74,8 +73,8 @@ class AppHelperTests(unittest.TestCase):
 
     def test_html_json_ld_and_markdown_helpers(self):
         html = '<script type="application/ld+json">{"@type":"JobPosting","title":"Architect"}</script>'
-        soup = BeautifulSoup(html, "html.parser")
-        self.assertEqual(helpers_app.extract_job_json_ld(soup)["title"], "Architect")
+        parsed = JobPostingParser(clean_text, clean_url, source_id).parse("https://example.test/job", html, "manual")
+        self.assertEqual(parsed["title"], "Architect")
         self.assertEqual(render_inline_markdown("**bold** and `code`"), "<strong>bold</strong> and <code>code</code>")
         rendered = markdown_to_html("# Heading\n\n- one\n- two\n\n---\n\nParagraph\n\n```\n<safe code>\n```")
         self.assertIn("<h1>Heading</h1>", rendered)

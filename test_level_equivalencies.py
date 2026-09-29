@@ -6,6 +6,7 @@ from pathlib import Path
 
 from job_search.application.manual_job_service import ManualJobService
 from job_search.composition import codex_scoring_workflow, database_session, level_service, presentation_dependencies
+from job_search.data_access.codex_cli import CodexCliGateway
 from job_search.data_access.job_repository import SqliteJobRepository
 from job_search.presentation.factory import create_app
 from job_search.security import load_request_security
@@ -22,7 +23,6 @@ class LevelEquivalencyTests(unittest.TestCase):
         self.original_db_path = job_search_app.DB_PATH
         self.original_gpt_scoring_enabled = job_search_app.gpt_scoring_enabled
         self.original_codex_cli_available = job_search_app.codex_cli_available
-        self.original_populate_codex_score = job_search_app.populate_codex_score
         job_search_app.DB_PATH = Path(self.tmpdir.name) / "job_search.sqlite3"
         job_search_app.app = create_app(
             dependencies=presentation_dependencies(job_search_app.DB_PATH), route_blueprint=job_search_app.routes
@@ -34,7 +34,6 @@ class LevelEquivalencyTests(unittest.TestCase):
         job_search_app.DB_PATH = self.original_db_path
         job_search_app.gpt_scoring_enabled = self.original_gpt_scoring_enabled
         job_search_app.codex_cli_available = self.original_codex_cli_available
-        job_search_app.populate_codex_score = self.original_populate_codex_score
         self.tmpdir.cleanup()
 
     def test_startup_does_not_seed_level_equivalencies(self):
@@ -150,7 +149,7 @@ class LevelEquivalencyTests(unittest.TestCase):
     def test_extracts_exact_model_from_codex_cli_output(self):
         stderr = "OpenAI Codex v0.147.0 -------- model: gpt-5.6-terra provider: openai --------"
 
-        self.assertEqual(job_search_app.extract_codex_reported_model(stderr), "gpt-5.6-terra")
+        self.assertEqual(CodexCliGateway.reported_model(stderr), "gpt-5.6-terra")
 
     def test_job_create_rejects_invalid_url_at_api_boundary(self):
         response = job_search_app.app.test_client().post(
