@@ -841,12 +841,10 @@ def api_score_user(job_id):
     if not isinstance(raw_scorecard, dict):
         raise RequestValidationError("scorecard must be a JSON object.")
     scorecard = {field: integer(raw_scorecard.get(field, 0), field, minimum=0, maximum=10) for field in RUBRIC_FIELDS}
-    derived_total = round(sum(scorecard.values()) * 100 / (len(RUBRIC_FIELDS) * 10))
-    total = integer(payload.get("total_score", derived_total), "total_score", minimum=0, maximum=100)
+    total = integer(payload["total_score"], "total_score", minimum=0, maximum=100) if "total_score" in payload else None
     rationale = optional_text(payload.get("user_rationale", ""), "user_rationale", max_length=20_000)
-    if not job_service().save_user_score(job_id, total, json.dumps(scorecard), rationale, now()):
+    if not dependency("user_score_service").save(job_id, scorecard, total, rationale):
         return jsonify({"error": "Job not found"}), 404
-    filtering_service().refresh_job(job_id)
     return jsonify({"job": console_query_service().job(job_id)})
 
 

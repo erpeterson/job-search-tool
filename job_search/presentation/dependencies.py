@@ -30,6 +30,7 @@ class PresentationDependencies:
     startup_service: Any
     codex_scoring_workflow: Any
     scoring_service: Any
+    user_score_service: Any
     packet_generation_service: Any
     manual_job_service: Any
     rescrape_service: Any

@@ -47,6 +47,7 @@ from job_search.application.search_run_service import SearchRunService
 from job_search.application.settings_service import SettingsService
 from job_search.application.startup_service import StartupService
 from job_search.application.task_execution_service import TaskExecutionService
+from job_search.application.user_score_service import UserScoreService
 from job_search.config import RuntimeConfiguration, RuntimePaths, load_runtime_settings
 from job_search.data_access.application_packet_catalog import ApplicationPacketCatalog
 from job_search.data_access.board_gateway import CallableBoardGateway
@@ -277,6 +278,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
             lambda job_id: scoring_workflow.populate_by_id(job_id, force_refresh=False),
             scoring_availability,
         ),
+        user_score_service=UserScoreService(jobs, filtering.refresh_job, lambda: int(time.time())),
         packet_generation_service=packet_generation_service(database_path, draft, observed.telemetry),
         manual_job_service=manual,
         rescrape_service=rescrape_service(
