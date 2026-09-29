@@ -284,6 +284,15 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 - [ ] **1.4b — Move jobs, companies, and configuration routes.** Register
   these route families with request validation and response mapping only;
   migrate their tests to the injected app factory.
+  - [x] **1.4b.1 — Extract company-interest routes.** Move normalization and
+    timestamp decisions to the company service; verify create/update through
+    the injected app and commit.
+  - [ ] **1.4b.2 — Extract job routes.** Move job mutation, scoring, and scrape
+    endpoints to an injected route module; verify success and validation paths
+    and commit.
+  - [ ] **1.4b.3 — Extract configuration routes.** Move settings, runtime
+    configuration, and confirmed purge endpoints; verify safe validation and
+    persistence through the injected app, then check 1.4b and commit.
 - [ ] **1.4c — Move search, packets, and tasks routes.** Register these route
   families with rendering and mapping only; migrate their tests to the injected
   app factory.

@@ -24,6 +24,32 @@ from job_search.presentation.factory import create_app
 
 
 class CompositionTests(unittest.TestCase):
+    def test_injected_company_routes_validate_and_persist_normalized_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "companies.sqlite3"
+            dependencies = presentation_dependencies(database)
+            try:
+                dependencies.startup_service.initialize()
+                client = create_app(dependencies=dependencies, route_blueprint=legacy.routes).test_client()
+
+                invalid = client.post("/api/companies", json={"interest_score": 101})
+                created = client.post("/api/companies", json={"company": " Example-Co ", "status": "target"})
+                company_id = created.get_json()["company"]["id"]
+                updated = client.post(f"/api/companies/{company_id}", json={"company": "Updated Co"})
+
+                self.assertEqual(invalid.status_code, 400, "Out-of-range scores must fail at the HTTP boundary.")
+                self.assertEqual(created.status_code, 201, "Valid company creation should remain available.")
+                self.assertEqual(updated.status_code, 200, "Valid company updates should remain available.")
+                with database_session(database) as connection:
+                    normalized = connection.execute(
+                        "SELECT normalized_company FROM company_interests WHERE id = ?", (company_id,)
+                    ).fetchone()[0]
+                self.assertEqual(normalized, "updated co", "The application service should normalize persisted names.")
+            finally:
+                for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
+                    for handler in logger.handlers:
+                        handler.close()
+
     def test_injected_api_reads_only_its_temporary_database(self):
         with tempfile.TemporaryDirectory() as directory:
             first_path = Path(directory) / "first.sqlite3"

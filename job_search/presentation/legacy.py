@@ -15,7 +15,6 @@ from flask import (
 )
 from werkzeug.exceptions import HTTPException
 
-from job_search.application.company_service import CompanyService
 from job_search.application.discovery_utils import clean_text
 from job_search.application.filtering_service import FilteringService
 from job_search.application.job_scoring_policy import (
@@ -23,7 +22,6 @@ from job_search.application.job_scoring_policy import (
     RUBRIC_FIELDS,
 )
 from job_search.application.job_service import JobService
-from job_search.application.level_service import normalize_lookup_text
 from job_search.application.manual_job_service import ManualJobService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.application.scoring_service import ScoringService
@@ -31,6 +29,7 @@ from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
 from job_search.composition import observability, runtime_configuration
 from job_search.errors import ClientInputError, translate_exception
+from job_search.presentation.company_routes import register_company_routes
 from job_search.presentation.read_routes import CONFIG_KEYS, register_read_routes
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
@@ -53,6 +52,7 @@ APPLICATIONS_DIR = RUNTIME_CONFIG.paths.applications
 
 routes = Blueprint("job_search", __name__)
 register_read_routes(routes)
+register_company_routes(routes)
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -109,7 +109,6 @@ JOB_STATUSES = {
     "declined",
     "paused",
 }
-COMPANY_STATUSES = {"watching", "target", "active_conversation", "paused", "not_interested"}
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
 
 
@@ -125,10 +124,6 @@ def log_event(event_type, **fields):
 def job_service() -> JobService:
     """Compose the framework-independent job use case for a request."""
     return dependency("job_service")
-
-
-def company_service() -> CompanyService:
-    return dependency("company_service")
 
 
 def search_query_service() -> SearchQueryService:
@@ -685,70 +680,6 @@ def api_delete_job(job_id):
     job_service().delete_job(job_id)
     log_event("manual_job_deleted", job_id=job_id, company=job["company"], title=job["title"], url=job["url"])
     return jsonify({"deleted_job_id": job_id, "jobs": console_query_service().jobs(include_filtered=True)})
-
-
-@routes.post("/api/companies")
-def api_create_company_interest():
-    payload = require_json_object(request.get_json(silent=True) or {})
-    company_name = optional_text(payload.get("company", ""), "company", max_length=300) or "Unknown company"
-    ts = now()
-    interest_score = payload.get("interest_score")
-    if interest_score not in (None, ""):
-        interest_score = integer(interest_score, "interest_score", minimum=0, maximum=100)
-    status = choice(payload.get("status", "watching"), "status", COMPANY_STATUSES, required=True)
-    rationale = optional_text(payload.get("rationale", ""), "rationale", max_length=20_000)
-    notes = optional_text(payload.get("notes", ""), "notes", max_length=20_000)
-    next_step = optional_text(payload.get("next_step", ""), "next_step", max_length=2_000)
-    contacts = optional_text(payload.get("contacts", ""), "contacts", max_length=10_000)
-    company_id = company_service().save(
-        {
-            "created_at": ts,
-            "updated_at": ts,
-            "company": company_name,
-            "normalized_company": normalize_lookup_text(company_name),
-            "status": status,
-            "interest_score": interest_score if interest_score != "" else None,
-            "rationale": rationale,
-            "notes": notes,
-            "next_step": next_step,
-            "contacts": contacts,
-        }
-    )
-    return jsonify(
-        {"company": console_query_service().company(company_id), "companies": console_query_service().companies()}
-    ), 201
-
-
-@routes.post("/api/companies/<int:company_id>")
-def api_update_company_interest(company_id):
-    payload = require_json_object(request.get_json(silent=True) or {})
-    existing = console_query_service().company(company_id)
-    if not existing:
-        return jsonify({"error": "Company interest not found"}), 404
-    company_name = (
-        optional_text(payload.get("company", existing["company"]), "company", max_length=300) or existing["company"]
-    )
-    interest_score = payload.get("interest_score")
-    if interest_score not in (None, ""):
-        interest_score = integer(interest_score, "interest_score", minimum=0, maximum=100)
-    status = choice(payload.get("status", existing["status"]), "status", COMPANY_STATUSES, required=True)
-    company_service().update(
-        company_id,
-        {
-            "company": company_name,
-            "normalized_company": normalize_lookup_text(company_name),
-            "status": status,
-            "interest_score": interest_score if interest_score != "" else None,
-            "rationale": optional_text(payload.get("rationale", ""), "rationale", max_length=20_000),
-            "notes": optional_text(payload.get("notes", ""), "notes", max_length=20_000),
-            "next_step": optional_text(payload.get("next_step", ""), "next_step", max_length=2_000),
-            "contacts": optional_text(payload.get("contacts", ""), "contacts", max_length=10_000),
-            "updated_at": now(),
-        },
-    )
-    return jsonify(
-        {"company": console_query_service().company(company_id), "companies": console_query_service().companies()}
-    )
 
 
 @routes.post("/api/jobs")
