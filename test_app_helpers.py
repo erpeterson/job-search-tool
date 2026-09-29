@@ -98,6 +98,22 @@ class AppHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "object"):
             validate_packet_payload([])
 
+    def test_malformed_json_ld_emits_one_event_and_uses_safe_html_fallback(self):
+        telemetry = Mock()
+        parser = JobPostingParser(clean_text, clean_url, source_id, telemetry)
+        html = '<script type="application/ld+json">{"private": invalid}</script><h1>Architect</h1>'
+
+        posting = parser.parse("https://example.test/job?token=private", html, "manual")
+
+        self.assertEqual(posting["title"], "Architect", "Malformed metadata must not discard valid HTML.")
+        telemetry.event.assert_called_once()
+        event = telemetry.event.call_args
+        self.assertEqual(event.args[0], "job_posting_json_ld_invalid")
+        self.assertEqual(event.kwargs["error_code"], "JOB_POSTING_JSON_LD_INVALID")
+        self.assertEqual(event.kwargs["source_job_id"], posting["source_job_id"])
+        self.assertEqual(event.kwargs["script_index"], 0)
+        self.assertNotIn("private", str(event.kwargs), "The event must not retain malformed source content.")
+
     def test_scrape_and_board_adapters_use_fake_response(self):
         def fake_fetch(service, *_args, **_kwargs):
             pages = {

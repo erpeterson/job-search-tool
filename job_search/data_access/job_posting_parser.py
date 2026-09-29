@@ -28,8 +28,9 @@ class JobPostingParser:
         cleaned_url = self._clean_url(url)
         if not cleaned_url:
             raise ValueError("URL is required.")
+        posting_id = self._source_id(service, cleaned_url)
         soup = BeautifulSoup(html, "html.parser")
-        json_ld = self._json_ld(soup)
+        json_ld = self._json_ld(soup, service, posting_id)
         title = (
             self._value(json_ld, "title")
             or self._selector(
@@ -87,7 +88,7 @@ class JobPostingParser:
             "url": cleaned_url,
             "posting_text": self._clean_text(BeautifulSoup(description or "", "html.parser").get_text(" "))[:12000],
             "source_board": service if service in {"linkedin", "indeed"} else "manual",
-            "source_job_id": self._source_id(service, cleaned_url),
+            "source_job_id": posting_id,
         }
 
     def _selector(self, soup: BeautifulSoup, selectors: Sequence[str]) -> str:
@@ -106,11 +107,22 @@ class JobPostingParser:
                 return self._clean_text(element["content"])
         return ""
 
-    def _json_ld(self, soup: BeautifulSoup) -> Mapping[str, Any]:
-        for script in soup.find_all("script", type="application/ld+json"):
+    def _json_ld(self, soup: BeautifulSoup, service: str, posting_id: str) -> Mapping[str, Any]:
+        for script_index, script in enumerate(soup.find_all("script", type="application/ld+json")):
             try:
                 payload = json.loads(script.string or script.get_text() or "")
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                # One broken metadata block must not suppress usable HTML or later JSON-LD blocks.
+                self._telemetry.event(
+                    "job_posting_json_ld_invalid",
+                    error_code="JOB_POSTING_JSON_LD_INVALID",
+                    component="data_access.job_posting_parser",
+                    operation="parse_json_ld",
+                    service=service,
+                    source_job_id=posting_id,
+                    script_index=script_index,
+                    cause=type(exc).__name__,
+                )
                 continue
             candidates = payload if isinstance(payload, list) else [payload]
             for candidate in candidates:

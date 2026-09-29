@@ -15,6 +15,9 @@ class ModelOutputParserTests(unittest.TestCase):
         telemetry = Mock()
         self.assertEqual(parse_model_json('```json\n{"score": 8}\n```', telemetry), {"score": 8})
         self.assertEqual(parse_model_json('Result follows: {"score": 8} Thanks.', telemetry), {"score": 8})
+        telemetry.event.assert_called_once()
+        self.assertEqual(telemetry.event.call_args.args[0], "model_output_fence_recovered")
+        self.assertEqual(telemetry.event.call_args.kwargs["error_code"], "MODEL_OUTPUT_FENCE_RECOVERED")
 
     def test_rejects_empty_or_non_json_model_output(self):
         telemetry = Mock()

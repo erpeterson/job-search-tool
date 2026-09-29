@@ -371,6 +371,13 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   `job_posting_parser.py` and worker processor failures. Handle heartbeat
   renewal failure so ownership is stopped or safely abandoned, with a durable
   outcome and one event. Check all other inventoried catches as well.
+  - [x] **2c.1 — Observe parser recovery.** Emit a sanitized JSON-LD event and
+    a model-output extraction event through injected telemetry; commit.
+  - [ ] **2c.2 — Make worker failures durable and observable.** Record processor
+    failures and failed heartbeat renewal, abandon unsafe ownership, and commit.
+  - [ ] **2c.3 — Repair other inventoried catches.** Add missing event fields or
+    explicit top-level routing for remaining recovery/translation paths, then
+    check 2c and commit.
 - [ ] **2d — Prove the failure paths.** Add deterministic tests for malformed
   JSON-LD, processor failure, and heartbeat failure that assert both persisted
   state and event fields. Add an AST inventory test keyed by module/function

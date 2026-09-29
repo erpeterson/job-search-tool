@@ -19,9 +19,19 @@ def parse_model_json(output_text: str, telemetry: Telemetry) -> Any:
         cleaned = re.sub(r"\s*```$", "", cleaned)
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start >= 0 and end > start:
-            return json.loads(cleaned[start : end + 1])
+            # A prose wrapper is recoverable only when its embedded object parses cleanly.
+            parsed = json.loads(cleaned[start : end + 1])
+            telemetry.event(
+                "model_output_fence_recovered",
+                error_code="MODEL_OUTPUT_FENCE_RECOVERED",
+                component="data_access.model_output_parser",
+                operation="extract_json_object",
+                output_length=len(cleaned),
+                cause=type(exc).__name__,
+            )
+            return parsed
         raise
