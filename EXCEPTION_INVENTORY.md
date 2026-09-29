@@ -1,7 +1,7 @@
 # Exception inventory for T-2
 
 This inventories every current `except` in `job_search/` plus the web entry
-point. The static regression test in 2d will key on module and enclosing
+point. The static regression test keys on module and enclosing
 function, not line numbers. `Recover` means execution continues after the
 catch and requires one event at that point. `Rethrow` means the exception is
 propagated to the named outer boundary, which owns the one failure event.
@@ -22,8 +22,8 @@ record only when composition fails before telemetry exists.
 | `security:load_request_security` | Translate → `app:module` | `STARTUP_CONFIGURATION_FAILED` | Unsafe proxy CIDR exits before startup. |
 | `validation:integer` | Translate → `presentation.routes:api_error` | `API_CLIENT_INPUT_INVALID` | Invalid request returns 400. |
 | `application.job_scoring_policy:JobScoringPolicy.score` | Translate → API/worker boundary | `API_UNHANDLED_EXCEPTION` / `WORKER_PROCESSOR_FAILED` | Invalid model output fails scoring. |
-| `application.bulk_task_service:run` (operation lookup) | Translate → process boundary | `WORKER_FATAL_FAILURE` | Unsupported operation cannot be dispatched. |
-| `data_access.board_gateway:fetch` | Translate → search runner | `JOB_SEARCH_QUERY_FAILED` | Unsupported board is recorded against query. |
+| `application.bulk_task_service:BulkTaskService.run` (operation lookup) | Translate → process boundary | `WORKER_FATAL_FAILURE` | Unsupported operation cannot be dispatched. |
+| `data_access.board_gateway:CallableBoardGateway.fetch` | Translate → search runner | `JOB_SEARCH_QUERY_FAILED` | Unsupported board is recorded against query. |
 | `http_client:PinnedAddressTransport.get` | Translate → capturing HTTP gateway | `HTTP_OUTBOUND_FAILED` | Pinned connection failure is propagated. |
 | `http_client:SafeHttpClient._validate_destination` (URL) | Translate → capturing HTTP gateway | `HTTP_OUTBOUND_FAILED` | Unsafe URL is rejected. |
 | `http_client:SafeHttpClient._validate_destination` (DNS) | Translate → capturing HTTP gateway | `HTTP_OUTBOUND_FAILED` | DNS failure is rejected. |
@@ -52,7 +52,7 @@ record only when composition fails before telemetry exists.
 | `presentation.packet_routes:api_application_packet_render` | Recover, HTTP 404 | `PACKET_RENDER_PATH_REJECTED` / `packet_render_path_rejected` | Missing/unsafe content is not rendered. |
 | `presentation.cli:main` (dependency lookup) | Terminal stderr before telemetry is available | `STARTUP_UNHANDLED_EXCEPTION` / `startup_unhandled_exception` | Exit 1 if application dependency registration is missing. |
 | `worker:process_one` (processor) | Recover, durable item error | `WORKER_PROCESSOR_FAILED` / `worker_processor_failed` | Claim is completed as error and later work can continue. |
-| `worker:process_one` (heartbeat) | Recover, abandon ownership | `WORKER_HEARTBEAT_FAILED` / `worker_heartbeat_failed` | Stop processing/renewal and persist a safe error outcome without double completion. |
+| `worker:process_one.heartbeat` | Recover, abandon ownership | `WORKER_HEARTBEAT_FAILED` / `worker_heartbeat_failed` | Stop processing/renewal and persist a safe error outcome without double completion. |
 | `worker:_main` | Observe and rethrow, except already-observed heartbeat failure | `WORKER_FATAL_FAILURE` / `worker_fatal_failure` | Stop the process; do not continue polling after failure. |
 | `worker:main` | Terminal stderr | `WORKER_FATAL_FAILURE` / `worker_fatal_failure` | Exit 1; fallback record covers precomposition failures. |
 | `scheduler:_main` | Observe and rethrow | `SCHEDULER_FATAL_FAILURE` / `scheduler_fatal_failure` | Stop the scheduler after lease/search failure. |

@@ -394,7 +394,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
       - [x] **2c.3c.3 — Harden CLI fatal handling.** Emit one structured fatal
         record and a nonzero result for web/worker/scheduler failures, then
         check 2c.3c, 2c.3, and 2c and commit.
-- [ ] **2d — Prove the failure paths.** Add deterministic tests for malformed
+- [x] **2d — Prove the failure paths.** Add deterministic tests for malformed
   JSON-LD, processor failure, and heartbeat failure that assert both persisted
   state and event fields. Add an AST inventory test keyed by module/function
   that fails on unclassified new catches and checks each known catch for event
