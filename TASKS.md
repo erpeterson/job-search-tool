@@ -363,7 +363,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   in `job_search/`; classify rethrow versus recovery. Document a stable unique
   error code, component, operation, sanitized cause, identifiers, and valid
   recovery behavior for each handled exception.
-- [ ] **2b — Extend the injected telemetry port.** Reuse the port introduced
+- [x] **2b — Extend the injected telemetry port.** Reuse the port introduced
   in 1.1c; thread it through all remaining application services, parsers,
   worker, and scheduler. Keep its structured logger implementation in
   data access/composition, without importing Flask or leaking secrets.

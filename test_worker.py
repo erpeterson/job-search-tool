@@ -13,7 +13,9 @@ class ManagedWorkerTests(unittest.TestCase):
         database = Path("worker-test.sqlite3")
         repository = SimpleNamespace(initialize=lambda _now: None)
         processor = SimpleNamespace(process=lambda _claim: ("complete", "done"))
-        process = SimpleNamespace(repository=repository, processor=processor)
+        process = SimpleNamespace(
+            repository=repository, processor=processor, observability=SimpleNamespace(telemetry=object())
+        )
         with (
             patch("sys.argv", ["worker", "--database", str(database)]),
             patch("job_search.worker.worker_process_dependencies", return_value=process) as compose,
@@ -25,6 +27,7 @@ class ManagedWorkerTests(unittest.TestCase):
         compose.assert_called_once_with(database)
         self.assertIs(process_item.call_args.args[0], repository)
         self.assertIs(process_item.call_args.args[2], processor.process)
+        self.assertIs(process_item.call_args.kwargs["telemetry"], process.observability.telemetry)
 
     def test_process_one_claims_and_finishes_work_without_flask(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -36,6 +39,7 @@ class ManagedWorkerTests(unittest.TestCase):
                 repository,
                 "worker-a",
                 lambda claim: ("complete", f"processed {claim['job_id']}"),
+                telemetry=SimpleNamespace(event=lambda *_args, **_kwargs: None),
                 now=lambda: 10,
             )
 
@@ -52,6 +56,7 @@ class ManagedWorkerTests(unittest.TestCase):
                 repository,
                 "worker-a",
                 lambda _claim: (_ for _ in ()).throw(RuntimeError("Codex unavailable")),
+                telemetry=SimpleNamespace(event=lambda *_args, **_kwargs: None),
                 now=lambda: 10,
             )
             task = repository.get("task-2")

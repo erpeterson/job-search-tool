@@ -8,14 +8,21 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
+from job_search.application.contracts import Telemetry
+
 
 class JobPostingParser:
     def __init__(
-        self, clean_text: Callable[[Any], str], clean_url: Callable[[str], str], source_id: Callable[[str, str], str]
+        self,
+        clean_text: Callable[[Any], str],
+        clean_url: Callable[[str], str],
+        source_id: Callable[[str, str], str],
+        telemetry: Telemetry,
     ) -> None:
         self._clean_text = clean_text
         self._clean_url = clean_url
         self._source_id = source_id
+        self._telemetry = telemetry
 
     def parse(self, url: str, html: str, service: str) -> Mapping[str, str]:
         cleaned_url = self._clean_url(url)

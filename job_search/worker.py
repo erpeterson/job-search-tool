@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from job_search.application.contracts import Telemetry
 from job_search.composition import worker_process_dependencies
 from job_search.task_repository import TaskRepository
 
@@ -21,6 +22,7 @@ def process_one(
     worker_id: str,
     processor: Callable[[Mapping[str, Any]], tuple[str, str]],
     *,
+    telemetry: Telemetry,
     now: Callable[[], int] = lambda: int(time.time()),
     lease_seconds: int = 300,
 ) -> bool:
@@ -71,7 +73,9 @@ def _main() -> int:
     repository.initialize(int(time.time()))
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     while True:
-        processed = process_one(repository, worker_id, process.processor.process)
+        processed = process_one(
+            repository, worker_id, process.processor.process, telemetry=process.observability.telemetry
+        )
         if not processed:
             time.sleep(args.poll_seconds)
 

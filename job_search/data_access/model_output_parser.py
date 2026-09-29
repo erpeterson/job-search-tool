@@ -6,8 +6,10 @@ import json
 import re
 from typing import Any
 
+from job_search.application.contracts import Telemetry
 
-def parse_model_json(output_text: str) -> Any:
+
+def parse_model_json(output_text: str, telemetry: Telemetry) -> Any:
     """Extract one JSON object from a model response or raise a JSON error."""
     if not output_text:
         raise json.JSONDecodeError("empty response", "", 0)

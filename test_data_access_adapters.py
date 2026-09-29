@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from job_search.data_access.capture_store import CaptureStore
 from job_search.data_access.environment_file import update_environment_file
@@ -11,14 +12,16 @@ from job_search.data_access.model_output_parser import parse_model_json
 
 class ModelOutputParserTests(unittest.TestCase):
     def test_parses_fenced_json_and_json_embedded_in_explanation(self):
-        self.assertEqual(parse_model_json('```json\n{"score": 8}\n```'), {"score": 8})
-        self.assertEqual(parse_model_json('Result follows: {"score": 8} Thanks.'), {"score": 8})
+        telemetry = Mock()
+        self.assertEqual(parse_model_json('```json\n{"score": 8}\n```', telemetry), {"score": 8})
+        self.assertEqual(parse_model_json('Result follows: {"score": 8} Thanks.', telemetry), {"score": 8})
 
     def test_rejects_empty_or_non_json_model_output(self):
+        telemetry = Mock()
         with self.assertRaisesRegex(json.JSONDecodeError, "empty response"):
-            parse_model_json("")
+            parse_model_json("", telemetry)
         with self.assertRaises(json.JSONDecodeError):
-            parse_model_json("No structured result")
+            parse_model_json("No structured result", telemetry)
 
 
 class EnvironmentFileTests(unittest.TestCase):

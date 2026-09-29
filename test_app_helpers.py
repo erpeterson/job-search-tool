@@ -3,7 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from job_search.application.discovery_policy import DiscoveryPolicy, extract_annual_compensation_values
 from job_search.application.discovery_utils import clean_text, clean_url, dedupe_results, source_id
@@ -67,7 +67,9 @@ class AppHelperTests(unittest.TestCase):
 
     def test_html_json_ld_and_markdown_helpers(self):
         html = '<script type="application/ld+json">{"@type":"JobPosting","title":"Architect"}</script>'
-        parsed = JobPostingParser(clean_text, clean_url, source_id).parse("https://example.test/job", html, "manual")
+        parsed = JobPostingParser(clean_text, clean_url, source_id, Mock()).parse(
+            "https://example.test/job", html, "manual"
+        )
         self.assertEqual(parsed["title"], "Architect")
         self.assertEqual(render_inline_markdown("**bold** and `code`"), "<strong>bold</strong> and <code>code</code>")
         rendered = markdown_to_html("# Heading\n\n- one\n- two\n\n---\n\nParagraph\n\n```\n<safe code>\n```")

@@ -387,7 +387,7 @@ def outbound_clients(
     boards = JobBoardClient(
         fetch or gateway.get,
         JobBoardParser(clean_text, clean_url, lambda href: source_id("linkedin", href)),
-        JobPostingParser(clean_text, clean_url, source_id),
+        JobPostingParser(clean_text, clean_url, source_id, observed.telemetry),
         BeautifulSoup,
         clean_text,
         clean_url,
@@ -446,7 +446,7 @@ def packet_draft_service(
         cli_path=configuration.cli_path,
         model=configuration.model,
         complete=gateway.complete,
-        parse=parse_model_json,
+        parse=lambda output: parse_model_json(output, observed.telemetry),
         publish=lambda name, payload: storage.publish(name, payload, writer.write),
         relative_path=storage.relative_path,
         today=date.today,
@@ -634,7 +634,7 @@ class _DiscoveryOperations:
         self.normalize_pipeline = normalize_pipeline
         self.refinement_context = SqliteReadModels.query_refinement_context
         self.refine = refine
-        self.parse_model_json = parse_model_json
+        self.parse_model_json = lambda output: parse_model_json(output, telemetry)
         self.clean_text = clean_text
         self.update_query = SqliteSearchMutations.update_query
         self.lookup_level = lambda connection, company, title: level_service(database_path, connection).lookup(

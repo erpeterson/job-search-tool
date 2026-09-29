@@ -58,8 +58,15 @@ class InjectedProcessTests(unittest.TestCase):
         process.repository.initialize(1)
         process.repository.create("worker-task", "scorecards", [job_id], 2)
 
-        processed = process_one(process.repository, "worker-test", process.processor.process, now=lambda: 10)
+        processed = process_one(
+            process.repository,
+            "worker-test",
+            process.processor.process,
+            telemetry=process.observability.telemetry,
+            now=lambda: 10,
+        )
 
+        self.assertIs(process.observability, self.observed, "The worker must retain injected telemetry.")
         self.assertTrue(processed, "The composed worker must claim its durable task.")
         self.assertFalse(scorer.force_refresh, "The worker should use the normal score path.")
         self.assertEqual(process.repository.get("worker-task")["status"], "complete")
@@ -111,6 +118,7 @@ class InjectedProcessTests(unittest.TestCase):
         acquired = process.lease.acquire("scheduler-test", 10, 100)
         result = process.search.run(trigger="scheduled", force_refresh=True) if acquired else None
 
+        self.assertIs(process.observability, self.observed, "The scheduler must retain injected telemetry.")
         self.assertTrue(acquired, "The composed scheduler must acquire the durable lease.")
         self.assertEqual(board.calls, [("indeed", "architect", "Remote", True)])
         self.assertEqual(result["found_count"], 1)
