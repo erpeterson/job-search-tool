@@ -292,12 +292,24 @@ def parse_rollout(path):
             current_turn = payload
             continue
 
+        item_payload = payload.get("item") or {}
+
         if not (
             typ == "event_msg"
-            and payload.get("type") == "user_message"
-            and isinstance(payload.get("message"), str)
-            and payload.get("message")
+            and payload.get("type") == "item_completed"
+            and item_payload.get("type") == "UserMessage"
         ):
+            continue
+
+        message = "\n".join(
+            part["text"]
+            for part in item_payload.get("content", [])
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+        )
+
+        if not message:
             continue
 
         turn = current_turn or {}
@@ -350,7 +362,7 @@ def parse_rollout(path):
                 "branch": git.get("branch"),
             },
 
-            "prompt": payload["message"],
+            "prompt": message,
 
             "capture": {
                 "method": "backfill",
