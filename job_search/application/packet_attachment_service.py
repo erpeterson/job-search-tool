@@ -13,10 +13,12 @@ class PacketAttachmentService:
         repository: JobRepository,
         resolve_packet_path: Callable[[str], str],
         clock: Callable[[], int],
+        observe: Callable[..., None],
     ) -> None:
         self._repository = repository
         self._resolve_packet_path = resolve_packet_path
         self._clock = clock
+        self._observe = observe
 
     def attach(self, job_id: int, path: str) -> Mapping[str, object] | None:
         job = self._repository.get_job(job_id)
@@ -24,4 +26,5 @@ class PacketAttachmentService:
             return None
         relative_path = self._resolve_packet_path(path)
         self._repository.attach_packet(job_id, relative_path, self._clock())
+        self._observe("application_packet_attached", job_id=job_id, path=relative_path)
         return {"job": self._repository.get_job(job_id), "path": relative_path}

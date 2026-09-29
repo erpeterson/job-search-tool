@@ -274,7 +274,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         console_query_service=ConsoleQueryService(SqliteConsoleQueryRepository(connect, packets_catalog.list)),
         packet_catalog=packets_catalog,
         packet_content_service=packet_content_service(database_path),
-        packet_attachment_service=packet_attachment_service(database_path),
+        packet_attachment_service=packet_attachment_service(database_path, observed.telemetry.event),
         level_service=level_service(database_path),
         search_repository=search_repository(database_path),
         filtering_service=filtering,
@@ -395,13 +395,14 @@ def outbound_clients(
     return OutboundClients(http, gateway, boards, CallableBoardGateway(boards.linkedin, boards.indeed))
 
 
-def packet_attachment_service(database_path: Path) -> PacketAttachmentService:
+def packet_attachment_service(database_path: Path, observe: Any) -> PacketAttachmentService:
     """Compose packet association persistence and filesystem validation."""
     root = database_path.parent
     return PacketAttachmentService(
         SqliteJobRepository(lambda: database_session(database_path)),
         PacketStorage(root, root / "applications").packet_relative_path,
         lambda: int(time.time()),
+        observe,
     )
 
 

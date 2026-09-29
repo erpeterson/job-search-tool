@@ -523,12 +523,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             f"/api/companies/{company_id}",
             json={"status": "target", "interest_score": 95, "contacts": "Taylor"},
         )
-        originals = (
-            workflow_app.gpt_scoring_enabled,
-            workflow_app.create_application_packet,
-        )
         original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
-        workflow_app.gpt_scoring_enabled = lambda: True
 
         class FakeSearchRunService:
             def run(self, *, trigger, force_refresh):
@@ -548,24 +543,22 @@ class ApplicationWorkflowTests(unittest.TestCase):
                     },
                 )()
 
+        class FakePacketService:
+            def generate(self, _job_id):
+                return {"path": "applications/generated", "name": "generated", "markdown_files": ["Resume.md"]}
+
         fake_search = FakeSearchRunService()
         workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies, scoring_service=FakeScoringService(), search_run_service=fake_search
+            original_dependencies,
+            scoring_service=FakeScoringService(),
+            search_run_service=fake_search,
+            packet_generation_service=FakePacketService(),
         )
-        workflow_app.create_application_packet = lambda *_args, **_kwargs: {
-            "path": "applications/generated",
-            "name": "generated",
-            "markdown_files": ["Resume.md"],
-        }
         try:
             search = self.client.post("/api/search/run", json={"force_refresh": True})
             score = self.client.post(f"/api/jobs/{job_id}/score-gpt", json={})
             packet = self.client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
         finally:
-            (
-                workflow_app.gpt_scoring_enabled,
-                workflow_app.create_application_packet,
-            ) = originals
             workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         self.assertEqual(updated_company.get_json()["company"]["status"], "target")
@@ -630,13 +623,15 @@ class ApplicationWorkflowTests(unittest.TestCase):
             ),
         )
         try:
-            with workflow_app.app.app_context():
-                with database_session(workflow_app.DB_PATH) as connection:
-                    created = workflow_app.create_application_packet(connection, job_id)
-                    packets = workflow_app.list_application_packets(connection)
+            response = self.client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
+            duplicate = self.client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
         finally:
             workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(duplicate.status_code, 409, "An associated packet must not be generated again.")
+        created = response.get_json()["packet"]
+        packets = response.get_json()["application_packets"]
         by_name = {packet["name"]: packet for packet in packets}
         self.assertEqual(created["name"], "generated")
         self.assertEqual(by_name["generated"]["associated_job"]["id"], job_id)

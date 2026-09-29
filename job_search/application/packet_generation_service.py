@@ -21,6 +21,14 @@ class PacketGenerationOperations(Protocol):
     def log(self, event: str, **fields: Any) -> None: ...
 
 
+class PacketJobMissingError(ValueError):
+    """The requested job does not exist."""
+
+
+class PacketAlreadyAssociatedError(FileExistsError):
+    """The requested job already has an application packet."""
+
+
 class PacketGenerationService:
     def __init__(self, operations: PacketGenerationOperations) -> None:
         self._operations = operations
@@ -29,9 +37,9 @@ class PacketGenerationService:
         with self._operations.connection() as connection:
             job = self._operations.job(connection, job_id)
             if not job:
-                raise ValueError("Job not found.")
+                raise PacketJobMissingError("Job not found.")
             if job.get("application_packet_path"):
-                raise FileExistsError("This job already has an associated application packet.")
+                raise PacketAlreadyAssociatedError("This job already has an associated application packet.")
             result = self._operations.generate(job)
             self._operations.save_path(connection, job_id, result["path"], self._operations.now())
         self._operations.log("application_packet_generated", job_id=job_id, path=result["path"], generator="codex_cli")

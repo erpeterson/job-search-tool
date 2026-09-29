@@ -27,14 +27,19 @@ class PacketAttachmentServiceTests(unittest.TestCase):
             packet = root / "applications" / "example"
             packet.mkdir(parents=True)
             jobs = FakeJobs()
+            events = []
             service = PacketAttachmentService(
-                jobs, PacketStorage(root, root / "applications").packet_relative_path, lambda: 50
+                jobs,
+                PacketStorage(root, root / "applications").packet_relative_path,
+                lambda: 50,
+                lambda name, **fields: events.append((name, fields)),
             )
 
             result = service.attach(3, "applications/example")
 
         self.assertEqual(result["path"], "applications/example")
         self.assertEqual(jobs.attached, [(3, "applications/example", 50)])
+        self.assertEqual(events[0][0], "application_packet_attached")
 
     def test_rejects_path_outside_application_directory(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

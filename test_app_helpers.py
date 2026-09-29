@@ -18,6 +18,7 @@ from job_search.composition import codex_json_gateway, outbound_clients, runtime
 from job_search.config import RuntimePaths
 from job_search.data_access import codex_cli, document_writer
 from job_search.data_access.http_gateway import CapturedResponse
+from job_search.presentation.packet_rendering import escape_html, markdown_to_html, render_inline_markdown
 
 APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
 SPEC = importlib.util.spec_from_file_location("helpers_app", APP_PATH)
@@ -75,17 +76,19 @@ class AppHelperTests(unittest.TestCase):
         html = '<script type="application/ld+json">{"@type":"JobPosting","title":"Architect"}</script>'
         soup = BeautifulSoup(html, "html.parser")
         self.assertEqual(helpers_app.extract_job_json_ld(soup)["title"], "Architect")
-        self.assertEqual(
-            helpers_app.render_inline_markdown("**bold** and `code`"), "<strong>bold</strong> and <code>code</code>"
-        )
-        rendered = helpers_app.markdown_to_html(
-            "# Heading\n\n- one\n- two\n\n---\n\nParagraph\n\n```\n<safe code>\n```"
-        )
+        self.assertEqual(render_inline_markdown("**bold** and `code`"), "<strong>bold</strong> and <code>code</code>")
+        rendered = markdown_to_html("# Heading\n\n- one\n- two\n\n---\n\nParagraph\n\n```\n<safe code>\n```")
         self.assertIn("<h1>Heading</h1>", rendered)
         self.assertIn("<li>one</li>", rendered)
         self.assertIn("<hr>", rendered)
         self.assertIn("&lt;safe code&gt;", rendered)
-        self.assertEqual(helpers_app.escape_html("<tag>"), "&lt;tag&gt;")
+        self.assertEqual(escape_html("<tag>"), "&lt;tag&gt;")
+        self.assertEqual(
+            render_inline_markdown("[safe](https://example.test/?a=1&b=2)"),
+            '<a href="https://example.test/?a=1&amp;b=2" target="_blank" rel="noopener">safe</a>',
+        )
+        self.assertEqual(render_inline_markdown("[unsafe](javascript:evil)"), "unsafe")
+        self.assertEqual(render_inline_markdown("[broken](https://[)"), "broken")
 
     def test_packet_payload_validation_rejects_invalid_contracts(self):
         valid = {

@@ -2,11 +2,9 @@
 import json
 import re
 import uuid
-from contextlib import nullcontext
 
 from flask import (
     Blueprint,
-    Response,
     current_app,
     g,
     jsonify,
@@ -22,15 +20,12 @@ from job_search.errors import ClientInputError, translate_exception
 from job_search.presentation.company_routes import register_company_routes
 from job_search.presentation.config_routes import register_config_routes
 from job_search.presentation.job_routes import register_job_routes
+from job_search.presentation.packet_routes import register_packet_routes
 from job_search.presentation.read_routes import register_read_routes
 from job_search.presentation.search_routes import register_search_routes
 from job_search.presentation.task_routes import register_task_routes
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
-from job_search.validation import (
-    RequestValidationError,
-    optional_text,
-    require_json_object,
-)
+from job_search.validation import RequestValidationError
 
 RUNTIME_CONFIG = runtime_configuration()
 ROOT = RUNTIME_CONFIG.paths.root
@@ -46,6 +41,7 @@ register_job_routes(routes)
 register_config_routes(routes)
 register_task_routes(routes)
 register_search_routes(routes)
+register_packet_routes(routes)
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -110,14 +106,6 @@ def filtering_service() -> FilteringService:
     return dependency("filtering_service")
 
 
-def packet_attachment_service():
-    return dependency("packet_attachment_service")
-
-
-def packet_content_service():
-    return dependency("packet_content_service")
-
-
 def console_query_service():
     return dependency("console_query_service")
 
@@ -168,88 +156,6 @@ def apply_filter(_connection, job_id):
     # before the repository-backed filtering use case opens its own session.
     _connection.commit()
     return filtering_service().refresh_job(job_id)
-
-
-def render_inline_markdown(text):
-    inline = escape_html(text)
-    inline = re.sub(r"`([^`]+)`", r"<code>\1</code>", inline)
-    inline = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", inline)
-    inline = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', inline)
-    return inline
-
-
-def markdown_to_html(markdown):
-    html = []
-    in_list = False
-    in_code = False
-    code_lines = []
-    for raw_line in markdown.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            if in_code:
-                html.append(f"<pre><code>{escape_html(chr(10).join(code_lines))}</code></pre>")
-                code_lines = []
-                in_code = False
-            else:
-                if in_list:
-                    html.append("</ul>")
-                    in_list = False
-                in_code = True
-            continue
-        if in_code:
-            code_lines.append(line)
-            continue
-        if not stripped:
-            if in_list:
-                html.append("</ul>")
-                in_list = False
-            continue
-        heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
-        if heading:
-            if in_list:
-                html.append("</ul>")
-                in_list = False
-            level = len(heading.group(1))
-            html.append(f"<h{level}>{render_inline_markdown(heading.group(2))}</h{level}>")
-            continue
-        if stripped == "---":
-            if in_list:
-                html.append("</ul>")
-                in_list = False
-            html.append("<hr>")
-            continue
-        bullet = re.match(r"^-\s+(.+)$", stripped)
-        if bullet:
-            if not in_list:
-                html.append("<ul>")
-                in_list = True
-            html.append(f"<li>{render_inline_markdown(bullet.group(1))}</li>")
-            continue
-        if in_list:
-            html.append("</ul>")
-            in_list = False
-        html.append(f"<p>{render_inline_markdown(stripped)}</p>")
-    if in_code:
-        html.append(f"<pre><code>{escape_html(chr(10).join(code_lines))}</code></pre>")
-    if in_list:
-        html.append("</ul>")
-    return "\n".join(html)
-
-
-def escape_html(value):
-    return (
-        str(value or "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-
-def list_application_packets(conn):
-    return dependency("packet_catalog").list(conn)
 
 
 def selector_text(soup, selectors):
@@ -354,15 +260,6 @@ def extract_codex_reported_model(output):
     return match.group(1) if match else ""
 
 
-def packet_generation_service():
-    return dependency("packet_generation_service")
-
-
-def create_application_packet(_connection, job_id):
-    """Compatibility entry point backed by the application workflow."""
-    return packet_generation_service().generate(job_id)
-
-
 def codex_scoring_workflow():
     return dependency("codex_scoring_workflow")
 
@@ -374,173 +271,6 @@ def populate_codex_score(conn, job_id, force_refresh=False):
 
 def discovery_service():
     return dependency("discovery_service")
-
-
-def request_json_object():
-    """Validate the actual parsed body; do not coerce arrays/null into {}."""
-    return require_json_object(request.get_json(silent=True))
-
-
-@routes.post("/api/jobs/<int:job_id>/application-packet/generate")
-def api_generate_application_packet(job_id):
-    job = console_query_service().job(job_id)
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-    if job.get("application_packet_path"):
-        return jsonify({"error": "This job already has an associated application packet."}), 409
-    packet = create_application_packet(None, job_id)
-    return jsonify(
-        {
-            "packet": packet,
-            "job": console_query_service().job(job_id),
-            "application_packets": console_query_service().packets(),
-        }
-    ), 201
-
-
-@routes.post("/api/jobs/<int:job_id>/application-packet/attach")
-def api_attach_application_packet(job_id):
-    payload = request_json_object()
-    packet_path = optional_text(payload.get("path"), "path", max_length=2_000)
-    if not packet_path:
-        raise RequestValidationError("path is required.")
-    try:
-        result = packet_attachment_service().attach(job_id, packet_path)
-    except ValueError as exc:
-        log_event(
-            "packet_attachment_rejected",
-            error_code="PACKET_ATTACHMENT_REJECTED",
-            component="presentation.packets",
-            operation="attach",
-            job_id=job_id,
-            error_type=type(exc).__name__,
-        )
-        return jsonify({"error": str(exc)}), 400
-    if result is None:
-        return jsonify({"error": "Job not found"}), 404
-    log_event("application_packet_attached", job_id=job_id, path=result["path"])
-    return jsonify({"job": result["job"], "application_packets": console_query_service().packets()})
-
-
-@routes.get("/api/jobs/<int:job_id>/application-packet/content")
-def api_application_packet_content(job_id):
-    filename = request.args.get("file", "")
-    if not filename.endswith(".md") or "/" in filename or "\\" in filename:
-        return jsonify({"error": "Select a Markdown file in the associated packet."}), 400
-    job = console_query_service().job(job_id)
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-    if not job.get("application_packet_path"):
-        return jsonify({"error": "Job does not have an associated application packet."}), 404
-    try:
-        packet = packet_content_service().read(job["application_packet_path"], filename)
-    except (ValueError, FileNotFoundError) as exc:
-        log_event(
-            "packet_content_path_rejected",
-            error_code="PACKET_CONTENT_PATH_REJECTED",
-            component="presentation.packets",
-            operation="content",
-            job_id=job_id,
-            error_type=type(exc).__name__,
-        )
-        return jsonify({"error": str(exc)}), 404
-    return jsonify(packet)
-
-
-@routes.get("/api/jobs/<int:job_id>/application-packet/render")
-def api_application_packet_render(job_id):
-    filename = request.args.get("file", "")
-    if not filename.endswith(".md") or "/" in filename or "\\" in filename:
-        return Response("Select a Markdown file in the associated packet.", status=400, mimetype="text/plain")
-    with nullcontext():
-        job = console_query_service().job(job_id)
-        if not job:
-            return Response("Job not found.", status=404, mimetype="text/plain")
-        if not job.get("application_packet_path"):
-            return Response("Job does not have an associated application packet.", status=404, mimetype="text/plain")
-        try:
-            packet = packet_content_service().read(job["application_packet_path"], filename)
-        except (ValueError, FileNotFoundError) as exc:
-            log_event(
-                "packet_render_path_rejected",
-                error_code="PACKET_RENDER_PATH_REJECTED",
-                component="presentation.packets",
-                operation="render",
-                job_id=job_id,
-                error_type=type(exc).__name__,
-            )
-            return Response(str(exc), status=404, mimetype="text/plain")
-        markdown = packet["content"]
-        body = markdown_to_html(markdown)
-        title = f"{filename} - {job['company']} - {job['title']}"
-        html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape_html(title)}</title>
-  <style>
-    :root {{
-      --bg: #f3f1ea;
-      --ink: #18211b;
-      --muted: #667066;
-      --line: #cfc8b8;
-      --accent: #0f766e;
-    }}
-    body {{
-      margin: 0;
-      background: radial-gradient(circle at top left, rgba(15,118,110,.11), transparent 34%), var(--bg);
-      color: var(--ink);
-      font-family: "Avenir Next", "Segoe UI", sans-serif;
-      line-height: 1.55;
-    }}
-    main {{
-      max-width: 920px;
-      margin: 0 auto;
-      padding: 36px 24px 64px;
-    }}
-    .meta {{
-      color: var(--muted);
-      border-bottom: 1px solid var(--line);
-      padding-bottom: 14px;
-      margin-bottom: 28px;
-      font-size: 13px;
-    }}
-    h1, h2, h3, h4, h5, h6 {{ line-height: 1.18; margin: 1.35em 0 .45em; }}
-    h1 {{ font-size: 34px; margin-top: 0; }}
-    h2 {{ font-size: 24px; }}
-    h3 {{ font-size: 18px; color: var(--accent); }}
-    p {{ margin: .6em 0; }}
-    ul {{ padding-left: 1.4em; }}
-    li {{ margin: .35em 0; }}
-    hr {{ border: 0; border-top: 1px solid var(--line); margin: 24px 0; }}
-    code {{
-      background: rgba(15,118,110,.09);
-      border: 1px solid rgba(15,118,110,.18);
-      border-radius: 4px;
-      padding: 1px 4px;
-      font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: .92em;
-    }}
-    pre {{
-      overflow: auto;
-      padding: 14px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fbfaf5;
-    }}
-    a {{ color: var(--accent); }}
-  </style>
-</head>
-<body>
-  <main>
-    <div class="meta">{escape_html(packet["path"])} / {escape_html(filename)}</div>
-    {body}
-  </main>
-</body>
-</html>
-"""
-        return Response(html, mimetype="text/html")
 
 
 @routes.errorhandler(Exception)

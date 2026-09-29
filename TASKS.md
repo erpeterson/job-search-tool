@@ -299,7 +299,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.4b.3 — Extract configuration routes.** Move settings, runtime
     configuration, and confirmed purge endpoints; verify safe validation and
     persistence through the injected app, then check 1.4b and commit.
-- [ ] **1.4c — Move search, packets, and tasks routes.** Register these route
+- [x] **1.4c — Move search, packets, and tasks routes.** Register these route
   families with rendering and mapping only; migrate their tests to the injected
   app factory.
   - [x] **1.4c.1 — Extract durable-task submission routes.** Move scoring and
@@ -308,7 +308,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.4c.2 — Extract search routes.** Register run/query handlers from a
     narrow module, preserve validation and injected workflow behavior, then
     commit.
-  - [ ] **1.4c.3 — Extract packet routes.** Move packet generation, attachment,
+  - [x] **1.4c.3 — Extract packet routes.** Move packet generation, attachment,
     content, and rendering handlers to an injected module; verify safe path and
     response behavior, then check 1.4c and commit.
 - [ ] **1.4d — Remove `presentation/legacy.py`.** Move any remaining pure
