@@ -96,7 +96,8 @@ class ProcessCompositionTests(unittest.TestCase):
 
             task = repository.get("failure-task")
             self.assertEqual(task["status"], "error", "The fake model failure must survive process exit.")
-            self.assertIn("fake model unavailable", task["items"][0]["message"])
+            self.assertEqual(task["items"][0]["message"], "Worker processing failed: RuntimeError")
+            self.assertIn("worker_processor_failed", [name for name, _fields in observed.telemetry.events])
 
     def test_scheduler_cli_respects_existing_lease_in_temporary_database(self):
         with tempfile.TemporaryDirectory() as directory:

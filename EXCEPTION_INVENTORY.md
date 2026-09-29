@@ -57,3 +57,5 @@ record only when composition fails before telemetry exists.
 Flask's `presentation.routes:api_error` is registered as a top-level exception
 handler rather than an AST `except`; it emits `API_CLIENT_INPUT_INVALID`,
 `API_HTTP_EXCEPTION`, or `API_UNHANDLED_EXCEPTION` before responding.
+The worker also emits `WORKER_CLAIM_LOST` if finalization finds that another
+worker owns the lease; it stops without overwriting that worker's durable state.

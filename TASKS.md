@@ -373,7 +373,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   outcome and one event. Check all other inventoried catches as well.
   - [x] **2c.1 — Observe parser recovery.** Emit a sanitized JSON-LD event and
     a model-output extraction event through injected telemetry; commit.
-  - [ ] **2c.2 — Make worker failures durable and observable.** Record processor
+  - [x] **2c.2 — Make worker failures durable and observable.** Record processor
     failures and failed heartbeat renewal, abandon unsafe ownership, and commit.
   - [ ] **2c.3 — Repair other inventoried catches.** Add missing event fields or
     explicit top-level routing for remaining recovery/translation paths, then
