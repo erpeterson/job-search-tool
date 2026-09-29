@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import json
 import re
-import time
 import uuid
 from contextlib import nullcontext
 
@@ -17,21 +16,18 @@ from werkzeug.exceptions import HTTPException
 
 from job_search.application.discovery_utils import clean_text
 from job_search.application.filtering_service import FilteringService
-from job_search.application.job_scoring_policy import PIPELINES
 from job_search.application.job_service import JobService
-from job_search.application.search_query_service import SearchQueryService
 from job_search.composition import observability, runtime_configuration
 from job_search.errors import ClientInputError, translate_exception
 from job_search.presentation.company_routes import register_company_routes
 from job_search.presentation.config_routes import register_config_routes
 from job_search.presentation.job_routes import register_job_routes
 from job_search.presentation.read_routes import register_read_routes
+from job_search.presentation.search_routes import register_search_routes
 from job_search.presentation.task_routes import register_task_routes
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
     RequestValidationError,
-    boolean,
-    choice,
     optional_text,
     require_json_object,
 )
@@ -49,6 +45,7 @@ register_company_routes(routes)
 register_job_routes(routes)
 register_config_routes(routes)
 register_task_routes(routes)
+register_search_routes(routes)
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -95,9 +92,6 @@ def assign_request_correlation_id():
     return None
 
 
-SUPPORTED_BOARDS = {"linkedin", "indeed"}
-
-
 def dependency(name):
     """Resolve a required service supplied by the composition root."""
     return getattr(current_app.extensions["job_search.dependencies"], name)
@@ -110,10 +104,6 @@ def log_event(event_type, **fields):
 def job_service() -> JobService:
     """Compose the framework-independent job use case for a request."""
     return dependency("job_service")
-
-
-def search_query_service() -> SearchQueryService:
-    return dependency("search_query_service")
 
 
 def filtering_service() -> FilteringService:
@@ -134,10 +124,6 @@ def console_query_service():
 
 def startup_service():
     return dependency("startup_service")
-
-
-def now():
-    return int(time.time())
 
 
 def row_to_dict(row):
@@ -390,11 +376,6 @@ def discovery_service():
     return dependency("discovery_service")
 
 
-def run_job_search(trigger="manual", force_refresh=False):
-    """Run search through the application-layer orchestration service."""
-    return dependency("search_run_service").run(trigger=trigger, force_refresh=force_refresh)
-
-
 def request_json_object():
     """Validate the actual parsed body; do not coerce arrays/null into {}."""
     return require_json_object(request.get_json(silent=True))
@@ -560,62 +541,6 @@ def api_application_packet_render(job_id):
 </html>
 """
         return Response(html, mimetype="text/html")
-
-
-@routes.post("/api/search/run")
-def api_run_search():
-    payload = require_json_object(request.get_json(silent=True) or {})
-    force_refresh = boolean(payload.get("force_refresh"), "force_refresh", default=False)
-    run = run_job_search(trigger="manual", force_refresh=force_refresh)
-    state = console_query_service().state(include_filtered=True)
-    return jsonify(
-        {"run": run, "jobs": state["jobs"], "search_runs": state["search_runs"], "discoveries": state["discoveries"]}
-    )
-
-
-@routes.post("/api/search/queries")
-def api_create_search_query():
-    payload = require_json_object(request.get_json(silent=True) or {})
-    ts = now()
-    board = choice(payload.get("board", "linkedin"), "board", SUPPORTED_BOARDS, required=True)
-    pipeline = choice(payload.get("pipeline", ""), "pipeline", PIPELINES)
-    keywords = optional_text(payload.get("keywords", ""), "keywords", max_length=2_000)
-    if not keywords:
-        raise RequestValidationError("keywords is required.")
-    search_query_service().create(
-        {
-            "board": board,
-            "pipeline": pipeline,
-            "keywords": keywords,
-            "location": optional_text(payload.get("location", ""), "location", max_length=500),
-            "enabled": 1 if boolean(payload.get("enabled"), "enabled", default=True) else 0,
-            "created_at": ts,
-            "criteria": optional_text(payload.get("criteria", ""), "criteria", max_length=10_000),
-        }
-    )
-    return jsonify({"search_queries": console_query_service().queries()}), 201
-
-
-@routes.post("/api/search/queries/<int:query_id>")
-def api_update_search_query(query_id):
-    payload = require_json_object(request.get_json(silent=True) or {})
-    board = choice(payload["board"], "board", SUPPORTED_BOARDS, required=True) if "board" in payload else None
-    pipeline = choice(payload["pipeline"], "pipeline", PIPELINES) if "pipeline" in payload else None
-    keywords = optional_text(payload["keywords"], "keywords", max_length=2_000) if "keywords" in payload else None
-    location = optional_text(payload["location"], "location", max_length=500) if "location" in payload else None
-    criteria = optional_text(payload["criteria"], "criteria", max_length=10_000) if "criteria" in payload else None
-    search_query_service().update(
-        query_id,
-        {
-            "board": board,
-            "pipeline": pipeline,
-            "keywords": keywords,
-            "location": location,
-            "criteria": criteria,
-            "enabled": (1 if boolean(payload["enabled"], "enabled") else 0) if "enabled" in payload else None,
-        },
-    )
-    return jsonify({"search_queries": console_query_service().queries()})
 
 
 @routes.errorhandler(Exception)

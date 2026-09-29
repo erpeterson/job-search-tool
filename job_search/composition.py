@@ -268,7 +268,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     return PresentationDependencies(
         job_service=jobs,
         company_service=CompanyService(SqliteCompanyRepository(connect), lambda: int(time.time())),
-        search_query_service=SearchQueryService(SqliteSearchQueryRepository(connect)),
+        search_query_service=SearchQueryService(SqliteSearchQueryRepository(connect), lambda: int(time.time())),
         settings_service=settings_workflow,
         configuration_service=ConfigurationService(configuration, settings_workflow),
         console_query_service=ConsoleQueryService(SqliteConsoleQueryRepository(connect, packets_catalog.list)),
@@ -462,7 +462,9 @@ def company_service(database_path: Path) -> CompanyService:
 
 
 def search_query_service(database_path: Path) -> SearchQueryService:
-    return SearchQueryService(SqliteSearchQueryRepository(lambda: database_session(database_path)))
+    return SearchQueryService(
+        SqliteSearchQueryRepository(lambda: database_session(database_path)), lambda: int(time.time())
+    )
 
 
 def settings_service(database_path: Path) -> SettingsService:

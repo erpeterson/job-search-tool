@@ -29,14 +29,17 @@ class FakeSettings:
 class SettingsAndQueriesServiceTests(unittest.TestCase):
     def test_search_query_service_uses_a_plain_repository_fake(self):
         repository = FakeQueries()
-        service = SearchQueryService(repository)
+        service = SearchQueryService(repository, now=lambda: 123)
 
-        created_id = service.create({"board": "indeed", "keywords": "architect"})
-        updated = service.update(42, {"enabled": 0})
+        created_id = service.create({"board": "indeed", "keywords": "architect", "enabled": True})
+        updated = service.update(42, {"enabled": False})
 
         self.assertEqual(created_id, 42)
         self.assertTrue(updated)
-        self.assertEqual(repository.created, [{"board": "indeed", "keywords": "architect"}])
+        self.assertEqual(
+            repository.created,
+            [{"board": "indeed", "keywords": "architect", "enabled": 1, "created_at": 123}],
+        )
         self.assertEqual(repository.updated, [(42, {"enabled": 0})])
 
     def test_settings_service_uses_a_plain_repository_fake(self):

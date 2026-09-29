@@ -524,13 +524,17 @@ class ApplicationWorkflowTests(unittest.TestCase):
             json={"status": "target", "interest_score": 95, "contacts": "Taylor"},
         )
         originals = (
-            workflow_app.run_job_search,
             workflow_app.gpt_scoring_enabled,
             workflow_app.create_application_packet,
         )
         original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
-        workflow_app.run_job_search = lambda **_kwargs: {"status": "complete", "found_count": 0}
         workflow_app.gpt_scoring_enabled = lambda: True
+
+        class FakeSearchRunService:
+            def run(self, *, trigger, force_refresh):
+                self.trigger = trigger
+                self.force_refresh = force_refresh
+                return {"status": "complete", "found_count": 0}
 
         class FakeScoringService:
             def score(self, current_job_id):
@@ -544,8 +548,9 @@ class ApplicationWorkflowTests(unittest.TestCase):
                     },
                 )()
 
+        fake_search = FakeSearchRunService()
         workflow_app.app.extensions["job_search.dependencies"] = replace(
-            original_dependencies, scoring_service=FakeScoringService()
+            original_dependencies, scoring_service=FakeScoringService(), search_run_service=fake_search
         )
         workflow_app.create_application_packet = lambda *_args, **_kwargs: {
             "path": "applications/generated",
@@ -558,7 +563,6 @@ class ApplicationWorkflowTests(unittest.TestCase):
             packet = self.client.post(f"/api/jobs/{job_id}/application-packet/generate", json={})
         finally:
             (
-                workflow_app.run_job_search,
                 workflow_app.gpt_scoring_enabled,
                 workflow_app.create_application_packet,
             ) = originals
@@ -567,6 +571,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(updated_company.get_json()["company"]["status"], "target")
         self.assertEqual(updated_company.get_json()["company"]["interest_score"], 95)
         self.assertEqual(search.get_json()["run"]["status"], "complete")
+        self.assertEqual((fake_search.trigger, fake_search.force_refresh), ("manual", True))
         self.assertEqual(score.get_json()["raw_score"]["total_score"], 89)
         self.assertEqual(packet.status_code, 201)
 

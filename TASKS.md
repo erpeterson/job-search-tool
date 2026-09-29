@@ -305,7 +305,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.4c.1 — Extract durable-task submission routes.** Move scoring and
     packet availability decisions into an application service; validate IDs at
     the HTTP boundary and test injected queue and denial paths, then commit.
-  - [ ] **1.4c.2 — Extract search routes.** Register run/query handlers from a
+  - [x] **1.4c.2 — Extract search routes.** Register run/query handlers from a
     narrow module, preserve validation and injected workflow behavior, then
     commit.
   - [ ] **1.4c.3 — Extract packet routes.** Move packet generation, attachment,

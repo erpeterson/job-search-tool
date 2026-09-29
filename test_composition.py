@@ -25,6 +25,54 @@ from job_search.presentation.factory import create_app
 
 
 class CompositionTests(unittest.TestCase):
+    def test_injected_search_routes_validate_queries_and_dispatch_runner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "search.sqlite3"
+            dependencies = presentation_dependencies(database)
+
+            class FakeRunner:
+                def __init__(self):
+                    self.calls = []
+
+                def run(self, *, trigger, force_refresh):
+                    self.calls.append((trigger, force_refresh))
+                    return {"status": "complete", "found_count": 0}
+
+            runner = FakeRunner()
+            try:
+                dependencies.startup_service.initialize()
+                injected = replace(dependencies, search_run_service=runner)
+                client = create_app(dependencies=injected, route_blueprint=legacy.routes).test_client()
+
+                invalid = client.post("/api/search/queries", json={"keywords": ""})
+                created = client.post(
+                    "/api/search/queries",
+                    json={"board": "indeed", "keywords": "test-architect-marker", "enabled": True},
+                )
+                query_id = next(
+                    query["id"]
+                    for query in created.get_json()["search_queries"]
+                    if query["keywords"] == "test-architect-marker"
+                )
+                updated = client.post(f"/api/search/queries/{query_id}", json={"enabled": False})
+                run = client.post("/api/search/run", json={"force_refresh": True})
+
+                self.assertEqual(invalid.status_code, 400, "Missing keywords must fail validation.")
+                self.assertEqual(created.status_code, 201, "Valid queries should persist.")
+                updated_query = next(query for query in updated.get_json()["search_queries"] if query["id"] == query_id)
+                self.assertEqual(updated_query["enabled"], 0)
+                self.assertEqual(run.get_json()["run"]["status"], "complete")
+                self.assertEqual(runner.calls, [("manual", True)], "The HTTP route must invoke the injected runner.")
+                with database_session(database) as connection:
+                    saved = connection.execute(
+                        "SELECT board, keywords, enabled FROM search_queries WHERE id = ?", (query_id,)
+                    ).fetchone()
+                self.assertEqual(tuple(saved), ("indeed", "test-architect-marker", 0))
+            finally:
+                for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
+                    for handler in logger.handlers:
+                        handler.close()
+
     def test_injected_config_settings_and_purge_routes_enforce_boundaries(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "configuration.sqlite3"
