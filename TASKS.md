@@ -359,7 +359,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 
 ### T-2 — Observable exception handling
 
-- [ ] **2a — Inventory catches and define events.** Enumerate every `except`
+- [x] **2a — Inventory catches and define events.** Enumerate every `except`
   in `job_search/`; classify rethrow versus recovery. Document a stable unique
   error code, component, operation, sanitized cause, identifiers, and valid
   recovery behavior for each handled exception.
