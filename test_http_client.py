@@ -1,4 +1,5 @@
 import socket
+import ssl
 import unittest
 from unittest.mock import patch
 
@@ -151,6 +152,7 @@ class SafeHttpClientTests(unittest.TestCase):
 
         class FakeTlsContext:
             check_hostname = True
+            verify_mode = ssl.CERT_REQUIRED
 
             def wrap_socket(self, sock, *, server_hostname):
                 observed.update(wrapped_socket=sock, server_hostname=server_hostname)
@@ -168,6 +170,7 @@ class SafeHttpClientTests(unittest.TestCase):
             connection.connect()
 
         self.assertTrue(fake_context.check_hostname)
+        self.assertEqual(fake_context.verify_mode, ssl.CERT_REQUIRED)
         self.assertEqual(created_sockets[0][0], ("8.8.8.8", 443))
         self.assertEqual(observed["server_hostname"], "jobs.example.test")
         self.assertEqual(connection.sock, "tls-socket")

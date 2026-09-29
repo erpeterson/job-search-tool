@@ -3,6 +3,7 @@ import json
 import os
 import runpy
 import subprocess
+import sys
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -47,7 +48,7 @@ class StartupBoundaryTests(unittest.TestCase):
     def _run(updates):
         environment = {**os.environ, **updates}
         return subprocess.run(
-            [str(ROOT / ".venv" / "bin" / "python"), "app.py"],
+            [sys.executable, "app.py"],
             cwd=ROOT,
             env=environment,
             text=True,
