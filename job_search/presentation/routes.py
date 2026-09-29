@@ -35,7 +35,7 @@ def enforce_request_security():
     g.correlation_token = observed.correlation_ids.set(g.correlation_id)
     if not security.enabled:
         return None
-    if not trusted_proxy_peer(request.remote_addr, security):
+    if not trusted_proxy_peer(request.remote_addr, security, observed.telemetry.event):
         return jsonify({"error": "Request must arrive through a configured trusted proxy."}), 403
     if request.headers.get("X-Forwarded-Proto", "").lower() != "https":
         return jsonify({"error": "HTTPS is required for externally exposed deployments."}), 400

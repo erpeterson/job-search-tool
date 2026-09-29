@@ -27,6 +27,10 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RequestValidationError, "private or reserved"):
             http_url("http://127.0.0.1:5050/admin")
 
+    def test_rejects_malformed_ip_shaped_host(self):
+        with self.assertRaisesRegex(RequestValidationError, "invalid IP address"):
+            http_url("https://127.0.0.999/job")
+
     def test_choice_and_integer_boundaries(self):
         self.assertEqual(choice("target", "status", {"target"}, required=True), "target")
         self.assertEqual(integer("100", "score", minimum=0, maximum=100), 100)

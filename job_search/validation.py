@@ -63,10 +63,13 @@ def http_url(value: Any, field: str = "URL") -> str:
     hostname = parsed.hostname
     if not hostname or hostname.lower() == "localhost":
         raise RequestValidationError(f"{field} must not target localhost.")
+    if ":" not in hostname and any(character not in "0123456789." for character in hostname):
+        # DNS names are not IP literals; the outbound client validates their resolved addresses.
+        return normalized
     try:
         address = ipaddress.ip_address(hostname)
-    except ValueError:
-        return normalized
+    except ValueError as exc:
+        raise RequestValidationError(f"{field} has an invalid IP address.") from exc
     if not address.is_global:
         raise RequestValidationError(f"{field} must not target a private or reserved address.")
     return normalized

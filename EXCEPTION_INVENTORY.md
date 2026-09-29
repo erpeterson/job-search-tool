@@ -31,8 +31,8 @@ record only when composition fails before telemetry exists.
 | `data_access.http_gateway:CapturingHttpGateway.get` | Observe and rethrow | `HTTP_OUTBOUND_FAILED` / `http_outbound_failed` | Capture/log attempt; caller handles failure. |
 | `data_access.codex_json_gateway:CodexJsonGateway.complete` | Observe and rethrow | `CODEX_CLI_CALL_FAILED` / `codex_cli_call_failed` | Capture/log failed invocation; caller handles failure. |
 | `application.packet_draft_service:PacketDraftService.generate` | Observe and rethrow | `APPLICATION_PACKET_GENERATION_FAILED` / `application_packet_generation_failed` | Preserve attribution and propagate failure. |
-| `validation:http_url` | Recover, parsing probe | `URL_IP_PROBE_FAILED` / `url_ip_probe_failed` | A syntactically valid DNS hostname is not an IP literal. |
-| `security:is_loopback_host` | Recover, parsing probe | `SECURITY_HOST_IP_PROBE_FAILED` / `security_host_ip_probe_failed` | A hostname is not an IP literal; continue host policy. |
+| `validation:http_url` | Translate → `presentation.routes:api_error` | `API_CLIENT_INPUT_INVALID` | DNS names bypass the IP probe; malformed IP-shaped hosts return 400. |
+| `security:is_loopback_host` | Translate → `app:module` | `STARTUP_CONFIGURATION_FAILED` | DNS names bypass the IP probe; malformed IP-shaped bindings fail startup. |
 | `security:trusted_proxy_peer` | Recover, reject | `PROXY_ADDRESS_INVALID` / `proxy_address_invalid` | Malformed immediate peer is denied. |
 | `data_access.model_output_parser:parse_model_json` | Recover or rethrow, parsing probe | `MODEL_OUTPUT_FENCE_RECOVERED` / `model_output_fence_recovered` | Embedded JSON object may be extracted; otherwise propagate decode failure. |
 | `data_access.job_posting_parser:JobPostingParser._json_ld` | Recover, skip script | `JOB_POSTING_JSON_LD_INVALID` / `job_posting_json_ld_invalid` | Other JSON-LD blocks or HTML selectors remain usable. |

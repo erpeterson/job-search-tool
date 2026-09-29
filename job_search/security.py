@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 
@@ -29,10 +29,13 @@ def is_loopback_host(host: str) -> bool:
     candidate = (host or "").strip().lower()
     if candidate == "localhost":
         return True
+    if ":" not in candidate and any(character not in "0123456789." for character in candidate):
+        # A DNS hostname is an external binding, not a failed IP parse.
+        return False
     try:
         return ipaddress.ip_address(candidate).is_loopback
-    except ValueError:
-        return False
+    except ValueError as exc:
+        raise StartupSecurityError("STARTUP_INVALID_HOST: binding host has an invalid IP address.") from exc
 
 
 def load_request_security(environment: Mapping[str, str]) -> RequestSecurity:
@@ -67,13 +70,21 @@ def load_request_security(environment: Mapping[str, str]) -> RequestSecurity:
     )
 
 
-def trusted_proxy_peer(remote_address: str | None, policy: RequestSecurity) -> bool:
+def trusted_proxy_peer(remote_address: str | None, policy: RequestSecurity, observe: Callable[..., None]) -> bool:
     """Allow forwarded headers only when the immediate peer is configured."""
     if not policy.trusted_proxy or not remote_address:
         return False
     try:
         address = ipaddress.ip_address(remote_address)
-    except ValueError:
+    except ValueError as exc:
+        # Malformed peer addresses are denied, but the rejection still needs a blame event.
+        observe(
+            "proxy_address_invalid",
+            error_code="PROXY_ADDRESS_INVALID",
+            component="security",
+            operation="parse_peer_address",
+            cause=type(exc).__name__,
+        )
         return False
     return any(address in network for network in policy.trusted_proxy_networks)
 

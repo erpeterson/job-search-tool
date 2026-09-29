@@ -67,6 +67,34 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(unauthenticated.status_code, 401, "External reads require authentication.")
         self.assertEqual(missing_csrf.status_code, 403, "External mutations require CSRF validation.")
 
+    def test_malformed_proxy_peer_is_denied_with_one_blame_event(self):
+        environment = {
+            "JOB_SEARCH_HOST": "0.0.0.0",
+            "JOB_SEARCH_AUTH_TOKEN": "auth",
+            "JOB_SEARCH_CSRF_TOKEN": "csrf",
+            "JOB_SEARCH_TRUSTED_PROXY": "1",
+            "JOB_SEARCH_TLS_TERMINATED": "1",
+            "JOB_SEARCH_TRUSTED_PROXY_CIDRS": "127.0.0.1/32",
+        }
+        secured = presentation_dependencies(self.database, environment)
+        events = []
+        with patch.object(
+            secured.observability.telemetry,
+            "event",
+            side_effect=lambda name, **fields: events.append((name, fields)),
+        ):
+            response = (
+                create_app(dependencies=secured)
+                .test_client()
+                .get("/api/state", environ_overrides={"REMOTE_ADDR": "private-invalid-peer"})
+            )
+
+        self.assertEqual(response.status_code, 403, "Malformed proxy peers must fail closed.")
+        self.assertEqual([name for name, _fields in events], ["proxy_address_invalid"])
+        self.assertEqual(events[0][1]["error_code"], "PROXY_ADDRESS_INVALID")
+        self.assertEqual(events[0][1]["cause"], "ValueError")
+        self.assertNotIn("private-invalid-peer", str(events))
+
     def test_unexpected_error_is_logged_and_does_not_leak_details(self):
         class FailingReads:
             def job(self, _job_id):
