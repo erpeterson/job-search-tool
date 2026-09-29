@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
@@ -118,7 +119,16 @@ def main() -> int:
         return _main()
     except Exception as exc:
         print(
-            f'ERROR {{"error_code":"WORKER_FATAL_FAILURE","component":"worker","operation":"main","cause":"{type(exc).__name__}"}}',
+            "ERROR "
+            + json.dumps(
+                {
+                    "error_code": "WORKER_FATAL_FAILURE",
+                    "component": "worker",
+                    "operation": "main",
+                    "cause": type(exc).__name__,
+                },
+                sort_keys=True,
+            ),
             file=sys.stderr,
         )
         return 1
@@ -130,15 +140,27 @@ def _main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     args = parser.parse_args()
     process = worker_process_dependencies(args.database)
-    repository = process.repository
-    repository.initialize(int(time.time()))
-    worker_id = f"{socket.gethostname()}:{os.getpid()}"
-    while True:
-        processed = process_one(
-            repository, worker_id, process.processor.process, telemetry=process.observability.telemetry
-        )
-        if not processed:
-            time.sleep(args.poll_seconds)
+    try:
+        repository = process.repository
+        repository.initialize(int(time.time()))
+        worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        while True:
+            processed = process_one(
+                repository, worker_id, process.processor.process, telemetry=process.observability.telemetry
+            )
+            if not processed:
+                time.sleep(args.poll_seconds)
+    except Exception as exc:
+        if not isinstance(exc, HeartbeatRenewalError):
+            process.observability.telemetry.event(
+                "worker_fatal_failure",
+                error_code="WORKER_FATAL_FAILURE",
+                component="worker",
+                operation="run_process",
+                database_name=args.database.name,
+                cause=type(exc).__name__,
+            )
+        raise
 
 
 if __name__ == "__main__":

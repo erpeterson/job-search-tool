@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
@@ -17,7 +18,16 @@ def main() -> int:
         return _main()
     except Exception as exc:
         print(
-            f'ERROR {{"error_code":"SCHEDULER_FATAL_FAILURE","component":"scheduler","operation":"main","cause":"{type(exc).__name__}"}}',
+            "ERROR "
+            + json.dumps(
+                {
+                    "error_code": "SCHEDULER_FATAL_FAILURE",
+                    "component": "scheduler",
+                    "operation": "main",
+                    "cause": type(exc).__name__,
+                },
+                sort_keys=True,
+            ),
             file=sys.stderr,
         )
         return 1
@@ -30,10 +40,21 @@ def _main() -> int:
     args = parser.parse_args()
     owner = f"{socket.gethostname()}:{os.getpid()}"
     process = scheduler_process_dependencies(args.database)
-    if not process.lease.acquire(owner, int(time.time()), args.lease_seconds):
+    try:
+        if not process.lease.acquire(owner, int(time.time()), args.lease_seconds):
+            return 0
+        process.search.run(trigger="scheduled", force_refresh=True)
         return 0
-    process.search.run(trigger="scheduled", force_refresh=True)
-    return 0
+    except Exception as exc:
+        process.observability.telemetry.event(
+            "scheduler_fatal_failure",
+            error_code="SCHEDULER_FATAL_FAILURE",
+            component="scheduler",
+            operation="run_schedule",
+            database_name=args.database.name,
+            cause=type(exc).__name__,
+        )
+        raise
 
 
 if __name__ == "__main__":

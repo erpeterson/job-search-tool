@@ -1,16 +1,52 @@
+import io
+import json
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from job_search.composition import database_session
 from job_search.task_repository import TaskRepository
-from job_search.worker import HeartbeatRenewalError, _main, process_one
+from job_search.worker import HeartbeatRenewalError, _main, main, process_one
 
 
 class ManagedWorkerTests(unittest.TestCase):
+    def test_main_returns_failure_with_one_sanitized_stderr_record(self):
+        output = io.StringIO()
+        with patch("job_search.worker._main", side_effect=RuntimeError("private-worker-token")):
+            with redirect_stderr(output):
+                result = main()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(output.getvalue().count("ERROR "), 1)
+        record = json.loads(output.getvalue().removeprefix("ERROR "))
+        self.assertEqual(record["error_code"], "WORKER_FATAL_FAILURE")
+        self.assertEqual(record["cause"], "RuntimeError")
+        self.assertNotIn("private-worker-token", output.getvalue())
+
+    def test_composed_worker_fatal_error_emits_one_injected_event(self):
+        events = []
+        process = SimpleNamespace(
+            repository=SimpleNamespace(initialize=lambda _now: (_ for _ in ()).throw(RuntimeError("private-db"))),
+            observability=SimpleNamespace(
+                telemetry=SimpleNamespace(event=lambda name, **fields: events.append((name, fields)))
+            ),
+        )
+        with (
+            patch("sys.argv", ["worker", "--database", "worker-test.sqlite3"]),
+            patch("job_search.worker.worker_process_dependencies", return_value=process),
+        ):
+            with self.assertRaises(RuntimeError):
+                _main()
+
+        self.assertEqual([name for name, _fields in events], ["worker_fatal_failure"])
+        self.assertEqual(events[0][1]["error_code"], "WORKER_FATAL_FAILURE")
+        self.assertEqual(events[0][1]["cause"], "RuntimeError")
+        self.assertNotIn("private-db", str(events))
+
     def test_cli_builds_processor_for_requested_database(self):
         database = Path("worker-test.sqlite3")
         repository = SimpleNamespace(initialize=lambda _now: None)

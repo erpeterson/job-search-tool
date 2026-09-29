@@ -17,6 +17,7 @@ record only when composition fails before telemetry exists.
 | Catch (module:function) | Disposition and event owner | Stable code / event | Valid recovery or destination |
 | --- | --- | --- | --- |
 | `app:module` | Terminal stderr | `STARTUP_CONFIGURATION_FAILED` / `startup_configuration_failed` | Exit 2; no telemetry graph exists yet. |
+| `app:module` (unexpected composition error) | Terminal stderr | `STARTUP_UNHANDLED_EXCEPTION` / `startup_unhandled_exception` | Exit 1 before telemetry exists. |
 | `config:_integer` | Translate → `app:module` | `STARTUP_CONFIGURATION_FAILED` | Invalid config exits before startup. |
 | `security:load_request_security` | Translate → `app:module` | `STARTUP_CONFIGURATION_FAILED` | Unsafe proxy CIDR exits before startup. |
 | `validation:integer` | Translate → `presentation.routes:api_error` | `API_CLIENT_INPUT_INVALID` | Invalid request returns 400. |
@@ -50,9 +51,12 @@ record only when composition fails before telemetry exists.
 | `presentation.packet_routes:api_application_packet_content` | Recover, HTTP 404 | `PACKET_CONTENT_PATH_REJECTED` / `packet_content_path_rejected` | Missing/unsafe content is not served. |
 | `presentation.packet_routes:api_application_packet_render` | Recover, HTTP 404 | `PACKET_RENDER_PATH_REJECTED` / `packet_render_path_rejected` | Missing/unsafe content is not rendered. |
 | `worker:process_one` (processor) | Recover, durable item error | `WORKER_PROCESSOR_FAILED` / `worker_processor_failed` | Claim is completed as error and later work can continue. |
-| `worker:process_one` (heartbeat; to add) | Recover, abandon ownership | `WORKER_HEARTBEAT_FAILED` / `worker_heartbeat_failed` | Stop processing/renewal and persist a safe error outcome without double completion. |
-| `worker:main` | Terminal stderr + injected telemetry if available | `WORKER_FATAL_FAILURE` / `worker_fatal_failure` | Exit 1 after a process-level failure. |
-| `scheduler:main` | Terminal stderr + injected telemetry if available | `SCHEDULER_FATAL_FAILURE` / `scheduler_fatal_failure` | Exit 1 after a process-level failure. |
+| `worker:process_one` (heartbeat) | Recover, abandon ownership | `WORKER_HEARTBEAT_FAILED` / `worker_heartbeat_failed` | Stop processing/renewal and persist a safe error outcome without double completion. |
+| `worker:_main` | Observe and rethrow, except already-observed heartbeat failure | `WORKER_FATAL_FAILURE` / `worker_fatal_failure` | Stop the process; do not continue polling after failure. |
+| `worker:main` | Terminal stderr | `WORKER_FATAL_FAILURE` / `worker_fatal_failure` | Exit 1; fallback record covers precomposition failures. |
+| `scheduler:_main` | Observe and rethrow | `SCHEDULER_FATAL_FAILURE` / `scheduler_fatal_failure` | Stop the scheduler after lease/search failure. |
+| `scheduler:main` | Terminal stderr | `SCHEDULER_FATAL_FAILURE` / `scheduler_fatal_failure` | Exit 1; fallback record covers precomposition failures. |
+| `presentation.cli:main` | Injected event + terminal stderr | `WEB_FATAL_FAILURE` / `web_fatal_failure` | Exit 1 after web startup or run failure. |
 
 Flask's `presentation.routes:api_error` is registered as a top-level exception
 handler rather than an AST `except`; it emits `API_CLIENT_INPUT_INVALID`,
