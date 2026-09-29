@@ -41,11 +41,14 @@ class SettingsAndQueriesServiceTests(unittest.TestCase):
 
     def test_settings_service_uses_a_plain_repository_fake(self):
         repository = FakeSettings()
-        service = SettingsService(repository)
+        refreshed = []
+        service = SettingsService(repository, lambda: refreshed.append(True))
 
         service.save({"gpt_threshold": "80"})
+        service.save_and_refresh({"user_threshold": "70"})
 
-        self.assertEqual(repository.saved, [{"gpt_threshold": "80"}])
+        self.assertEqual(repository.saved, [{"gpt_threshold": "80"}, {"user_threshold": "70"}])
+        self.assertEqual(refreshed, [True], "Filtering should refresh only for the settings workflow.")
 
 
 if __name__ == "__main__":

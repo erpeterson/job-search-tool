@@ -65,7 +65,9 @@ class JobService:
         return self._repository.rescrape_job(job_id, current, scraped, notes, updated_at)
 
     def purge_jobs(self) -> int:
-        return self._repository.purge_jobs()
+        deleted = self._repository.purge_jobs()
+        self._observe(event="admin_purge_jobs", deleted_jobs=deleted)
+        return deleted
 
     def create_job(self, values: Mapping[str, Any]) -> int | None:
         return self._repository.create_job(values)

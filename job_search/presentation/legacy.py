@@ -20,18 +20,17 @@ from job_search.application.filtering_service import FilteringService
 from job_search.application.job_scoring_policy import PIPELINES
 from job_search.application.job_service import JobService
 from job_search.application.search_query_service import SearchQueryService
-from job_search.application.settings_service import SettingsService
 from job_search.composition import observability, runtime_configuration
 from job_search.errors import ClientInputError, translate_exception
 from job_search.presentation.company_routes import register_company_routes
+from job_search.presentation.config_routes import register_config_routes
 from job_search.presentation.job_routes import register_job_routes
-from job_search.presentation.read_routes import CONFIG_KEYS, register_read_routes
+from job_search.presentation.read_routes import register_read_routes
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
     RequestValidationError,
     boolean,
     choice,
-    environment_value,
     integer,
     optional_text,
     require_json_object,
@@ -48,6 +47,7 @@ routes = Blueprint("job_search", __name__)
 register_read_routes(routes)
 register_company_routes(routes)
 register_job_routes(routes)
+register_config_routes(routes)
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -115,10 +115,6 @@ def search_query_service() -> SearchQueryService:
     return dependency("search_query_service")
 
 
-def settings_service() -> SettingsService:
-    return dependency("settings_service")
-
-
 def filtering_service() -> FilteringService:
     return dependency("filtering_service")
 
@@ -159,10 +155,6 @@ def codex_cli_available():
     return dependency("configuration").cli_available()
 
 
-def capture_cache_enabled():
-    return dependency("configuration").enabled("JOB_SEARCH_USE_CAPTURE_CACHE")
-
-
 def full_capture_enabled():
     return dependency("configuration").enabled("JOB_SEARCH_ENABLE_FULL_CAPTURE")
 
@@ -181,10 +173,6 @@ def list_background_tasks(limit=10):
 
 def start_background_task(operation, job_ids):
     return background_task_service().start(operation, job_ids)
-
-
-def masked_config():
-    return dependency("configuration").masked(CONFIG_KEYS)
 
 
 def apply_filter(_connection, job_id):
@@ -676,74 +664,6 @@ def api_update_search_query(query_id):
         },
     )
     return jsonify({"search_queries": console_query_service().queries()})
-
-
-@routes.post("/api/config")
-def api_update_config():
-    payload = require_json_object(request.get_json(silent=True) or {})
-    config = dependency("configuration")
-    updates = {}
-    for key in CONFIG_KEYS:
-        if key not in payload:
-            continue
-        value = environment_value(payload.get(key, ""), key, max_length=4_000)
-        if key in {"JOB_SEARCH_ENABLE_GPT_SCORING", "JOB_SEARCH_USE_CAPTURE_CACHE"} and value not in {"0", "1"}:
-            raise RequestValidationError(f"{key} must be 0 or 1.")
-        if value or key == "CODEX_MODEL":
-            updates[key] = value
-    if not updates:
-        return jsonify(
-            {
-                "config": masked_config(),
-                "api_log_path": str(config.paths.api_log),
-                "event_log_path": str(config.paths.app_log),
-                "capture_dir": str(config.paths.captures),
-                "gpt_scoring_enabled": gpt_scoring_enabled(),
-                "capture_cache_enabled": capture_cache_enabled(),
-            }
-        )
-    config.update(updates)
-    if "CODEX_MODEL" in updates:
-        settings_service().save({"codex_model": updates["CODEX_MODEL"]})
-    return jsonify(
-        {
-            "config": masked_config(),
-            "settings": console_query_service().settings(),
-            "api_log_path": str(config.paths.api_log),
-            "event_log_path": str(config.paths.app_log),
-            "capture_dir": str(config.paths.captures),
-            "gpt_scoring_enabled": gpt_scoring_enabled(),
-            "capture_cache_enabled": capture_cache_enabled(),
-        }
-    )
-
-
-@routes.post("/api/admin/purge-jobs")
-def api_purge_jobs():
-    payload = require_json_object(request.get_json(silent=True) or {})
-    if payload.get("confirm") != "PURGE":
-        return jsonify({"error": "Type PURGE to confirm tracked job deletion."}), 400
-    before = job_service().purge_jobs()
-    log_event("admin_purge_jobs", deleted_jobs=before)
-    state = console_query_service().state(include_filtered=True)
-    return jsonify({"deleted_jobs": before, "jobs": state["jobs"], "discoveries": state["discoveries"]})
-
-
-@routes.post("/api/settings")
-def api_update_settings():
-    payload = require_json_object(request.get_json(silent=True) or {})
-    validated = {}
-    if "gpt_threshold" in payload:
-        validated["gpt_threshold"] = str(integer(payload["gpt_threshold"], "gpt_threshold", minimum=0, maximum=100))
-    if "user_threshold" in payload:
-        validated["user_threshold"] = str(integer(payload["user_threshold"], "user_threshold", minimum=0, maximum=100))
-    if "codex_model" in payload:
-        validated["codex_model"] = optional_text(payload["codex_model"], "codex_model", max_length=200)
-    settings_service().save(validated)
-    filtering_service().refresh_all()
-    return jsonify(
-        {"settings": console_query_service().settings(), "jobs": console_query_service().jobs(include_filtered=True)}
-    )
 
 
 @routes.errorhandler(Exception)

@@ -25,6 +25,40 @@ from job_search.presentation.factory import create_app
 
 
 class CompositionTests(unittest.TestCase):
+    def test_injected_config_settings_and_purge_routes_enforce_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "configuration.sqlite3"
+            dependencies = presentation_dependencies(database)
+            try:
+                dependencies.startup_service.initialize()
+                with database_session(database) as connection:
+                    connection.execute(
+                        "INSERT INTO jobs(created_at, updated_at, company, title, status) "
+                        "VALUES (1, 1, 'Example', 'Architect', 'researching')"
+                    )
+                client = create_app(dependencies=dependencies, route_blueprint=legacy.routes).test_client()
+
+                invalid = client.post("/api/config", json={"JOB_SEARCH_ENABLE_GPT_SCORING": "yes"})
+                config = client.post("/api/config", json={"CODEX_MODEL": "test-model"})
+                settings = client.post("/api/settings", json={"gpt_threshold": 55})
+                denied_purge = client.post("/api/admin/purge-jobs", json={"confirm": "no"})
+                confirmed_purge = client.post("/api/admin/purge-jobs", json={"confirm": "PURGE"})
+
+                self.assertEqual(invalid.status_code, 400, "Invalid runtime toggles must be rejected.")
+                self.assertEqual(config.status_code, 200, "Valid runtime configuration should be accepted.")
+                self.assertEqual(settings.get_json()["settings"]["gpt_threshold"], "55")
+                self.assertEqual(denied_purge.status_code, 400, "Purge requires exact confirmation.")
+                self.assertEqual(confirmed_purge.get_json()["deleted_jobs"], 1)
+                with database_session(database) as connection:
+                    model = connection.execute("SELECT value FROM settings WHERE key = 'codex_model'").fetchone()[0]
+                    remaining = connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+                self.assertEqual(model, "test-model", "The model update should be mirrored into the injected database.")
+                self.assertEqual(remaining, 0, "Confirmed purge should remove tracked jobs.")
+            finally:
+                for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
+                    for handler in logger.handlers:
+                        handler.close()
+
     def test_injected_job_routes_validate_and_persist_mutations(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "jobs.sqlite3"

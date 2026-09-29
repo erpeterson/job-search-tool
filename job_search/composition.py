@@ -18,6 +18,7 @@ from job_search.application.background_task_service import BackgroundTaskService
 from job_search.application.bulk_task_service import BulkTaskService
 from job_search.application.codex_scoring_workflow import CodexScoringWorkflow
 from job_search.application.company_service import CompanyService
+from job_search.application.configuration_service import ConfigurationService
 from job_search.application.console_query_service import ConsoleQueryService
 from job_search.application.contracts import Telemetry
 from job_search.application.discovery_policy import MIN_ANNUAL_COMPENSATION, DiscoveryPolicy
@@ -213,6 +214,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     clients = outbound_clients(observed, clean_text, clean_url, source_id, dedupe_results)
 
     filtering = observed_filtering_service(database_path, configuration, observed.telemetry)
+    settings_workflow = SettingsService(SqliteSettingsRepository(connect), filtering.refresh_all)
 
     def scrape(url: str, force_refresh: bool):
         return clients.boards.scrape(url, force_refresh=force_refresh)
@@ -265,7 +267,8 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         job_service=jobs,
         company_service=CompanyService(SqliteCompanyRepository(connect), lambda: int(time.time())),
         search_query_service=SearchQueryService(SqliteSearchQueryRepository(connect)),
-        settings_service=SettingsService(SqliteSettingsRepository(connect)),
+        settings_service=settings_workflow,
+        configuration_service=ConfigurationService(configuration, settings_workflow),
         console_query_service=ConsoleQueryService(SqliteConsoleQueryRepository(connect, packets_catalog.list)),
         packet_catalog=packets_catalog,
         packet_content_service=packet_content_service(database_path),
@@ -455,7 +458,9 @@ def search_query_service(database_path: Path) -> SearchQueryService:
 
 
 def settings_service(database_path: Path) -> SettingsService:
-    return SettingsService(SqliteSettingsRepository(lambda: database_session(database_path)))
+    return SettingsService(
+        SqliteSettingsRepository(lambda: database_session(database_path)), filtering_service(database_path).refresh_all
+    )
 
 
 def filtering_service(

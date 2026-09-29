@@ -18,6 +18,7 @@ class PresentationDependencies:
     company_service: Any
     search_query_service: Any
     settings_service: Any
+    configuration_service: Any
     console_query_service: Any
     packet_catalog: Any
     packet_content_service: Any
