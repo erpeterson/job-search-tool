@@ -19,7 +19,6 @@ from job_search.composition import (
     task_execution_service,
 )
 from job_search.http_client import OutboundRequestError, SafeHttpClient
-from job_search.presentation import legacy
 from job_search.presentation.dependencies import PresentationDependencies
 from job_search.presentation.factory import create_app
 
@@ -42,7 +41,7 @@ class CompositionTests(unittest.TestCase):
             try:
                 dependencies.startup_service.initialize()
                 injected = replace(dependencies, search_run_service=runner)
-                client = create_app(dependencies=injected, route_blueprint=legacy.routes).test_client()
+                client = create_app(dependencies=injected).test_client()
 
                 invalid = client.post("/api/search/queries", json={"keywords": ""})
                 created = client.post(
@@ -84,7 +83,7 @@ class CompositionTests(unittest.TestCase):
                         "INSERT INTO jobs(created_at, updated_at, company, title, status) "
                         "VALUES (1, 1, 'Example', 'Architect', 'researching')"
                     )
-                client = create_app(dependencies=dependencies, route_blueprint=legacy.routes).test_client()
+                client = create_app(dependencies=dependencies).test_client()
 
                 invalid = client.post("/api/config", json={"JOB_SEARCH_ENABLE_GPT_SCORING": "yes"})
                 config = client.post("/api/config", json={"CODEX_MODEL": "test-model"})
@@ -118,7 +117,7 @@ class CompositionTests(unittest.TestCase):
                         "INSERT INTO jobs(created_at, updated_at, company, title, pipeline, status) "
                         "VALUES (1, 1, 'Example', 'Architect', 'Executive IC', 'researching')"
                     ).lastrowid
-                client = create_app(dependencies=dependencies, route_blueprint=legacy.routes).test_client()
+                client = create_app(dependencies=dependencies).test_client()
 
                 invalid_score = client.post(f"/api/jobs/{job_id}/score-user", json={"scorecard": []})
                 saved_score = client.post(
@@ -148,7 +147,7 @@ class CompositionTests(unittest.TestCase):
             dependencies = presentation_dependencies(database)
             try:
                 dependencies.startup_service.initialize()
-                client = create_app(dependencies=dependencies, route_blueprint=legacy.routes).test_client()
+                client = create_app(dependencies=dependencies).test_client()
 
                 invalid = client.post("/api/companies", json={"interest_score": 101})
                 created = client.post("/api/companies", json={"company": " Example-Co ", "status": "target"})
@@ -187,8 +186,8 @@ class CompositionTests(unittest.TestCase):
                         "VALUES (1, 1, 'InjectedCo', 'injectedco')"
                     ).lastrowid
                 task = first.background_task_service.start("scorecards", [job_id])
-                first_app = create_app(dependencies=first, route_blueprint=legacy.routes)
-                second_app = create_app(dependencies=second, route_blueprint=legacy.routes)
+                first_app = create_app(dependencies=first)
+                second_app = create_app(dependencies=second)
 
                 client = first_app.test_client()
                 first_response = client.get("/api/state")
@@ -278,15 +277,20 @@ class CompositionTests(unittest.TestCase):
                     handler.close()
 
     def test_http_request_correlation_reaches_telemetry_and_is_cleared(self):
-        with patch.object(legacy.event_logger, "info") as emit:
-            response = app.app.test_client().post(
-                "/api/jobs", json={"url": "invalid"}, headers={"X-Request-ID": "request-456"}
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            dependencies = presentation_dependencies(Path(directory) / "jobs.sqlite3", {})
+            dependencies.startup_service.initialize()
+            with patch.object(dependencies.observability.event_logger, "info") as emit:
+                response = (
+                    create_app(dependencies=dependencies)
+                    .test_client()
+                    .post("/api/jobs", json={"url": "invalid"}, headers={"X-Request-ID": "request-456"})
+                )
 
-        self.assertEqual(response.status_code, 400)
-        event = json.loads(emit.call_args.args[0])
-        self.assertEqual(event["correlation_id"], "request-456")
-        self.assertIsNone(legacy.OBSERVABILITY.correlation_ids.get(), "Request context must be cleared")
+            self.assertEqual(response.status_code, 400)
+            event = json.loads(emit.call_args.args[0])
+            self.assertEqual(event["correlation_id"], "request-456")
+            self.assertIsNone(dependencies.observability.correlation_ids.get(), "Request context must be cleared")
 
     def test_observability_composes_redacted_captures_and_request_correlation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -323,34 +327,37 @@ class CompositionTests(unittest.TestCase):
         self.assertIsNotNone(app.create_app)
 
     def test_factory_injects_service_without_constructing_flask_bound_dependencies(self):
-        fake_service = object()
-        web_app = create_app(
-            dependencies=replace(presentation_dependencies(Path("unused.sqlite3")), job_service=fake_service),
-            route_blueprint=legacy.routes,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            dependencies = presentation_dependencies(Path(directory) / "jobs.sqlite3", {})
 
-        with web_app.app_context():
-            self.assertIs(
-                legacy.job_service(), fake_service, "The composition root must honor an injected service fake."
-            )
+            class FakeReads:
+                def job(self, job_id):
+                    return {"id": job_id, "company": "InjectedCo"}
+
+            web_app = create_app(dependencies=replace(dependencies, console_query_service=FakeReads()))
+            response = web_app.test_client().get("/api/jobs/7")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["job"]["company"], "InjectedCo")
 
     def test_factory_rejects_missing_dependencies_at_construction(self):
         with self.assertRaisesRegex(ValueError, "Web dependencies"):
-            create_app(route_blueprint=legacy.routes)
+            create_app()
         with self.assertRaisesRegex(TypeError, "required positional"):
             PresentationDependencies(job_service=object())
-        complete = presentation_dependencies(Path("unused.sqlite3"))
-        for name in (
-            "job_service",
-            "configuration",
-            "observability",
-            "outbound_clients",
-            "codex_gateway",
-            "database_path",
-        ):
-            with self.subTest(dependency=name):
-                with self.assertRaisesRegex(ValueError, name):
-                    replace(complete, **{name: None})
+        with tempfile.TemporaryDirectory() as directory:
+            complete = presentation_dependencies(Path(directory) / "jobs.sqlite3", {})
+            for name in (
+                "job_service",
+                "configuration",
+                "observability",
+                "outbound_clients",
+                "codex_gateway",
+                "database_path",
+            ):
+                with self.subTest(dependency=name):
+                    with self.assertRaisesRegex(ValueError, name):
+                        replace(complete, **{name: None})
 
     def test_web_runtime_ports_use_the_supplied_database_root(self):
         with tempfile.TemporaryDirectory() as directory:

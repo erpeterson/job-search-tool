@@ -318,7 +318,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.4d.1 — Eliminate duplicate legacy helpers.** Point direct parser,
     Codex-model, and rendering tests at their owning adapters; remove tests
     that exercise only dead compatibility behavior, then commit.
-  - [ ] **1.4d.2 — Migrate test fixtures off legacy globals.** Construct
+  - [x] **1.4d.2 — Migrate test fixtures off legacy globals.** Construct
     configuration, observability, sessions, and injected app dependencies in
     tests without mutating presentation module state; commit per test family.
     - [x] **1.4d.2a — Decouple helper tests.** Build configuration and
@@ -327,12 +327,12 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
       with temporary paths and injected app dependencies, then commit.
     - [x] **1.4d.2c — Decouple level tests.** Use temporary database and
       injected app fixtures without module mutation, then commit.
-    - [ ] **1.4d.2d — Decouple workflow/composition tests.** Replace remaining
+    - [x] **1.4d.2d — Decouple workflow/composition tests.** Replace remaining
       legacy helper imports and module mutation with direct service fakes and
       injected routes, then check 1.4d.2 and commit.
       - [x] **1.4d.2d.1 — Isolate workflow tests.** Use temporary paths and
         construct an injected app per test override, then commit.
-      - [ ] **1.4d.2d.2 — Isolate composition tests.** Remove direct legacy
+      - [x] **1.4d.2d.2 — Isolate composition tests.** Remove direct legacy
         imports and verify request behavior through injected dependencies,
         then check 1.4d.2d and 1.4d.2 and commit.
   - [ ] **1.4d.3 — Replace legacy route registration.** Move security hooks,
