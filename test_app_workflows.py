@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from job_search.application.discovery_policy import MIN_ANNUAL_COMPENSATION, DiscoveryPolicy
 from job_search.application.discovery_service import UNKNOWN_LEVEL_ASSESSMENT
@@ -139,10 +140,22 @@ class ApplicationWorkflowTests(unittest.TestCase):
     def test_packet_attachment_rejects_missing_or_outside_directory(self):
         job_id = self.create_job()
         missing = self.client.post(f"/api/jobs/{job_id}/application-packet/attach", json={})
-        traversal = self.client.post(f"/api/jobs/{job_id}/application-packet/attach", json={"path": "../outside"})
+        events = []
+        with patch.object(
+            self.dependencies.observability.telemetry,
+            "event",
+            side_effect=lambda name, **fields: events.append((name, fields)),
+        ):
+            traversal = self.client.post(f"/api/jobs/{job_id}/application-packet/attach", json={"path": "../outside"})
 
         self.assertEqual(missing.status_code, 400)
         self.assertEqual(traversal.status_code, 400)
+        self.assertEqual(traversal.get_json()["error"], "Invalid or unavailable application packet path.")
+        self.assertEqual(events[-1][0], "packet_attachment_rejected")
+        self.assertEqual(events[-1][1]["error_code"], "PACKET_ATTACHMENT_REJECTED")
+        self.assertEqual(events[-1][1]["job_id"], job_id)
+        self.assertEqual(events[-1][1]["cause"], "ValueError")
+        self.assertNotIn("../outside", str(events), "Packet path telemetry must not retain untrusted paths.")
 
     def test_admin_purge_requires_confirmation_then_removes_jobs(self):
         self.create_job()

@@ -387,6 +387,13 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     - [ ] **2c.3c — Boundary and CLI catches.** Make validation/security
       probes and top-level handlers observable, preserve safe HTTP responses,
       then check 2c.3 and 2c and commit.
+      - [x] **2c.3c.1 — Sanitize HTTP error mapping.** Keep packet and
+        unexpected-error responses public-safe with coded telemetry; commit.
+      - [ ] **2c.3c.2 — Observe validation/security probes.** Route parsing
+        recovery through injected events or a documented startup sink; commit.
+      - [ ] **2c.3c.3 — Harden CLI fatal handling.** Emit one structured fatal
+        record and a nonzero result for web/worker/scheduler failures, then
+        check 2c.3c, 2c.3, and 2c and commit.
 - [ ] **2d — Prove the failure paths.** Add deterministic tests for malformed
   JSON-LD, processor failure, and heartbeat failure that assert both persisted
   state and event fields. Add an AST inventory test keyed by module/function

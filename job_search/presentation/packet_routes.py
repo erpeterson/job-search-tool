@@ -16,7 +16,7 @@ def _log_failure(event, error_code, operation, job_id, exc):
         operation=operation,
         job_id=job_id,
         error_type=type(exc).__name__,
-        cause=str(exc)[:500],
+        cause=type(exc).__name__,
     )
 
 
@@ -46,7 +46,7 @@ def api_attach_application_packet(job_id):
         result = dependency("packet_attachment_service").attach(job_id, packet_path)
     except ValueError as exc:
         _log_failure("packet_attachment_rejected", "PACKET_ATTACHMENT_REJECTED", "attach", job_id, exc)
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"error": "Invalid or unavailable application packet path."}), 400
     if result is None:
         return jsonify({"error": "Job not found"}), 404
     return jsonify({"job": result["job"], "application_packets": dependency("console_query_service").packets()})
@@ -65,7 +65,7 @@ def api_application_packet_content(job_id):
         packet = dependency("packet_content_service").read(job["application_packet_path"], filename)
     except (ValueError, FileNotFoundError) as exc:
         _log_failure("packet_content_path_rejected", "PACKET_CONTENT_PATH_REJECTED", "content", job_id, exc)
-        return jsonify({"error": str(exc)}), 404
+        return jsonify({"error": "Markdown file not found."}), 404
     return jsonify(packet)
 
 
@@ -82,7 +82,7 @@ def api_application_packet_render(job_id):
         packet = dependency("packet_content_service").read(job["application_packet_path"], filename)
     except (ValueError, FileNotFoundError) as exc:
         _log_failure("packet_render_path_rejected", "PACKET_RENDER_PATH_REJECTED", "render", job_id, exc)
-        return Response(str(exc), status=404, mimetype="text/plain")
+        return Response("Markdown file not found.", status=404, mimetype="text/plain")
     return Response(render_packet_page(packet, filename, job), mimetype="text/html")
 
 

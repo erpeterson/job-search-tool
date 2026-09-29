@@ -87,6 +87,8 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(events[-1][0], "api_unhandled_exception")
         self.assertEqual(events[-1][1]["error_code"], "API_UNHANDLED_EXCEPTION")
         self.assertEqual(events[-1][1]["operation"], "job_search.api_job")
+        self.assertEqual(events[-1][1]["cause"], "RuntimeError")
+        self.assertNotIn("private-database-secret", str(events))
 
 
 if __name__ == "__main__":

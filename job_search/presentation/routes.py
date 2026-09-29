@@ -61,6 +61,7 @@ def log_event(event_type, **fields):
 
 @routes.errorhandler(Exception)
 def api_error(exc):
+    original_error_type = type(exc).__name__
     if isinstance(exc, RequestValidationError):
         exc = ClientInputError(str(exc))
     if isinstance(exc, ClientInputError):
@@ -71,7 +72,7 @@ def api_error(exc):
             component="presentation.api",
             operation=request.endpoint,
             path=request.path,
-            message=str(exc),
+            cause=original_error_type,
         )
         return jsonify(mapped.body), mapped.status_code
     if isinstance(exc, HTTPException):
@@ -82,6 +83,7 @@ def api_error(exc):
             operation=request.endpoint,
             path=request.path,
             status_code=exc.code,
+            cause=original_error_type,
         )
         return exc
     mapped = translate_exception(exc)
@@ -92,6 +94,6 @@ def api_error(exc):
         operation=request.endpoint,
         path=request.path,
         error_type=type(exc).__name__,
-        message=str(exc)[:1000],
+        cause=original_error_type,
     )
     return jsonify(mapped.body), mapped.status_code
