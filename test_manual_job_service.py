@@ -21,6 +21,7 @@ class ManualJobServiceTests(unittest.TestCase):
         self.filtered = []
         self.scored = []
         self.failures = []
+        self.skipped = []
         return ManualJobService(
             repository,
             scraper,
@@ -29,6 +30,8 @@ class ManualJobServiceTests(unittest.TestCase):
             self.scored.append,
             availability,
             lambda operation, error, context: self.failures.append((operation, str(error), dict(context))),
+            lambda job_id, reason: self.skipped.append((job_id, reason)),
+            lambda: 100,
         )
 
     @staticmethod
@@ -72,6 +75,7 @@ class ManualJobServiceTests(unittest.TestCase):
         self.assertIn("Scrape failed", repository.created[0]["notes"])
         self.assertEqual(self.failures[0][0], "scrape")
         self.assertIn("Codex scoring skipped", result.score_error)
+        self.assertEqual(self.skipped, [(7, "Codex scoring is disabled.")])
 
     def test_duplicate_returns_existing_job_without_scoring(self):
         repository = FakeJobs(create_result=None)

@@ -17,19 +17,14 @@ from werkzeug.exceptions import HTTPException
 
 from job_search.application.discovery_utils import clean_text
 from job_search.application.filtering_service import FilteringService
-from job_search.application.job_scoring_policy import (
-    PIPELINES,
-    RUBRIC_FIELDS,
-)
+from job_search.application.job_scoring_policy import PIPELINES
 from job_search.application.job_service import JobService
-from job_search.application.manual_job_service import ManualJobService
-from job_search.application.rescrape_service import RescrapeService
-from job_search.application.scoring_service import ScoringService
 from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
 from job_search.composition import observability, runtime_configuration
 from job_search.errors import ClientInputError, translate_exception
 from job_search.presentation.company_routes import register_company_routes
+from job_search.presentation.job_routes import register_job_routes
 from job_search.presentation.read_routes import CONFIG_KEYS, register_read_routes
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
@@ -37,7 +32,6 @@ from job_search.validation import (
     boolean,
     choice,
     environment_value,
-    http_url,
     integer,
     optional_text,
     require_json_object,
@@ -53,6 +47,7 @@ APPLICATIONS_DIR = RUNTIME_CONFIG.paths.applications
 routes = Blueprint("job_search", __name__)
 register_read_routes(routes)
 register_company_routes(routes)
+register_job_routes(routes)
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -99,16 +94,6 @@ def assign_request_correlation_id():
     return None
 
 
-JOB_STATUSES = {
-    "researching",
-    "interested",
-    "applied",
-    "interviewing",
-    "offer",
-    "rejected",
-    "declined",
-    "paused",
-}
 SUPPORTED_BOARDS = {"linkedin", "indeed"}
 
 
@@ -138,24 +123,12 @@ def filtering_service() -> FilteringService:
     return dependency("filtering_service")
 
 
-def manual_job_service() -> ManualJobService:
-    return dependency("manual_job_service")
-
-
-def rescrape_service() -> RescrapeService:
-    return dependency("rescrape_service")
-
-
 def packet_attachment_service():
     return dependency("packet_attachment_service")
 
 
 def packet_content_service():
     return dependency("packet_content_service")
-
-
-def scoring_service() -> ScoringService:
-    return dependency("scoring_service")
 
 
 def console_query_service():
@@ -649,74 +622,6 @@ def api_application_packet_render(job_id):
         return Response(html, mimetype="text/html")
 
 
-@routes.post("/api/jobs/<int:job_id>/scrape")
-def api_rescrape_job(job_id):
-    payload = request_json_object()
-    force_refresh = boolean(payload.get("force_refresh"), "force_refresh", default=True)
-    result = rescrape_service().rescrape(job_id, force_refresh=force_refresh)
-    if result.job is None:
-        return jsonify({"error": "Job not found"}), 404
-    if result.scraped is None:
-        return jsonify({"error": "Job does not have a URL to scrape."}), 400
-    log_event(
-        "manual_job_rescraped",
-        job_id=job_id,
-        url=result.job["url"],
-        company=result.scraped.get("company"),
-        title=result.scraped.get("title"),
-        force_refresh=force_refresh,
-    )
-    return jsonify({"job": job_service().get_job(job_id), "scraped": result.scraped})
-
-
-@routes.delete("/api/jobs/<int:job_id>")
-def api_delete_job(job_id):
-    payload = request_json_object()
-    if payload.get("confirm") != "DELETE":
-        return jsonify({"error": "Type DELETE to confirm job deletion."}), 400
-    job = console_query_service().job(job_id)
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-    job_service().delete_job(job_id)
-    log_event("manual_job_deleted", job_id=job_id, company=job["company"], title=job["title"], url=job["url"])
-    return jsonify({"deleted_job_id": job_id, "jobs": console_query_service().jobs(include_filtered=True)})
-
-
-@routes.post("/api/jobs")
-def api_create_job():
-    payload = require_json_object(request.get_json(silent=True) or {})
-    ts = now()
-    url = http_url(payload.get("url"))
-    pipeline = choice(payload.get("pipeline"), "pipeline", PIPELINES, required=True)
-    status = choice(payload.get("status", "researching"), "status", JOB_STATUSES, required=True)
-    result = manual_job_service().create(
-        {
-            "created_at": ts,
-            "updated_at": ts,
-            "company": optional_text(payload.get("company", ""), "company", max_length=300),
-            "title": optional_text(payload.get("title", ""), "title", max_length=500),
-            "url": url,
-            "location": optional_text(payload.get("location", ""), "location", max_length=500),
-            "pipeline": pipeline,
-            "status": status,
-            "posting_text": optional_text(payload.get("posting_text", ""), "posting_text", max_length=100_000),
-            "notes": optional_text(payload.get("notes", ""), "notes", max_length=20_000),
-        },
-        force_refresh=boolean(payload.get("force_refresh"), "force_refresh", default=False),
-    )
-    if result.job_id is None:
-        return jsonify({"error": "This job URL is already tracked.", "job": result.existing_job}), 409
-    if result.score_error and result.score_error.startswith("Automatic Codex scoring skipped:"):
-        log_event("manual_job_auto_score_skipped", job_id=result.job_id, reason=result.score_error)
-    return jsonify(
-        {
-            "job": job_service().get_job(result.job_id),
-            "scrape_error": result.scrape_error,
-            "score_error": result.score_error,
-        }
-    ), 201
-
-
 @routes.post("/api/search/run")
 def api_run_search():
     payload = require_json_object(request.get_json(silent=True) or {})
@@ -822,69 +727,6 @@ def api_purge_jobs():
     log_event("admin_purge_jobs", deleted_jobs=before)
     state = console_query_service().state(include_filtered=True)
     return jsonify({"deleted_jobs": before, "jobs": state["jobs"], "discoveries": state["discoveries"]})
-
-
-@routes.post("/api/jobs/<int:job_id>/score-gpt")
-def api_score_gpt(job_id):
-    result = scoring_service().score(job_id)
-    if result.state == "missing":
-        return jsonify({"error": "Job not found"}), 404
-    if result.state == "unavailable":
-        return jsonify({"error": result.unavailable_reason}), 409
-    return jsonify({"job": result.job, "raw_score": result.raw_score})
-
-
-@routes.post("/api/jobs/<int:job_id>/score-user")
-def api_score_user(job_id):
-    payload = require_json_object(request.get_json(silent=True) or {})
-    raw_scorecard = payload.get("scorecard", {})
-    if not isinstance(raw_scorecard, dict):
-        raise RequestValidationError("scorecard must be a JSON object.")
-    scorecard = {field: integer(raw_scorecard.get(field, 0), field, minimum=0, maximum=10) for field in RUBRIC_FIELDS}
-    total = integer(payload["total_score"], "total_score", minimum=0, maximum=100) if "total_score" in payload else None
-    rationale = optional_text(payload.get("user_rationale", ""), "user_rationale", max_length=20_000)
-    if not dependency("user_score_service").save(job_id, scorecard, total, rationale):
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({"job": console_query_service().job(job_id)})
-
-
-@routes.post("/api/jobs/<int:job_id>/interactions")
-def api_add_interaction(job_id):
-    payload = require_json_object(request.get_json(silent=True) or {})
-    values = {
-        "occurred_on": optional_text(payload.get("occurred_on", ""), "occurred_on", max_length=40),
-        "person_name": optional_text(payload.get("person_name", ""), "person_name", max_length=300),
-        "person_role": optional_text(payload.get("person_role", ""), "person_role", max_length=300),
-        "channel": optional_text(payload.get("channel", ""), "channel", max_length=100),
-        "summary": optional_text(payload.get("summary", ""), "summary", max_length=20_000),
-        "notes_to_self": optional_text(payload.get("notes_to_self", ""), "notes_to_self", max_length=20_000),
-        "next_step": optional_text(payload.get("next_step", ""), "next_step", max_length=2_000),
-    }
-    if not job_service().add_interaction(job_id, values, now()):
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({"job": console_query_service().job(job_id)}), 201
-
-
-@routes.post("/api/jobs/<int:job_id>/notes")
-def api_add_note(job_id):
-    payload = require_json_object(request.get_json(silent=True) or {})
-    note = optional_text(payload.get("note", ""), "note", max_length=20_000)
-    if not note:
-        raise RequestValidationError("note is required.")
-    service = job_service()
-    if not service.add_note(job_id, note, now()):
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({"job": console_query_service().job(job_id)}), 201
-
-
-@routes.post("/api/jobs/<int:job_id>/status")
-def api_update_status(job_id):
-    payload = require_json_object(request.get_json(silent=True) or {})
-    status = choice(payload.get("status", "researching"), "status", JOB_STATUSES, required=True)
-    service = job_service()
-    if not service.update_status(job_id, status, now()):
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({"job": console_query_service().job(job_id)})
 
 
 @routes.post("/api/settings")

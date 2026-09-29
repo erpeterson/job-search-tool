@@ -129,6 +129,8 @@ class LevelEquivalencyTests(unittest.TestCase):
             lambda job_id: FakeScoringWorkflow().populate_by_id(job_id, force_refresh=False),
             lambda: None,
             lambda *_args: None,
+            lambda *_args: None,
+            lambda: 100,
         )
         job_search_app.app.extensions["job_search.dependencies"] = replace(
             original_dependencies, manual_job_service=manual

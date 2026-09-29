@@ -22,11 +22,13 @@ class RescrapeService:
         scraper: Callable[[str, bool], Mapping[str, Any]],
         refresh_filter: Callable[[int], object],
         clock: Callable[[], int],
+        observe: Callable[..., None],
     ) -> None:
         self._repository = repository
         self._scraper = scraper
         self._refresh_filter = refresh_filter
         self._clock = clock
+        self._observe = observe
 
     def rescrape(self, job_id: int, *, force_refresh: bool) -> RescrapeResult:
         job = self._repository.get_job(job_id)
@@ -39,6 +41,14 @@ class RescrapeService:
         notes = self._append_note(str(job.get("notes") or ""), "Re-scraped posting URL.")
         self._repository.rescrape_job(job_id, job, scraped, notes, self._clock())
         self._refresh_filter(job_id)
+        self._observe(
+            "manual_job_rescraped",
+            job_id=job_id,
+            url=job["url"],
+            company=scraped.get("company"),
+            title=scraped.get("title"),
+            force_refresh=force_refresh,
+        )
         return RescrapeResult(self._repository.get_job(job_id), scraped)
 
     @staticmethod

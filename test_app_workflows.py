@@ -9,7 +9,7 @@ from pathlib import Path
 from job_search.application.discovery_policy import MIN_ANNUAL_COMPENSATION, DiscoveryPolicy
 from job_search.application.discovery_service import UNKNOWN_LEVEL_ASSESSMENT
 from job_search.application.discovery_utils import clean_text
-from job_search.application.job_scoring_policy import ORACLE_IC6_LEVEL_REFERENCE, normalize_pipeline
+from job_search.application.job_scoring_policy import ORACLE_IC6_LEVEL_REFERENCE, RUBRIC_FIELDS, normalize_pipeline
 from job_search.application.manual_job_service import ManualJobService
 from job_search.application.rescrape_service import RescrapeService
 from job_search.composition import (
@@ -118,7 +118,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
         )
         score = self.client.post(
             f"/api/jobs/{job_id}/score-user",
-            json={"scorecard": {field: 8 for field in workflow_app.RUBRIC_FIELDS}, "user_rationale": "Aligned."},
+            json={"scorecard": {field: 8 for field in RUBRIC_FIELDS}, "user_rationale": "Aligned."},
         )
         status = self.client.post(f"/api/jobs/{job_id}/status", json={"status": "interested"})
 
@@ -281,7 +281,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
     def test_refinement_and_codex_classification_use_fake_model_boundary(self):
         score = {
             "total_score": 85,
-            "scorecard": {field: 8 for field in workflow_app.RUBRIC_FIELDS},
+            "scorecard": {field: 8 for field in RUBRIC_FIELDS},
             "pipeline": "Executive IC",
             "level_assessment": "IC6-equivalent",
             "downlevel": False,
@@ -359,7 +359,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_codex_scoring_persists_a_valid_fake_scorecard(self):
         job_id = self.create_job()
-        scorecard = {field: 8 for field in workflow_app.RUBRIC_FIELDS}
+        scorecard = {field: 8 for field in RUBRIC_FIELDS}
         score = {
             "total_score": 88,
             "pipeline": "Executive IC",
@@ -453,11 +453,15 @@ class ApplicationWorkflowTests(unittest.TestCase):
             lambda _job_id: None,
             lambda: "Codex scoring is disabled.",
             lambda *_args: None,
+            lambda *_args: None,
+            lambda: 100,
         )
         workflow_app.app.extensions["job_search.dependencies"] = replace(
             original_dependencies,
             manual_job_service=manual,
-            rescrape_service=RescrapeService(repository, fake_scrape, filtering.refresh_job, lambda: 1),
+            rescrape_service=RescrapeService(
+                repository, fake_scrape, filtering.refresh_job, lambda: 1, lambda *_args, **_kwargs: None
+            ),
         )
         try:
             rescraped = self.client.post(f"/api/jobs/{job_id}/scrape", json={"force_refresh": True})
@@ -513,9 +517,9 @@ class ApplicationWorkflowTests(unittest.TestCase):
         originals = (
             workflow_app.run_job_search,
             workflow_app.gpt_scoring_enabled,
-            workflow_app.scoring_service,
             workflow_app.create_application_packet,
         )
+        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
         workflow_app.run_job_search = lambda **_kwargs: {"status": "complete", "found_count": 0}
         workflow_app.gpt_scoring_enabled = lambda: True
 
@@ -526,12 +530,14 @@ class ApplicationWorkflowTests(unittest.TestCase):
                     (),
                     {
                         "state": "scored",
-                        "job": workflow_app.job_service().get_job(current_job_id),
+                        "job": original_dependencies.job_service.get_job(current_job_id),
                         "raw_score": {"total_score": 89},
                     },
                 )()
 
-        workflow_app.scoring_service = lambda: FakeScoringService()
+        workflow_app.app.extensions["job_search.dependencies"] = replace(
+            original_dependencies, scoring_service=FakeScoringService()
+        )
         workflow_app.create_application_packet = lambda *_args, **_kwargs: {
             "path": "applications/generated",
             "name": "generated",
@@ -545,9 +551,9 @@ class ApplicationWorkflowTests(unittest.TestCase):
             (
                 workflow_app.run_job_search,
                 workflow_app.gpt_scoring_enabled,
-                workflow_app.scoring_service,
                 workflow_app.create_application_packet,
             ) = originals
+            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         self.assertEqual(updated_company.get_json()["company"]["status"], "target")
         self.assertEqual(updated_company.get_json()["company"]["interest_score"], 95)

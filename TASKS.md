@@ -287,13 +287,13 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.4b.1 — Extract company-interest routes.** Move normalization and
     timestamp decisions to the company service; verify create/update through
     the injected app and commit.
-  - [ ] **1.4b.2 — Extract job routes.** Move job mutation, scoring, and scrape
+  - [x] **1.4b.2 — Extract job routes.** Move job mutation, scoring, and scrape
     endpoints to an injected route module; verify success and validation paths
     and commit.
     - [x] **1.4b.2a — Move user-score orchestration.** Compute the default total,
       persist the scorecard, and refresh filtering in an injected application
       service; cover success and missing-job paths, then commit.
-    - [ ] **1.4b.2b — Move job endpoints.** Register job mutation, scoring, and
+    - [x] **1.4b.2b — Move job endpoints.** Register job mutation, scoring, and
       scrape routes from a narrow module, preserving validation and API
       responses; verify with the injected app, then check 1.4b.2 and commit.
   - [ ] **1.4b.3 — Extract configuration routes.** Move settings, runtime

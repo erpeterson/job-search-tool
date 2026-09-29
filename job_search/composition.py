@@ -209,7 +209,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     scorer = job_score_service(configuration, gateway)
     scoring_workflow = codex_scoring_workflow(database_path, configuration, scorer, observed.telemetry)
     draft = packet_draft_service(configuration, observed, gateway)
-    jobs = JobService(SqliteJobRepository(connect), observe_job)
+    jobs = JobService(SqliteJobRepository(connect), observe_job, lambda: int(time.time()))
     clients = outbound_clients(observed, clean_text, clean_url, source_id, dedupe_results)
 
     filtering = observed_filtering_service(database_path, configuration, observed.telemetry)
@@ -244,6 +244,10 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         lambda job_id: scoring_workflow.populate_by_id(job_id, force_refresh=False),
         manual_scoring_availability,
         report_manual_failure,
+        lambda job_id, reason: observed.telemetry.event(
+            "manual_job_auto_score_skipped", job_id=job_id, reason=f"Automatic Codex scoring skipped: {reason}"
+        ),
+        lambda: int(time.time()),
     )
 
     discovery, search = compose_search_workflows(
@@ -282,7 +286,11 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         packet_generation_service=packet_generation_service(database_path, draft, observed.telemetry),
         manual_job_service=manual,
         rescrape_service=rescrape_service(
-            SqliteJobRepository(connect), scrape, filtering.refresh_job, lambda: int(time.time())
+            SqliteJobRepository(connect),
+            scrape,
+            filtering.refresh_job,
+            lambda: int(time.time()),
+            observed.telemetry.event,
         ),
         discovery_service=discovery,
         search_run_service=search,
@@ -433,7 +441,9 @@ def packet_draft_service(
 
 
 def job_service(database_path: Path, observe: Any = None) -> JobService:
-    return JobService(SqliteJobRepository(lambda: database_session(database_path)), observe=observe)
+    return JobService(
+        SqliteJobRepository(lambda: database_session(database_path)), observe=observe, now=lambda: int(time.time())
+    )
 
 
 def company_service(database_path: Path) -> CompanyService:
@@ -835,8 +845,8 @@ def scheduler_process_dependencies(
     return SchedulerProcessDependencies(database_path, SchedulerLeaseRepository(database_path), search, observed)
 
 
-def rescrape_service(repository: Any, scraper: Any, refresh_filter: Any, clock: Any) -> RescrapeService:
-    return RescrapeService(repository, scraper, refresh_filter, clock)
+def rescrape_service(repository: Any, scraper: Any, refresh_filter: Any, clock: Any, observe: Any) -> RescrapeService:
+    return RescrapeService(repository, scraper, refresh_filter, clock, observe)
 
 
 __all__ = [

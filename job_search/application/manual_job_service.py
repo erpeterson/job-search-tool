@@ -27,6 +27,8 @@ class ManualJobService:
         score: Callable[[int], object],
         scoring_availability: Callable[[], str | None],
         report_failure: Callable[[str, Exception, Mapping[str, Any]], None],
+        report_skip: Callable[[int, str], None],
+        now: Callable[[], int],
     ) -> None:
         self._repository = repository
         self._scraper = scraper
@@ -35,6 +37,8 @@ class ManualJobService:
         self._score = score
         self._scoring_availability = scoring_availability
         self._report_failure = report_failure
+        self._report_skip = report_skip
+        self._now = now
 
     def create(self, values: Mapping[str, Any], *, force_refresh: bool) -> ManualJobResult:
         url = str(values["url"])
@@ -46,7 +50,8 @@ class ManualJobService:
             scraped = self._fallback(url)
             self._report_failure("scrape", exc, {"url": url, "pipeline": values["pipeline"]})
 
-        record = self._merge(values, scraped, scrape_error)
+        timestamp = self._now()
+        record = self._merge({**values, "created_at": timestamp, "updated_at": timestamp}, scraped, scrape_error)
         job_id = self._repository.create_job(record)
         if job_id is None:
             return ManualJobResult(
@@ -59,6 +64,7 @@ class ManualJobService:
         self._refresh_filter(job_id)
         unavailable_reason = self._scoring_availability()
         if unavailable_reason:
+            self._report_skip(job_id, unavailable_reason)
             return ManualJobResult(job_id, None, scrape_error, f"Automatic Codex scoring skipped: {unavailable_reason}")
         try:
             self._score(job_id)

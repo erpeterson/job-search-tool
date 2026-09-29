@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+from job_search.application.job_scoring_policy import RUBRIC_FIELDS
 from job_search.composition import (
     database_session,
     discovery_service,
@@ -24,6 +25,41 @@ from job_search.presentation.factory import create_app
 
 
 class CompositionTests(unittest.TestCase):
+    def test_injected_job_routes_validate_and_persist_mutations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "jobs.sqlite3"
+            dependencies = presentation_dependencies(database)
+            try:
+                dependencies.startup_service.initialize()
+                with database_session(database) as connection:
+                    job_id = connection.execute(
+                        "INSERT INTO jobs(created_at, updated_at, company, title, pipeline, status) "
+                        "VALUES (1, 1, 'Example', 'Architect', 'Executive IC', 'researching')"
+                    ).lastrowid
+                client = create_app(dependencies=dependencies, route_blueprint=legacy.routes).test_client()
+
+                invalid_score = client.post(f"/api/jobs/{job_id}/score-user", json={"scorecard": []})
+                saved_score = client.post(
+                    f"/api/jobs/{job_id}/score-user",
+                    json={"scorecard": {field: 8 for field in RUBRIC_FIELDS}},
+                )
+                status = client.post(f"/api/jobs/{job_id}/status", json={"status": "interested"})
+                note = client.post(f"/api/jobs/{job_id}/notes", json={"note": "Follow up"})
+                unconfirmed_delete = client.delete(f"/api/jobs/{job_id}", json={"confirm": "no"})
+
+                self.assertEqual(invalid_score.status_code, 400, "Scorecards must be JSON objects.")
+                self.assertEqual(saved_score.get_json()["job"]["user_score"], 80)
+                self.assertEqual(status.get_json()["job"]["status"], "interested")
+                self.assertEqual(note.status_code, 201, "A valid note should be persisted.")
+                self.assertEqual(unconfirmed_delete.status_code, 400, "Deletion must require exact confirmation.")
+                with database_session(database) as connection:
+                    saved = connection.execute("SELECT user_score, status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+                self.assertEqual((saved["user_score"], saved["status"]), (80, "interested"))
+            finally:
+                for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):
+                    for handler in logger.handlers:
+                        handler.close()
+
     def test_injected_company_routes_validate_and_persist_normalized_names(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "companies.sqlite3"
