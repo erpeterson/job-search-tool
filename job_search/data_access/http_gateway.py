@@ -33,6 +33,7 @@ class CapturingHttpGateway:
         read_capture: Callable[..., Mapping[str, Any] | None],
         write_capture: Callable[..., object],
         log_api_call: Callable[..., object],
+        observe: Callable[..., None],
         redact_headers: Callable[[Mapping[str, str]], Mapping[str, str]],
     ) -> None:
         self._client = client
@@ -40,6 +41,7 @@ class CapturingHttpGateway:
         self._read_capture = read_capture
         self._write_capture = write_capture
         self._log_api_call = log_api_call
+        self._observe = observe
         self._redact_headers = redact_headers
 
     def get(self, service: str, url: str, *, force_refresh: bool = False) -> Any:
@@ -56,6 +58,14 @@ class CapturingHttpGateway:
             return response
         except (requests.RequestException, OutboundRequestError) as exc:
             error = exc
+            self._observe(
+                "http_outbound_failed",
+                error_code="HTTP_OUTBOUND_FAILED",
+                component="data_access.http_gateway",
+                operation="get",
+                service=service,
+                cause=type(exc).__name__,
+            )
             raise
         finally:
             elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -69,7 +79,7 @@ class CapturingHttpGateway:
                     "headers": dict(getattr(response, "headers", {}) or {}),
                     "text": getattr(response, "text", None),
                     "error_type": type(error).__name__ if error else None,
-                    "error_message": str(error) if error else None,
+                    "error_message": type(error).__name__ if error else None,
                 },
                 {"elapsed_ms": elapsed_ms},
             )

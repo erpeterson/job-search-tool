@@ -64,15 +64,23 @@ class CaptureStoreTests(unittest.TestCase):
                 lambda: True,
                 lambda: False,
                 lambda value, **_kwargs: value,
-                lambda event, **_fields: events.append(event),
+                lambda event, **fields: events.append((event, fields)),
             )
             path = store.path("board", "get", {"url": "https://example.test"})
             path.parent.mkdir(parents=True)
             path.write_text("not-json", encoding="utf-8")
             self.assertIsNone(store.read("board", "get", {"url": "https://example.test"}))
             self.assertIsNone(store.read("board", "get", {"url": "https://example.test"}, force_refresh=True))
-        self.assertIn("capture_corruption_recovered", events)
-        self.assertIn("capture_bypass", events)
+        self.assertIn("capture_corruption_recovered", [name for name, _fields in events])
+        self.assertIn("capture_bypass", [name for name, _fields in events])
+        failure = next(fields for name, fields in events if name == "capture_corruption_recovered")
+        self.assertEqual(failure["error_code"], "CAPTURE_CORRUPTION_RECOVERED")
+        self.assertEqual(failure["component"], "data_access.capture")
+        self.assertEqual(failure["operation"], "read_capture")
+        self.assertEqual(failure["service"], "board")
+        self.assertEqual(failure["capture_operation"], "get")
+        self.assertEqual(failure["cause"], "JSONDecodeError")
+        self.assertNotIn(str(directory), str(failure), "Failure telemetry should use a hashed key, not local paths.")
 
 
 class JobBoardClientTests(unittest.TestCase):

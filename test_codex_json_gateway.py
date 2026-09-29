@@ -61,3 +61,33 @@ class CodexJsonGatewayTests(unittest.TestCase):
                 gateway.complete("test-model", {"task": "score"}, "score_job")
 
             self.assertEqual(events[-1][1]["error_code"], "CODEX_CLI_CALL_FAILED")
+            self.assertEqual(events[-1][1]["component"], "data_access.codex_json_gateway")
+            self.assertEqual(events[-1][1]["operation"], "score_job")
+            self.assertEqual(events[-1][1]["cause"], "CodexCliError")
+
+    def test_cli_exception_does_not_enter_event_or_capture_content(self):
+        class FailingCli:
+            def execute(self, *_args):
+                raise RuntimeError("private-codex-token")
+
+        with tempfile.TemporaryDirectory() as directory:
+            events = []
+            captures = CaptureStore(
+                Path(directory),
+                lambda: True,
+                lambda: True,
+                lambda value, **_: value,
+                lambda *_args, **_kwargs: None,
+            )
+            gateway = CodexJsonGateway(
+                FailingCli(), captures, lambda name, **fields: events.append((name, fields)), lambda: "codex", 30
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "private-codex-token"):
+                gateway.complete("test-model", {"task": "score"}, "score_job", force_refresh=True)
+
+            failed = next(fields for name, fields in events if name == "codex_cli_call_completed")
+            capture_text = "\n".join(path.read_text(encoding="utf-8") for path in Path(directory).rglob("*.json"))
+            self.assertEqual(failed["error_code"], "CODEX_CLI_CALL_FAILED")
+            self.assertEqual(failed["cause"], "RuntimeError")
+            self.assertNotIn("private-codex-token", str(failed) + capture_text)

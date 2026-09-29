@@ -90,7 +90,7 @@ class CodexJsonGateway:
                 if completed is not None and completed.stderr
                 else None,
                 "error_type": type(error).__name__ if error else None,
-                "error_message": str(error) if error else None,
+                "error_message": type(error).__name__ if error else None,
             }
             self._observe(
                 "codex_cli_call_completed",
@@ -102,7 +102,8 @@ class CodexJsonGateway:
                 elapsed_seconds=round(elapsed_ms / 1000, 3),
                 returncode=completed.returncode if completed is not None else None,
                 error_code="CODEX_CLI_CALL_FAILED" if error else None,
+                component="data_access.codex_json_gateway",
                 error_type=type(error).__name__ if error else None,
-                message=str(error)[:1000] if error else None,
+                cause=type(error).__name__ if error else None,
             )
             self._captures.write("codex_cli", operation, request_payload, response_payload, {"elapsed_ms": elapsed_ms})

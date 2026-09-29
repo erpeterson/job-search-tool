@@ -382,6 +382,7 @@ def outbound_clients(
         observed.captures.read,
         observed.captures.write,
         observed.telemetry.api_call,
+        observed.telemetry.event,
         redact_headers,
     )
     boards = JobBoardClient(

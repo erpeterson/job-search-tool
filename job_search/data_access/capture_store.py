@@ -44,13 +44,16 @@ class CaptureStore:
             return None
         try:
             capture = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
             self._observe(
                 "capture_corruption_recovered",
                 error_code="CAPTURE_CORRUPTION_RECOVERED",
                 component="data_access.capture",
                 operation="read_capture",
-                path=str(path),
+                service=service,
+                capture_operation=operation,
+                capture_key=path.stem,
+                cause=type(exc).__name__,
             )
             return None
         self._observe("capture_replay", service=service, operation=operation, path=str(path))

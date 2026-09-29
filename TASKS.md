@@ -381,7 +381,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     - [x] **2c.3a — Application recoveries.** Complete and sanitize event
       fields for search, discovery, manual jobs, bulk tasks, and scorecards;
       commit.
-    - [ ] **2c.3b — Data-access and transport catches.** Observe HTTP/Codex,
+    - [x] **2c.3b — Data-access and transport catches.** Observe HTTP/Codex,
       captures, and translated outbound failures without leaking content;
       commit.
     - [ ] **2c.3c — Boundary and CLI catches.** Make validation/security
