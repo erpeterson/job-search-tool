@@ -27,6 +27,7 @@ class PresentationDependencies:
     search_repository: Any
     filtering_service: Any
     background_task_service: Any
+    task_submission_service: Any
     initialization_service: Any
     startup_service: Any
     codex_scoring_workflow: Any

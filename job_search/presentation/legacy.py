@@ -26,12 +26,12 @@ from job_search.presentation.company_routes import register_company_routes
 from job_search.presentation.config_routes import register_config_routes
 from job_search.presentation.job_routes import register_job_routes
 from job_search.presentation.read_routes import register_read_routes
+from job_search.presentation.task_routes import register_task_routes
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
     RequestValidationError,
     boolean,
     choice,
-    integer,
     optional_text,
     require_json_object,
 )
@@ -48,6 +48,7 @@ register_read_routes(routes)
 register_company_routes(routes)
 register_job_routes(routes)
 register_config_routes(routes)
+register_task_routes(routes)
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -394,58 +395,9 @@ def run_job_search(trigger="manual", force_refresh=False):
     return dependency("search_run_service").run(trigger=trigger, force_refresh=force_refresh)
 
 
-def clean_job_ids(payload):
-    raw_ids = payload.get("job_ids", [])
-    if not isinstance(raw_ids, list):
-        raise RequestValidationError("job_ids must be a list.")
-    if not raw_ids:
-        raise RequestValidationError("Select at least one job.")
-    if len(raw_ids) > 50:
-        raise RequestValidationError("job_ids must contain at most 50 jobs.")
-    job_ids = []
-    seen = set()
-    for raw_id in raw_ids:
-        job_id = integer(raw_id, "job_ids item", minimum=1, maximum=2_147_483_647)
-        if job_id in seen:
-            raise RequestValidationError("job_ids must not contain duplicates.")
-        seen.add(job_id)
-        job_ids.append(job_id)
-    return job_ids
-
-
 def request_json_object():
     """Validate the actual parsed body; do not coerce arrays/null into {}."""
     return require_json_object(request.get_json(silent=True))
-
-
-@routes.post("/api/jobs/bulk/score-gpt")
-def api_bulk_score_gpt():
-    payload = request_json_object()
-    if not gpt_scoring_enabled():
-        return jsonify(
-            {"error": "Codex scoring is currently disabled. Set JOB_SEARCH_ENABLE_GPT_SCORING=1 to re-enable it."}
-        ), 409
-    if not codex_cli_available():
-        return jsonify(
-            {
-                "error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI before scoring."
-            }
-        ), 409
-    job_ids = clean_job_ids(payload)
-    task = start_background_task("scorecards", job_ids)
-    return jsonify({"task": task}), 202
-
-
-@routes.post("/api/jobs/bulk/application-packets/generate")
-def api_bulk_generate_application_packets():
-    payload = request_json_object()
-    if not codex_cli_available():
-        return jsonify(
-            {"error": f"Codex CLI is unavailable at {codex_cli_path()!r}. Set CODEX_CLI_PATH or install Codex CLI."}
-        ), 409
-    job_ids = clean_job_ids(payload)
-    task = start_background_task("application_packets", job_ids)
-    return jsonify({"task": task}), 202
 
 
 @routes.post("/api/jobs/<int:job_id>/application-packet/generate")

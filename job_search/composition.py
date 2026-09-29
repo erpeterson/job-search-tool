@@ -48,6 +48,7 @@ from job_search.application.search_run_service import SearchRunService
 from job_search.application.settings_service import SettingsService
 from job_search.application.startup_service import StartupService
 from job_search.application.task_execution_service import TaskExecutionService
+from job_search.application.task_submission_service import TaskSubmissionService
 from job_search.application.user_score_service import UserScoreService
 from job_search.config import RuntimeConfiguration, RuntimePaths, load_runtime_settings
 from job_search.data_access.application_packet_catalog import ApplicationPacketCatalog
@@ -215,6 +216,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
 
     filtering = observed_filtering_service(database_path, configuration, observed.telemetry)
     settings_workflow = SettingsService(SqliteSettingsRepository(connect), filtering.refresh_all)
+    tasks = background_task_service(database_path, observed.telemetry.event)
 
     def scrape(url: str, force_refresh: bool):
         return clients.boards.scrape(url, force_refresh=force_refresh)
@@ -276,7 +278,13 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
         level_service=level_service(database_path),
         search_repository=search_repository(database_path),
         filtering_service=filtering,
-        background_task_service=background_task_service(database_path, observed.telemetry.event),
+        background_task_service=tasks,
+        task_submission_service=TaskSubmissionService(
+            tasks,
+            lambda: configuration.enabled("JOB_SEARCH_ENABLE_GPT_SCORING"),
+            configuration.cli_available,
+            configuration.cli_path,
+        ),
         initialization_service=initialization_service(database_path),
         startup_service=startup_service(database_path, observed.telemetry, configuration.model()),
         codex_scoring_workflow=scoring_workflow,

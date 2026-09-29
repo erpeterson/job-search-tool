@@ -12,6 +12,7 @@ from job_search.application.discovery_utils import clean_text
 from job_search.application.job_scoring_policy import ORACLE_IC6_LEVEL_REFERENCE, RUBRIC_FIELDS, normalize_pipeline
 from job_search.application.manual_job_service import ManualJobService
 from job_search.application.rescrape_service import RescrapeService
+from job_search.application.task_submission_service import TaskSubmissionService
 from job_search.composition import (
     codex_scoring_workflow,
     database_session,
@@ -484,27 +485,35 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_bulk_endpoints_validate_availability_and_start_fake_tasks(self):
         job_id = self.create_job()
-        originals = (
-            workflow_app.gpt_scoring_enabled,
-            workflow_app.codex_cli_available,
-            workflow_app.start_background_task,
+        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
+
+        class FakeTasks:
+            def start(self, kind, ids):
+                return {"kind": kind, "job_ids": ids}
+
+        workflow_app.app.extensions["job_search.dependencies"] = replace(
+            original_dependencies,
+            task_submission_service=TaskSubmissionService(FakeTasks(), lambda: True, lambda: True, lambda: "fake"),
         )
-        workflow_app.gpt_scoring_enabled = lambda: True
-        workflow_app.codex_cli_available = lambda: True
-        workflow_app.start_background_task = lambda kind, ids: {"kind": kind, "job_ids": ids}
         try:
             score = self.client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
             packets = self.client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})
+            workflow_app.app.extensions["job_search.dependencies"] = replace(
+                original_dependencies,
+                task_submission_service=TaskSubmissionService(
+                    FakeTasks(), lambda: False, lambda: False, lambda: "missing-codex"
+                ),
+            )
+            disabled_score = self.client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
+            missing_cli = self.client.post("/api/jobs/bulk/application-packets/generate", json={"job_ids": [job_id]})
         finally:
-            (
-                workflow_app.gpt_scoring_enabled,
-                workflow_app.codex_cli_available,
-                workflow_app.start_background_task,
-            ) = originals
+            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         self.assertEqual(score.status_code, 202)
         self.assertEqual(score.get_json()["task"]["kind"], "scorecards")
         self.assertEqual(packets.get_json()["task"]["kind"], "application_packets")
+        self.assertEqual(disabled_score.status_code, 409, "Disabled scoring must not enqueue a task.")
+        self.assertEqual(missing_cli.status_code, 409, "Missing CLI must not enqueue a packet task.")
 
     def test_company_update_search_dispatch_and_individual_codex_actions(self):
         job_id = self.create_job()
@@ -563,9 +572,18 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
     def test_error_routes_cover_disabled_unavailable_and_not_found_responses(self):
         job_id = self.create_job()
-        originals = (workflow_app.gpt_scoring_enabled, workflow_app.codex_cli_available)
-        workflow_app.gpt_scoring_enabled = lambda: False
-        workflow_app.codex_cli_available = lambda: False
+        original_dependencies = workflow_app.app.extensions["job_search.dependencies"]
+
+        class NoTaskExpected:
+            def start(self, *_args):
+                raise AssertionError("Unavailable operations must not queue tasks")
+
+        workflow_app.app.extensions["job_search.dependencies"] = replace(
+            original_dependencies,
+            task_submission_service=TaskSubmissionService(
+                NoTaskExpected(), lambda: False, lambda: False, lambda: "missing-codex"
+            ),
+        )
         try:
             disabled_score = self.client.post(f"/api/jobs/{job_id}/score-gpt", json={})
             disabled_bulk = self.client.post("/api/jobs/bulk/score-gpt", json={"job_ids": [job_id]})
@@ -574,7 +592,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             )
             missing_packet = self.client.post("/api/jobs/99999/application-packet/generate", json={})
         finally:
-            workflow_app.gpt_scoring_enabled, workflow_app.codex_cli_available = originals
+            workflow_app.app.extensions["job_search.dependencies"] = original_dependencies
 
         self.assertEqual(disabled_score.status_code, 409)
         self.assertEqual(disabled_bulk.status_code, 409)
