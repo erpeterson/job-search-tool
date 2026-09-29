@@ -321,7 +321,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [ ] **1.4d.2 — Migrate test fixtures off legacy globals.** Construct
     configuration, observability, sessions, and injected app dependencies in
     tests without mutating presentation module state; commit per test family.
-    - [ ] **1.4d.2a — Decouple helper tests.** Build configuration and
+    - [x] **1.4d.2a — Decouple helper tests.** Build configuration and
       observability fixtures directly from composition, then commit.
     - [ ] **1.4d.2b — Decouple business-path tests.** Replace legacy globals
       with temporary paths and injected app dependencies, then commit.

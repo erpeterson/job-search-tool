@@ -1,9 +1,7 @@
 """Table-driven unit tests for pure parsing, filtering, and rendering helpers."""
 
-import importlib.util
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,17 +10,13 @@ from job_search.application.discovery_utils import clean_text, clean_url, dedupe
 from job_search.application.job_scoring_policy import normalize_pipeline
 from job_search.application.level_service import normalize_lookup_text
 from job_search.application.packet_draft_service import validate_packet_payload
-from job_search.composition import codex_json_gateway, outbound_clients, runtime_configuration
+from job_search.composition import codex_json_gateway, observability, outbound_clients, runtime_configuration
 from job_search.config import RuntimePaths
-from job_search.data_access import codex_cli, document_writer
+from job_search.data_access import codex_cli
+from job_search.data_access.document_writer import PacketDocumentWriter
 from job_search.data_access.http_gateway import CapturedResponse
 from job_search.data_access.job_posting_parser import JobPostingParser
 from job_search.presentation.packet_rendering import escape_html, markdown_to_html, render_inline_markdown
-
-APP_PATH = Path(__file__).resolve().parent / "job_search" / "presentation" / "legacy.py"
-SPEC = importlib.util.spec_from_file_location("helpers_app", APP_PATH)
-helpers_app = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(helpers_app)
 
 
 class AppHelperTests(unittest.TestCase):
@@ -122,17 +116,19 @@ class AppHelperTests(unittest.TestCase):
             }
             return CapturedResponse({"status_code": 200, "text": pages[service]})
 
-        boards = outbound_clients(
-            helpers_app.OBSERVABILITY,
-            clean_text,
-            clean_url,
-            source_id,
-            dedupe_results,
-            fetch=fake_fetch,
-        ).boards
-        scraped = boards.scrape("https://jobs.example.test/123")
-        linkedin = boards.linkedin("architect", "Remote")
-        indeed = boards.indeed("architect", "Remote")
+        with tempfile.TemporaryDirectory() as directory:
+            observed = observability(runtime_configuration(Path(directory), {}))
+            boards = outbound_clients(
+                observed,
+                clean_text,
+                clean_url,
+                source_id,
+                dedupe_results,
+                fetch=fake_fetch,
+            ).boards
+            scraped = boards.scrape("https://jobs.example.test/123")
+            linkedin = boards.linkedin("architect", "Remote")
+            indeed = boards.indeed("architect", "Remote")
         self.assertEqual(scraped["title"], "Principal Engineer")
         self.assertEqual(scraped["company"], "ExampleCo")
         self.assertEqual(linkedin[0]["company"], "ExampleCo")
@@ -140,8 +136,6 @@ class AppHelperTests(unittest.TestCase):
 
     def test_document_writer_creates_markdown_and_invokes_fake_pandoc(self):
         with tempfile.TemporaryDirectory() as directory:
-            original_which = document_writer.shutil.which
-            original_run = document_writer.subprocess.run
             commands = []
 
             class CompletedProcess:
@@ -149,20 +143,18 @@ class AppHelperTests(unittest.TestCase):
                 stdout = ""
                 stderr = ""
 
-            document_writer.shutil.which = lambda command: "/fake/pandoc" if command == "pandoc" else None
-            document_writer.subprocess.run = lambda command, **_kwargs: (commands.append(command) or CompletedProcess())
-            try:
-                files = document_writer.PacketDocumentWriter().write(
-                    Path(directory) / "packet",
-                    {
-                        "job_brief_markdown": "Brief",
-                        "resume_markdown": "Resume",
-                        "cover_letter_markdown": "Letter",
-                    },
-                )
-            finally:
-                document_writer.shutil.which = original_which
-                document_writer.subprocess.run = original_run
+            writer = PacketDocumentWriter(
+                pandoc_path=lambda: "/fake/pandoc",
+                run=lambda command, **_kwargs: (commands.append(command) or CompletedProcess()),
+            )
+            files = writer.write(
+                Path(directory) / "packet",
+                {
+                    "job_brief_markdown": "Brief",
+                    "resume_markdown": "Resume",
+                    "cover_letter_markdown": "Letter",
+                },
+            )
 
             self.assertEqual(files, ["Job-Brief.md", "Resume.md", "Cover-Letter.md"])
             self.assertEqual(len(commands), 3)
@@ -170,17 +162,10 @@ class AppHelperTests(unittest.TestCase):
 
     def test_capture_round_trip_uses_temporary_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            with (
-                patch.object(
-                    helpers_app.RUNTIME_CONFIG,
-                    "paths",
-                    replace(helpers_app.RUNTIME_CONFIG.paths, captures=Path(directory)),
-                ),
-                patch.object(helpers_app.RUNTIME_CONFIG, "environment", {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}),
-            ):
-                payload = {"request": "value"}
-                helpers_app.write_capture("test", "operation", payload, {"status_code": 200})
-                replay = helpers_app.read_capture("test", "operation", payload)
+            observed = observability(runtime_configuration(Path(directory), {"JOB_SEARCH_USE_CAPTURE_CACHE": "1"}))
+            payload = {"request": "value"}
+            observed.captures.write("test", "operation", payload, {"status_code": 200})
+            replay = observed.captures.read("test", "operation", payload)
             self.assertEqual(replay["response"]["status_code"], 200)
 
     def test_environment_file_update_preserves_comments_and_replaces_values(self):
@@ -197,24 +182,23 @@ class AppHelperTests(unittest.TestCase):
         self.assertEqual(config.model(), "test-model", "Updates should refresh the injected snapshot")
 
     def test_codex_cli_adapter_uses_fake_subprocess_and_extracts_model(self):
-        original_run = codex_cli.subprocess.run
-
         class CompletedProcess:
             returncode = 0
             stdout = '{"total_score": 80}'
             stderr = "model: test-model"
 
-        codex_cli.subprocess.run = lambda *_args, **_kwargs: CompletedProcess()
-        try:
-            output, model = codex_json_gateway(helpers_app.RUNTIME_CONFIG, helpers_app.OBSERVABILITY).complete(
-                "test-model",
-                {"task": "score_job"},
-                "score_job",
-                force_refresh=True,
-                return_metadata=True,
-            )
-        finally:
-            codex_cli.subprocess.run = original_run
+        with tempfile.TemporaryDirectory() as directory:
+            configuration = runtime_configuration(Path(directory), {})
+            observed = observability(configuration)
+            gateway = codex_json_gateway(configuration, observed)
+            with patch.object(codex_cli.subprocess, "run", return_value=CompletedProcess()):
+                output, model = gateway.complete(
+                    "test-model",
+                    {"task": "score_job"},
+                    "score_job",
+                    force_refresh=True,
+                    return_metadata=True,
+                )
 
         self.assertEqual(output, '{"total_score": 80}')
         self.assertEqual(model, "test-model")
