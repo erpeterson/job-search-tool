@@ -100,7 +100,7 @@ evidence.
 
 ### P1
 
-- [ ] **T-2 — Make every handled exception observable through an injected
+- [x] **T-2 — Make every handled exception observable through an injected
   telemetry port.** Several new or retained recovery paths still catch errors
   without the required unique event/log record: malformed JSON-LD is silently
   skipped in `data_access/job_posting_parser.py:106`; worker processor failures
@@ -400,6 +400,6 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   that fails on unclassified new catches and checks each known catch for event
   emission or explicit rethrow to a documented top-level handler; document
   narrowly scoped parsing recovery inline.
-- [ ] **2e — Close T-2.** Run `./quality.sh`, confirm at least 80% branch
+- [x] **2e — Close T-2.** Run `./quality.sh`, confirm at least 80% branch
   coverage, audit every T-2 closure criterion, check T-2, and commit its code,
   tests, and checkbox separately from T-1.
