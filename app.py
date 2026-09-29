@@ -1138,7 +1138,9 @@ def application_packet_rules():
         return ""
     manual = CAREER_MANUAL_PATH.read_text(encoding="utf-8")
     start = manual.find("# Downstream Artifact Rules")
-    end = manual.find("# Open Questions", start)
+    end = manual.find("## Interview Stories", start)
+    if end < 0:
+        end = manual.find("# Open Questions", start)
     return manual[start:end if end >= 0 else None].strip() if start >= 0 else ""
 
 
@@ -1164,23 +1166,84 @@ def application_packet_context(job):
 def validate_application_packet_payload(payload):
     if not isinstance(payload, dict):
         raise ValueError("Codex packet response must be a JSON object.")
-    required = ("job_brief_markdown", "resume_markdown", "cover_letter_markdown")
+    required = ("job_brief_markdown", "cv_markdown")
     missing = [field for field in required if not isinstance(payload.get(field), str) or not payload[field].strip()]
     if missing:
         raise ValueError(f"Codex packet response is missing required Markdown fields: {', '.join(missing)}.")
     return {field: payload[field].strip() + "\n" for field in required}
 
 
-def application_packet_has_model_attribution(payload, model):
-    return all(model in content for content in payload.values())
+def add_model_attribution(markdown, model, generation_date):
+    """Add verified attribution deterministically after the Codex draft."""
+    section = (
+        "## AI Generation Attribution\n\n"
+        f"AI generated this artifact on {generation_date} using `{model}`."
+    )
+    without_existing = re.sub(
+        r"\n## AI Generation Attribution\n.*?(?=\n## |\Z)", "", markdown, flags=re.DOTALL
+    ).rstrip()
+    return without_existing + "\n\n" + section + "\n"
+
+
+def cv_style_issues(markdown):
+    """Return high-signal structural issues that justify one repair pass."""
+    required = (
+        "Professional Profile",
+        "Technical and Leadership Expertise",
+        "Professional Experience",
+        "Education",
+    )
+    issues = [f"missing required section: {heading}" for heading in required if heading not in markdown]
+    title_lines = [
+        re.sub(r"^#{1,6}\s+", "", line.strip()).lower()
+        for line in markdown.splitlines()[:8]
+        if line.strip()
+    ]
+    if not any(line.startswith("curriculum vitae —") or line.startswith("curriculum vitae -") for line in title_lines):
+        issues.append("title must use the Curriculum Vitae document-title formulation")
+    words = len(re.findall(r"\b[\w][\w'/-]*\b", markdown))
+    if words < 900:
+        issues.append(f"too short ({words} words; target at least 900)")
+    if len(re.findall(r"^#### ", markdown, flags=re.MULTILINE)) < 2:
+        issues.append("needs at least two thematic subsections under the most recent or most relevant role")
+    lower = markdown.lower()
+    for phrase in ("source material", "source documents", "supplied materials", "college period"):
+        if phrase in lower:
+            issues.append(f"must not contain provenance or placeholder phrase: {phrase}")
+    master_resume = MASTER_RESUME_PATH.read_text(encoding="utf-8") if MASTER_RESUME_PATH.exists() else ""
+    redacted_employers = re.findall(r"^## (.+?) \(redact\)\s*$", master_resume, flags=re.MULTILINE | re.IGNORECASE)
+    for employer in redacted_employers:
+        if employer.lower() in lower:
+            issues.append(f"must not include redacted employer: {employer}")
+    if "lion inc" not in lower:
+        issues.append("must preserve the LION Inc. role in the early-career chronology")
+    if "world-wide technology solutions" in lower and "august 2000" not in lower:
+        issues.append("must preserve the documented World-Wide Technology Solutions dates")
+
+    bullets = [
+        re.findall(r"[a-z0-9]+", line.lower())
+        for line in markdown.splitlines()
+        if line.lstrip().startswith("-")
+    ]
+    for index, left in enumerate(bullets):
+        if len(left) < 8:
+            continue
+        left_set = set(left)
+        for right in bullets[index + 1:]:
+            if len(right) < 8:
+                continue
+            overlap = len(left_set & set(right)) / min(len(left_set), len(set(right)))
+            if overlap >= 0.72:
+                issues.append("contains effectively duplicate bullets that should be merged or differentiated")
+                return issues
+    return issues
 
 
 def write_application_packet_documents(packet_dir, payload):
     packet_dir.mkdir(parents=True, exist_ok=False)
     markdown_files = {
         "Job-Brief.md": payload["job_brief_markdown"],
-        "Resume.md": payload["resume_markdown"],
-        "Cover-Letter.md": payload["cover_letter_markdown"],
+        "CV.md": payload["cv_markdown"],
     }
     for filename, content in markdown_files.items():
         (packet_dir / filename).write_text(content, encoding="utf-8")
@@ -1188,7 +1251,7 @@ def write_application_packet_documents(packet_dir, payload):
     pandoc_path = shutil.which("pandoc")
     if not pandoc_path:
         raise RuntimeError("Pandoc is required to generate packet DOCX deliverables but was not found on PATH.")
-    for filename in markdown_files:
+    for filename in ("CV.md",):
         source_path = packet_dir / filename
         output_path = source_path.with_suffix(".docx")
         completed = subprocess.run(
@@ -1212,21 +1275,23 @@ def generate_application_packet_with_codex(job):
     prompt = {
         "task": "Generate exactly one application packet as JSON. Do not access the network or filesystem; use only the supplied context.",
         "workflow": [
-            "First formulate the job brief, including high-signal requirements, tailoring strategy, achievement map, and likely objections.",
-            "Then draft one tailored resume and one cover letter using only source-backed evidence from the supplied master resume and rules.",
+            "First formulate a compact job brief with no more than five requirements, three to five evidence themes, and four likely objections.",
+            "Then draft one tailored senior technical CV using the preferred Amazon-style structure and only source-backed evidence from the supplied evidence pack and rules.",
             "Finally append an objection remediation outcome to the job brief. Perform this remediation cycle once only.",
         ],
         "output_contract": {
             "job_brief_markdown": "Complete Job-Brief.md content. Include source trace naming the supplied Career Manual, Master Resume, and local tracked job.",
-            "resume_markdown": "Complete Resume.md content. One employer-facing, ATS-readable tailored resume.",
-            "cover_letter_markdown": "Complete Cover-Letter.md content. Direct, practical, evidence-oriented, and low hype.",
+            "cv_markdown": "Complete CV.md content. Begin with '# Eric Peterson'; the second nonblank line must be a level-two heading beginning '## Curriculum Vitae —'. Default to '## Curriculum Vitae — Senior Technical Architect, Cloud Infrastructure' unless the role-specific alternative in application_packet_rules is more appropriate. Then provide one employer-facing, ATS-readable senior technical CV with the preferred structure: Professional Profile, Technical and Leadership Expertise, Professional Experience, thematic subsections for the current/relevant role, full canonical chronology, and Education.",
         },
         "constraints": [
-            "Return only one valid JSON object with exactly the three output_contract keys.",
+            "Return only one valid JSON object with exactly the two output_contract keys.",
             "Do not use Markdown fences around the JSON.",
             "Do not create files, propose filenames, or discuss this instruction.",
             "Do not invent accomplishments, metrics, technologies, dates, or domain experience.",
-            "Do not generate separate ATS resume artifacts.",
+            "Do not generate a separate ATS resume artifact or a cover letter.",
+            "Never include source material explicitly marked redact in any employer-facing CV or other generated artifact.",
+            "Do not mention source material, source documents, supplied materials, or provenance in the CV; state the accomplishment directly.",
+            "Treat application_packet_rules, including the Senior Technical CV Quality Bar, as authoritative. Before returning, apply that quality bar as a senior technical hiring reader.",
         ],
         "context": context,
     }
@@ -1242,19 +1307,27 @@ def generate_application_packet_with_codex(job):
         if not model:
             raise RuntimeError("Codex CLI did not report the model used to generate the application packet.")
         payload = validate_application_packet_payload(parse_model_json(output_text))
-        if not application_packet_has_model_attribution(payload, model):
-            context["codex_generation_metadata"] = {
-                "generation_date": datetime.now(timezone.utc).date().isoformat(),
-                "model": model,
-            }
+        style_issues = cv_style_issues(payload["cv_markdown"])
+        if style_issues:
+            repair_prompt = dict(prompt)
+            repair_prompt["constraints"] = list(prompt["constraints"]) + [
+                "The first draft failed the CV structure check. Repair it in one complete rewrite; do not explain the repair.",
+                "Structural issues to fix: " + "; ".join(style_issues),
+            ]
             output_text, retry_model = call_codex_json(
-                model, prompt, "generate_application_packet", force_refresh=True, return_metadata=True
+                model, repair_prompt, "generate_application_packet_repair", force_refresh=True, return_metadata=True
             )
             if retry_model != model:
-                raise RuntimeError("Codex CLI used a different model while regenerating the application packet attribution.")
+                raise RuntimeError("Codex CLI used a different model while repairing CV structure.")
             payload = validate_application_packet_payload(parse_model_json(output_text))
-            if not application_packet_has_model_attribution(payload, model):
-                raise RuntimeError("Codex did not include the exact invoked model in every application-packet attribution.")
+            remaining = cv_style_issues(payload["cv_markdown"])
+            if remaining:
+                raise RuntimeError("Generated CV failed the structural quality check: " + "; ".join(remaining))
+        generation_date = datetime.now(timezone.utc).date().isoformat()
+        payload = {
+            key: add_model_attribution(value, model, generation_date)
+            for key, value in payload.items()
+        }
         packet_dir = APPLICATIONS_DIR / application_packet_slug(job)
         if packet_dir.exists():
             raise FileExistsError(f"Application packet directory already exists: {repo_relative(packet_dir)}")
@@ -4437,7 +4510,7 @@ INDEX_HTML = r"""<!doctype html>
       return (state.application_packets || []).find(packet => packet.path === job.application_packet_path) || {
         path: job.application_packet_path,
         name: job.application_packet_path.split("/").pop(),
-        markdown_files: ["Job-Brief.md", "Resume.md", "Cover-Letter.md"],
+        markdown_files: ["Job-Brief.md", "CV.md"],
       };
     }
 
