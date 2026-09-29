@@ -321,6 +321,15 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [ ] **1.4d.2 — Migrate test fixtures off legacy globals.** Construct
     configuration, observability, sessions, and injected app dependencies in
     tests without mutating presentation module state; commit per test family.
+    - [ ] **1.4d.2a — Decouple helper tests.** Build configuration and
+      observability fixtures directly from composition, then commit.
+    - [ ] **1.4d.2b — Decouple business-path tests.** Replace legacy globals
+      with temporary paths and injected app dependencies, then commit.
+    - [ ] **1.4d.2c — Decouple level tests.** Use temporary database and
+      injected app fixtures without module mutation, then commit.
+    - [ ] **1.4d.2d — Decouple workflow/composition tests.** Replace remaining
+      legacy helper imports and module mutation with direct service fakes and
+      injected routes, then check 1.4d.2 and commit.
   - [ ] **1.4d.3 — Replace legacy route registration.** Move security hooks,
     correlation handling, top-level error mapping, and CLI startup into a small
     presentation entry module; switch app/factory imports, delete `legacy.py`,
