@@ -345,7 +345,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 
 ### T-1.6 — Boundary proof and T-1 closure
 
-- [ ] **1.6a — Strengthen AST tests.** Scan every presentation module for
+- [x] **1.6a — Strengthen AST tests.** Scan every presentation module for
   direct data-access imports, adapter/repository/session construction, SQL,
   filesystem/transport operations, and application workflow decisions. Assert
   worker/scheduler do not import presentation and application services do not

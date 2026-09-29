@@ -107,6 +107,15 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                     forbidden & imported,
                     f"{path.name} must depend on ports, not framework or concrete infrastructure modules.",
                 )
+                self.assertFalse(
+                    any(
+                        module.startswith(
+                            ("job_search.presentation", "job_search.data_access", "job_search.composition")
+                        )
+                        for module in _full_imports(path)
+                    ),
+                    f"{path.name} must not depend on presentation, concrete data access, or composition.",
+                )
 
     def test_root_is_limited_to_composition_and_startup(self):
         root_source = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -174,6 +183,77 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                     f"{path.name} must not acquire database sessions inside presentation workflows.",
                 )
 
+    def test_all_presentation_modules_avoid_concrete_io_and_workflow_assembly(self):
+        forbidden_calls = {
+            "open",
+            "Path",
+            "connect",
+            "execute",
+            "executemany",
+            "executescript",
+            "commit",
+            "rollback",
+            "apply_filter",
+            "populate_codex_score",
+            "run_search",
+            "generate_packet",
+            "score_job",
+        }
+        io_receivers = {"sqlite3", "requests", "httpx", "subprocess", "urllib"}
+        allowed_application_imports = {
+            "job_search.application.job_scoring_policy": {"PIPELINES", "RUBRIC_FIELDS"},
+            "job_search.application.packet_generation_service": {
+                "PacketAlreadyAssociatedError",
+                "PacketJobMissingError",
+            },
+        }
+        for path in PRESENTATION.rglob("*.py"):
+            with self.subTest(module=path.relative_to(ROOT)):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                imports = _full_imports(path)
+                self.assertFalse(
+                    any(module.startswith(("job_search.data_access", "job_search.composition")) for module in imports),
+                    f"{path.name} must receive concrete adapters and services through injection.",
+                )
+                self.assertFalse(
+                    {
+                        module
+                        for module in imports
+                        if module.startswith("job_search.application")
+                        and not any(
+                            module == allowed or module in {f"{allowed}.{symbol}" for symbol in symbols}
+                            for allowed, symbols in allowed_application_imports.items()
+                        )
+                    },
+                    f"{path.name} must not import application workflows into HTTP handlers.",
+                )
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ImportFrom) and node.module in allowed_application_imports:
+                        self.assertFalse(
+                            {alias.name for alias in node.names} - allowed_application_imports[node.module],
+                            f"{path.name} may import only HTTP-facing constants and exception types.",
+                        )
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    if isinstance(node.func, ast.Name):
+                        self.assertNotIn(
+                            node.func.id,
+                            forbidden_calls,
+                            f"{path.name} must not perform I/O or orchestrate an application workflow.",
+                        )
+                    elif isinstance(node.func, ast.Attribute):
+                        receiver = node.func.value.id if isinstance(node.func.value, ast.Name) else None
+                        self.assertFalse(
+                            receiver in io_receivers,
+                            f"{path.name} must not call a concrete transport or storage module.",
+                        )
+                        self.assertNotIn(
+                            node.func.attr,
+                            {"execute", "executemany", "executescript", "commit", "rollback"},
+                            f"{path.name} must not manage SQL or database transactions.",
+                        )
+
     def test_page_markup_lives_in_the_presentation_template_package(self):
         template = ROOT / "job_search" / "presentation" / "templates" / "index.html"
         self.assertTrue(template.is_file(), "The web page must be a version-controlled presentation template.")
@@ -188,12 +268,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_managed_processes_do_not_import_presentation(self):
         for name in ("worker.py", "scheduler.py"):
             with self.subTest(module=name):
-                tree = ast.parse((ROOT / "job_search" / name).read_text(encoding="utf-8"))
-                imported = [
-                    node.module
-                    for node in ast.walk(tree)
-                    if isinstance(node, ast.ImportFrom) and node.module is not None
-                ]
+                imported = _full_imports(ROOT / "job_search" / name)
                 self.assertFalse(
                     any(module.startswith("job_search.presentation") for module in imported),
                     f"{name} must compose application services without presentation callbacks.",
@@ -208,4 +283,16 @@ def _imports(path: Path) -> set[str]:
             names.update(alias.name.partition(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             names.add(node.module.partition(".")[0])
+    return names
+
+
+def _full_imports(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
     return names
