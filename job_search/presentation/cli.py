@@ -4,12 +4,12 @@ import json
 import sys
 
 
-def startup_failure(exc: Exception, *, controlled: bool) -> None:
+def startup_failure(exc: Exception, *, controlled: bool, operation: str = "compose_app") -> None:
     """Report composition failures before an injected telemetry graph exists."""
     record = {
         "error_code": "STARTUP_CONFIGURATION_FAILED" if controlled else "STARTUP_UNHANDLED_EXCEPTION",
         "component": "web_startup",
-        "operation": "compose_app",
+        "operation": operation,
         "cause": type(exc).__name__,
     }
     if controlled:
@@ -19,7 +19,10 @@ def startup_failure(exc: Exception, *, controlled: bool) -> None:
 
 
 def main(application):
-    dependencies = application.extensions["job_search.dependencies"]
+    try:
+        dependencies = application.extensions["job_search.dependencies"]
+    except Exception as exc:
+        startup_failure(exc, controlled=False, operation="load_dependencies")
     try:
         dependencies.startup_service.initialize()
         configuration = dependencies.configuration

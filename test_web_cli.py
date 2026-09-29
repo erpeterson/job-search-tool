@@ -11,6 +11,20 @@ from job_search.presentation.cli import main, startup_failure
 
 
 class WebCliTests(unittest.TestCase):
+    def test_missing_dependency_registry_uses_structured_stderr_fallback(self):
+        stderr = io.StringIO()
+        application = SimpleNamespace(extensions={})
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exit_result:
+                main(application)
+
+        self.assertEqual(exit_result.exception.code, 1, "Missing dependencies must fail the web process")
+        self.assertEqual(stderr.getvalue().count("ERROR "), 1, "Emit one terminal failure record")
+        record = json.loads(stderr.getvalue().removeprefix("ERROR "))
+        self.assertEqual(record["error_code"], "STARTUP_UNHANDLED_EXCEPTION")
+        self.assertEqual(record["operation"], "load_dependencies")
+        self.assertEqual(record["cause"], "KeyError")
+
     def test_runtime_failure_emits_one_event_and_returns_nonzero(self):
         events = []
         dependencies = SimpleNamespace(

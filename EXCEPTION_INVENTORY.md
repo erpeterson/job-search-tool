@@ -50,6 +50,7 @@ record only when composition fails before telemetry exists.
 | `presentation.packet_routes:api_attach_application_packet` | Recover, HTTP 400 | `PACKET_ATTACHMENT_REJECTED` / `packet_attachment_rejected` | Invalid attachment path is refused. |
 | `presentation.packet_routes:api_application_packet_content` | Recover, HTTP 404 | `PACKET_CONTENT_PATH_REJECTED` / `packet_content_path_rejected` | Missing/unsafe content is not served. |
 | `presentation.packet_routes:api_application_packet_render` | Recover, HTTP 404 | `PACKET_RENDER_PATH_REJECTED` / `packet_render_path_rejected` | Missing/unsafe content is not rendered. |
+| `presentation.cli:main` (dependency lookup) | Terminal stderr before telemetry is available | `STARTUP_UNHANDLED_EXCEPTION` / `startup_unhandled_exception` | Exit 1 if application dependency registration is missing. |
 | `worker:process_one` (processor) | Recover, durable item error | `WORKER_PROCESSOR_FAILED` / `worker_processor_failed` | Claim is completed as error and later work can continue. |
 | `worker:process_one` (heartbeat) | Recover, abandon ownership | `WORKER_HEARTBEAT_FAILED` / `worker_heartbeat_failed` | Stop processing/renewal and persist a safe error outcome without double completion. |
 | `worker:_main` | Observe and rethrow, except already-observed heartbeat failure | `WORKER_FATAL_FAILURE` / `worker_fatal_failure` | Stop the process; do not continue polling after failure. |

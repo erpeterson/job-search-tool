@@ -367,7 +367,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   in 1.1c; thread it through all remaining application services, parsers,
   worker, and scheduler. Keep its structured logger implementation in
   data access/composition, without importing Flask or leaking secrets.
-- [ ] **2c — Repair known failures.** Emit one event for malformed JSON-LD in
+- [x] **2c — Repair known failures.** Emit one event for malformed JSON-LD in
   `job_posting_parser.py` and worker processor failures. Handle heartbeat
   renewal failure so ownership is stopped or safely abandoned, with a durable
   outcome and one event. Check all other inventoried catches as well.
@@ -375,7 +375,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     a model-output extraction event through injected telemetry; commit.
   - [x] **2c.2 — Make worker failures durable and observable.** Record processor
     failures and failed heartbeat renewal, abandon unsafe ownership, and commit.
-  - [ ] **2c.3 — Repair other inventoried catches.** Add missing event fields or
+  - [x] **2c.3 — Repair other inventoried catches.** Add missing event fields or
     explicit top-level routing for remaining recovery/translation paths, then
     check 2c and commit.
     - [x] **2c.3a — Application recoveries.** Complete and sanitize event
@@ -384,14 +384,14 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     - [x] **2c.3b — Data-access and transport catches.** Observe HTTP/Codex,
       captures, and translated outbound failures without leaking content;
       commit.
-    - [ ] **2c.3c — Boundary and CLI catches.** Make validation/security
+    - [x] **2c.3c — Boundary and CLI catches.** Make validation/security
       probes and top-level handlers observable, preserve safe HTTP responses,
       then check 2c.3 and 2c and commit.
       - [x] **2c.3c.1 — Sanitize HTTP error mapping.** Keep packet and
         unexpected-error responses public-safe with coded telemetry; commit.
       - [x] **2c.3c.2 — Observe validation/security probes.** Route parsing
         recovery through injected events or a documented startup sink; commit.
-      - [ ] **2c.3c.3 — Harden CLI fatal handling.** Emit one structured fatal
+      - [x] **2c.3c.3 — Harden CLI fatal handling.** Emit one structured fatal
         record and a nonzero result for web/worker/scheduler failures, then
         check 2c.3c, 2c.3, and 2c and commit.
 - [ ] **2d — Prove the failure paths.** Add deterministic tests for malformed
