@@ -7,7 +7,7 @@ from typing import Any
 from flask import Flask
 
 from job_search.presentation.dependencies import PresentationDependencies
-from job_search.presentation.legacy import routes
+from job_search.presentation.routes import routes
 
 
 def create_app(

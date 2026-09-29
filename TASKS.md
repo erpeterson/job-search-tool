@@ -311,7 +311,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   - [x] **1.4c.3 — Extract packet routes.** Move packet generation, attachment,
     content, and rendering handlers to an injected module; verify safe path and
     response behavior, then check 1.4c and commit.
-- [ ] **1.4d — Remove `presentation/legacy.py`.** Move any remaining pure
+- [x] **1.4d — Remove `presentation/legacy.py`.** Move any remaining pure
   domain rules to application and I/O to data access; delete workflow and
   data-access compatibility wrappers. Update app factory and remaining tests
   after confirming no process or test imports legacy.
@@ -335,7 +335,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
       - [x] **1.4d.2d.2 — Isolate composition tests.** Remove direct legacy
         imports and verify request behavior through injected dependencies,
         then check 1.4d.2d and 1.4d.2 and commit.
-  - [ ] **1.4d.3 — Replace legacy route registration.** Move security hooks,
+  - [x] **1.4d.3 — Replace legacy route registration.** Move security hooks,
     correlation handling, top-level error mapping, and CLI startup into a small
     presentation entry module; switch app/factory imports, delete `legacy.py`,
     verify no imports remain, and commit.

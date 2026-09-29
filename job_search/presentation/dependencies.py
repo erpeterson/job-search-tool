@@ -10,8 +10,8 @@ from typing import Any
 class PresentationDependencies:
     """Required web services supplied by the composition root.
 
-    These named fields are the migration contract for route registration. The
-    compatibility mapping is removed as routes stop using legacy helpers.
+    These named fields are the contract between route registration and the
+    composition root.
     """
 
     job_service: Any

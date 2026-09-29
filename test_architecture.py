@@ -113,7 +113,10 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertLessEqual(
             root_source.count("\n"), 30, "The root entry point must remain a thin composition boundary."
         )
-        self.assertIn("job_search.presentation.legacy", root_source)
+        self.assertIn("job_search.presentation.cli", root_source)
+
+    def test_legacy_presentation_module_is_removed(self):
+        self.assertFalse((PRESENTATION / "legacy.py").exists(), "The route migration must remove legacy.py.")
 
     def test_every_presentation_module_has_no_storage_or_transport_dependencies(self):
         forbidden_imports = {"bs4", "requests", "sqlite3", "subprocess"}
@@ -175,10 +178,10 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         template = ROOT / "job_search" / "presentation" / "templates" / "index.html"
         self.assertTrue(template.is_file(), "The web page must be a version-controlled presentation template.")
         self.assertIn("Job Search Console", template.read_text(encoding="utf-8"))
-        self.assertNotIn("INDEX_HTML", (PRESENTATION / "legacy.py").read_text(encoding="utf-8"))
+        self.assertNotIn("INDEX_HTML", (PRESENTATION / "routes.py").read_text(encoding="utf-8"))
 
     def test_web_process_does_not_start_background_workers_or_schedulers(self):
-        source = (PRESENTATION / "legacy.py").read_text(encoding="utf-8")
+        source = (PRESENTATION / "routes.py").read_text(encoding="utf-8")
         self.assertNotIn(".submit(", source, "HTTP task submission must only persist queued work.")
         self.assertNotIn("scheduler_loop", source, "Web startup must not own a scheduler loop.")
 
