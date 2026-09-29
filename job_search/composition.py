@@ -238,7 +238,7 @@ def presentation_dependencies(
             component="business.job_ingestion" if operation == "scrape" else "business.job_scoring",
             operation="scrape_job_from_url" if operation == "scrape" else "populate_codex_score",
             error_type=type(error).__name__,
-            message=str(error)[:1000],
+            cause=type(error).__name__,
             **context,
         )
 

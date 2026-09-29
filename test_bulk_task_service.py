@@ -77,5 +77,9 @@ class BulkTaskServiceTests(unittest.TestCase):
         self.assertEqual(progress.items[-1][2]["status"], "error")
         failure = telemetry.events[0]
         self.assertEqual(failure[1]["error_code"], "BULK_APPLICATION_PACKET_FAILED")
+        self.assertEqual(failure[1]["component"], "business.bulk_packets")
+        self.assertEqual(failure[1]["operation"], "application_packets")
+        self.assertEqual(failure[1]["task_id"], "packet-task")
         self.assertEqual(failure[1]["job_id"], 3)
+        self.assertEqual(failure[1]["cause"], "RuntimeError")
         self.assertNotIn("secret prompt content", str(progress.items) + str(telemetry.events))

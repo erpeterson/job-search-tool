@@ -46,7 +46,7 @@ class ManualJobService:
         try:
             scraped = self._scraper(url, force_refresh)
         except Exception as exc:
-            scrape_error = str(exc)
+            scrape_error = f"Job scrape failed ({type(exc).__name__})."
             scraped = self._fallback(url)
             self._report_failure("scrape", exc, {"url": url, "pipeline": values["pipeline"]})
 
@@ -70,7 +70,7 @@ class ManualJobService:
             self._score(job_id)
         except Exception as exc:
             self._report_failure("score", exc, {"job_id": job_id})
-            return ManualJobResult(job_id, None, scrape_error, str(exc))
+            return ManualJobResult(job_id, None, scrape_error, f"Automatic scoring failed ({type(exc).__name__}).")
         return ManualJobResult(job_id, None, scrape_error, None)
 
     @staticmethod

@@ -119,7 +119,9 @@ class DiscoveryService:
                 error_code="QUERY_REFINEMENT_INVALID_JSON",
                 component="business.search_refinement",
                 operation="parse_model_json",
+                query_id=query_id,
                 error_type=type(exc).__name__,
+                cause=type(exc).__name__,
             )
             return
         keywords = ops.clean_text(refined.get("keywords") or query.get("keywords"))

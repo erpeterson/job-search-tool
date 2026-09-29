@@ -58,16 +58,17 @@ class SearchRunService:
             try:
                 results = ops.fetch(query, force_refresh=force_refresh)
             except Exception as exc:
-                messages.append(f"{query['board']}:{query['keywords']}: {exc}")
+                messages.append(f"Search query {query['id']} failed: {type(exc).__name__}")
                 ops.log(
                     "job_search_query_failed",
                     error_code="JOB_SEARCH_QUERY_FAILED",
                     component="business.search",
                     operation="fetch_jobs_for_query",
                     query_id=query.get("id"),
+                    run_id=run_id,
                     board=query.get("board"),
                     error_type=type(exc).__name__,
-                    message=str(exc)[:1000],
+                    cause=type(exc).__name__,
                 )
                 continue
 
@@ -159,14 +160,17 @@ class SearchRunService:
                 except Exception as exc:
                     if not ops.is_refinement_error(exc):
                         raise
-                    messages.append(f"{query['board']}:{query['keywords']}: {exc}")
+                    messages.append(f"Search query {query['id']} refinement failed: {type(exc).__name__}")
                     ops.log(
                         "query_refinement_failed",
+                        error_code="QUERY_REFINEMENT_FAILED",
+                        component="business.search_refinement",
+                        operation="refine_query",
                         query_id=query["id"],
+                        run_id=run_id,
                         board=query.get("board"),
-                        keywords=query.get("keywords"),
                         error_type=type(exc).__name__,
-                        message=str(exc),
+                        cause=type(exc).__name__,
                     )
 
         message = "\n".join(messages)

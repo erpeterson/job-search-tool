@@ -82,6 +82,10 @@ class PacketDraftServiceTests(unittest.TestCase):
 
         self.assertEqual(self.published, [], "Unattributed output must not reach storage")
         self.assertEqual(self.telemetry.events[-1][1]["error_code"], "APPLICATION_PACKET_GENERATION_FAILED")
+        self.assertEqual(self.telemetry.events[-1][1]["component"], "business.packet_draft")
+        self.assertEqual(self.telemetry.events[-1][1]["operation"], "generate_application_packet")
+        self.assertEqual(self.telemetry.events[-1][1]["job_id"], 7)
+        self.assertEqual(self.telemetry.events[-1][1]["cause"], "RuntimeError")
 
     def test_publish_failure_is_observed_without_partial_success(self):
         self.outputs = [

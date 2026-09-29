@@ -111,8 +111,10 @@ class PacketDraftService:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
                 model=model,
                 error_code="APPLICATION_PACKET_GENERATION_FAILED" if error else None,
+                component="business.packet_draft",
+                operation="generate_application_packet",
                 error_type=type(error).__name__ if error else None,
-                message=str(error)[:1000] if error else None,
+                cause=type(error).__name__ if error else None,
             )
 
     def _context(self, job: Mapping[str, Any], today: date) -> dict[str, Any]:

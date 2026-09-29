@@ -67,7 +67,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
             clean_text=clean_text,
         )
 
-    def make_search(self, fetch, *, telemetry=None):
+    def make_search(self, fetch, *, telemetry=None, refine=None, is_refinement_error=None):
         class FakeBoards:
             def fetch(self, board, keywords, location, *, force_refresh=False):
                 return fetch(board, keywords, location, force_refresh=force_refresh)
@@ -83,8 +83,8 @@ class ApplicationWorkflowTests(unittest.TestCase):
                 "already tracked in jobs" if url and SqliteReadModels.job_exists_url(connection, url) else None
             ),
             classify=discovery.classify,
-            refine=lambda *_args, **_kwargs: None,
-            is_refinement_error=lambda _error: False,
+            refine=refine or (lambda *_args, **_kwargs: None),
+            is_refinement_error=is_refinement_error or (lambda _error: False),
         )
 
     def test_company_note_interaction_status_and_user_score_workflow(self):
@@ -232,9 +232,14 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
         self.assertEqual(run["found_count"], 1, "A repeated URL should be counted only once")
         self.assertEqual(run["rejected_count"], 1)
-        self.assertIn("board unavailable", run["message"])
+        self.assertIn("Search query", run["message"])
+        self.assertNotIn("board unavailable", run["message"], "Run status must not retain raw failure text.")
         self.assertIn("job_search_query_failed", [name for name, _ in events])
         self.assertIn("discovery_skipped", [name for name, _ in events])
+        failure = next(fields for name, fields in events if name == "job_search_query_failed")
+        self.assertEqual(failure["error_code"], "JOB_SEARCH_QUERY_FAILED")
+        self.assertEqual(failure["cause"], "RuntimeError")
+        self.assertIn("run_id", failure)
         with database_session(self.database) as connection:
             count = connection.execute("SELECT COUNT(*) FROM discovered_jobs").fetchone()[0]
         self.assertEqual(count, 1, "The duplicate should not persist a second discovery")
@@ -254,6 +259,34 @@ class ApplicationWorkflowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(calls, [("manual", True)], "The route should forward validated inputs to the injected runner")
         self.assertEqual(response.get_json()["run"]["status"], "complete")
+
+    def test_search_refinement_failure_is_sanitized_and_observed(self):
+        events = []
+
+        class FakeTelemetry:
+            def event(self, name, **fields):
+                events.append((name, fields))
+
+        with database_session(self.database) as connection:
+            connection.execute("UPDATE search_queries SET enabled = 0")
+            query_id = connection.execute(
+                "INSERT INTO search_queries(board, pipeline, keywords, location, enabled, created_at, criteria) "
+                "VALUES ('indeed', 'Executive IC', 'architect', 'Remote', 1, 1, 'test')"
+            ).lastrowid
+        service = self.make_search(
+            lambda *_args, **_kwargs: [],
+            telemetry=FakeTelemetry(),
+            refine=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private-refinement-token")),
+            is_refinement_error=lambda error: isinstance(error, RuntimeError),
+        )
+
+        run = service.run(trigger="manual", force_refresh=False)
+
+        failure = next(fields for name, fields in events if name == "query_refinement_failed")
+        self.assertEqual(failure["error_code"], "QUERY_REFINEMENT_FAILED")
+        self.assertEqual(failure["query_id"], query_id)
+        self.assertEqual(failure["cause"], "RuntimeError")
+        self.assertNotIn("private-refinement-token", str(failure) + run["message"])
 
     def test_refinement_and_codex_classification_use_fake_model_boundary(self):
         score = {
@@ -333,6 +366,8 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
         self.assertEqual(keywords, "architect", "Invalid model output must not replace the query")
         self.assertEqual(events[0][1]["error_code"], "QUERY_REFINEMENT_INVALID_JSON")
+        self.assertEqual(events[0][1]["query_id"], query_id)
+        self.assertEqual(events[0][1]["cause"], "JSONDecodeError")
 
     def test_codex_scoring_persists_a_valid_fake_scorecard(self):
         job_id = self.create_job()
@@ -450,7 +485,7 @@ class ApplicationWorkflowTests(unittest.TestCase):
 
         self.assertEqual(rescraped.get_json()["job"]["company"], "RefreshedCo")
         self.assertEqual(created.status_code, 201)
-        self.assertIn("source unavailable", created.get_json()["scrape_error"])
+        self.assertEqual(created.get_json()["scrape_error"], "Job scrape failed (RuntimeError).")
         self.assertEqual(duplicate.status_code, 409)
         self.assertIn(("https://example.com/role", True), calls)
 

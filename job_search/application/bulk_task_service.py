@@ -69,6 +69,7 @@ class BulkTaskService:
                     task_id=task_id,
                     job_id=job_id,
                     error_type=type(exc).__name__,
+                    cause=type(exc).__name__,
                     message=safe_message,
                 )
             finally:

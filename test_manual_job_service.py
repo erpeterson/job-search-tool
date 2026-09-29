@@ -71,7 +71,7 @@ class ManualJobServiceTests(unittest.TestCase):
             self.values(), force_refresh=False
         )
 
-        self.assertEqual(result.scrape_error, "network unavailable")
+        self.assertEqual(result.scrape_error, "Job scrape failed (RuntimeError).")
         self.assertIn("Scrape failed", repository.created[0]["notes"])
         self.assertEqual(self.failures[0][0], "scrape")
         self.assertIn("Codex scoring skipped", result.score_error)
@@ -85,6 +85,32 @@ class ManualJobServiceTests(unittest.TestCase):
         self.assertEqual(result.existing_job["id"], 5)
         self.assertEqual(self.filtered, [])
         self.assertEqual(self.scored, [])
+
+    def test_score_failure_keeps_job_and_hides_exception_content(self):
+        repository = FakeJobs()
+        failures = []
+
+        def fail_score(_job_id):
+            raise RuntimeError("private-scoring-token")
+
+        service = ManualJobService(
+            repository,
+            lambda url, _force: {"url": url, "company": "Example"},
+            lambda url: {"url": url},
+            lambda _job_id: None,
+            fail_score,
+            lambda: None,
+            lambda operation, error, context: failures.append((operation, type(error).__name__, context)),
+            lambda *_args: None,
+            lambda: 100,
+        )
+
+        result = service.create(self.values(), force_refresh=False)
+
+        self.assertEqual(result.job_id, 7, "A failed score must not discard the created job.")
+        self.assertEqual(result.score_error, "Automatic scoring failed (RuntimeError).")
+        self.assertEqual(failures, [("score", "RuntimeError", {"job_id": 7})])
+        self.assertNotIn("private-scoring-token", str(result))
 
 
 if __name__ == "__main__":
