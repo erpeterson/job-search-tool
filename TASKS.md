@@ -323,7 +323,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
     tests without mutating presentation module state; commit per test family.
     - [x] **1.4d.2a — Decouple helper tests.** Build configuration and
       observability fixtures directly from composition, then commit.
-    - [ ] **1.4d.2b — Decouple business-path tests.** Replace legacy globals
+    - [x] **1.4d.2b — Decouple business-path tests.** Replace legacy globals
       with temporary paths and injected app dependencies, then commit.
     - [ ] **1.4d.2c — Decouple level tests.** Use temporary database and
       injected app fixtures without module mutation, then commit.

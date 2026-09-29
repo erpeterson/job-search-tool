@@ -189,7 +189,9 @@ def codex_json_gateway(configuration: RuntimeConfiguration, observed: Observabil
     )
 
 
-def presentation_dependencies(database_path: Path) -> PresentationDependencies:
+def presentation_dependencies(
+    database_path: Path, environment: Mapping[str, str] | None = None
+) -> PresentationDependencies:
     """Assemble request-facing services at the composition boundary.
 
     Route modules consume only this service registry; concrete repository
@@ -199,7 +201,7 @@ def presentation_dependencies(database_path: Path) -> PresentationDependencies:
     def connect():
         return database_session(database_path)
 
-    configuration = runtime_configuration(database_path.parent)
+    configuration = runtime_configuration(database_path.parent, environment)
     observed = observability(configuration)
     packets_catalog = packet_catalog(database_path)
 
