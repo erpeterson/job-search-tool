@@ -34,14 +34,20 @@ class CompositionTests(unittest.TestCase):
                 first.startup_service.initialize()
                 second.startup_service.initialize()
                 with database_session(first_path) as connection:
-                    connection.execute(
+                    job_id = connection.execute(
                         "INSERT INTO jobs(created_at, updated_at, company, title, status) VALUES (1, 1, ?, ?, ?)",
                         ("InjectedCo", "Architect", "researching"),
-                    )
+                    ).lastrowid
+                    company_id = connection.execute(
+                        "INSERT INTO company_interests(created_at, updated_at, company, normalized_company) "
+                        "VALUES (1, 1, 'InjectedCo', 'injectedco')"
+                    ).lastrowid
+                task = first.background_task_service.start("scorecards", [job_id])
                 first_app = create_app(dependencies=first, route_blueprint=legacy.routes)
                 second_app = create_app(dependencies=second, route_blueprint=legacy.routes)
 
-                first_response = first_app.test_client().get("/api/state")
+                client = first_app.test_client()
+                first_response = client.get("/api/state")
                 second_response = second_app.test_client().get("/api/state")
 
                 self.assertEqual(first_response.status_code, 200, "First injected API should be available.")
@@ -54,6 +60,14 @@ class CompositionTests(unittest.TestCase):
                 self.assertEqual(
                     second_response.get_json()["jobs"], [], "Second API must not read the first API's database."
                 )
+                self.assertEqual(client.get("/").status_code, 200, "The console page should remain registered.")
+                self.assertEqual(client.get(f"/api/jobs/{job_id}").get_json()["job"]["company"], "InjectedCo")
+                self.assertEqual(client.get("/api/application-packets").get_json()["application_packets"], [])
+                self.assertEqual(
+                    client.get(f"/api/companies/{company_id}").get_json()["company"]["company"], "InjectedCo"
+                )
+                self.assertEqual(client.get("/api/codex-tasks").get_json()["tasks"][0]["id"], task["id"])
+                self.assertEqual(client.get(f"/api/codex-tasks/{task['id']}").get_json()["task"]["id"], task["id"])
             finally:
                 for dependencies in (first, second):
                     for logger in (dependencies.observability.api_logger, dependencies.observability.event_logger):

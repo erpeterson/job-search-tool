@@ -11,7 +11,6 @@ from flask import (
     current_app,
     g,
     jsonify,
-    render_template,
     request,
 )
 from werkzeug.exceptions import HTTPException
@@ -32,6 +31,7 @@ from job_search.application.search_query_service import SearchQueryService
 from job_search.application.settings_service import SettingsService
 from job_search.composition import observability, runtime_configuration
 from job_search.errors import ClientInputError, translate_exception
+from job_search.presentation.read_routes import CONFIG_KEYS, register_read_routes
 from job_search.security import authorized, csrf_valid, trusted_proxy_peer
 from job_search.validation import (
     RequestValidationError,
@@ -51,17 +51,8 @@ ENV_PATH = RUNTIME_CONFIG.paths.environment_file
 CAPTURE_DIR = RUNTIME_CONFIG.paths.captures
 APPLICATIONS_DIR = RUNTIME_CONFIG.paths.applications
 
-DEFAULT_MODEL = RUNTIME_CONFIG.model()
-AUTORUN = False  # the scheduler is buggy and eats codex credits; disable it for now
-CONFIG_KEYS = [
-    "CODEX_CLI_PATH",
-    "CODEX_MODEL",
-    "JOB_SEARCH_ENABLE_GPT_SCORING",
-    "JOB_SEARCH_USE_CAPTURE_CACHE",
-]
-
-
 routes = Blueprint("job_search", __name__)
+register_read_routes(routes)
 OBSERVABILITY = observability(RUNTIME_CONFIG)
 api_logger = OBSERVABILITY.api_logger
 event_logger = OBSERVABILITY.event_logger
@@ -447,49 +438,6 @@ def run_job_search(trigger="manual", force_refresh=False):
     return dependency("search_run_service").run(trigger=trigger, force_refresh=force_refresh)
 
 
-@routes.get("/")
-def index():
-    return render_template("index.html")
-
-
-@routes.get("/api/state")
-def api_state():
-    include_filtered = request.args.get("include_filtered") == "1"
-    config = dependency("configuration")
-    state = dict(console_query_service().state(include_filtered=include_filtered))
-    state.update(
-        {
-            "config": masked_config(),
-            "api_log_path": str(config.paths.api_log),
-            "event_log_path": str(config.paths.app_log),
-            "capture_dir": str(config.paths.captures),
-            "gpt_scoring_enabled": gpt_scoring_enabled(),
-            "capture_cache_enabled": capture_cache_enabled(),
-            "search_schedule": {
-                "interval_seconds": config.settings.search_interval_seconds,
-                "managed_by": "job_search.scheduler",
-            },
-            "codex_tasks": list_background_tasks(),
-            "pipelines": PIPELINES,
-            "rubric_fields": RUBRIC_FIELDS,
-        }
-    )
-    return jsonify(state)
-
-
-@routes.get("/api/jobs/<int:job_id>")
-def api_job(job_id):
-    job = console_query_service().job(job_id)
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-    return jsonify({"job": job})
-
-
-@routes.get("/api/application-packets")
-def api_application_packets():
-    return jsonify({"application_packets": console_query_service().packets()})
-
-
 def clean_job_ids(payload):
     raw_ids = payload.get("job_ids", [])
     if not isinstance(raw_ids, list):
@@ -512,19 +460,6 @@ def clean_job_ids(payload):
 def request_json_object():
     """Validate the actual parsed body; do not coerce arrays/null into {}."""
     return require_json_object(request.get_json(silent=True))
-
-
-@routes.get("/api/codex-tasks")
-def api_codex_tasks():
-    return jsonify({"tasks": list_background_tasks()})
-
-
-@routes.get("/api/codex-tasks/<task_id>")
-def api_codex_task(task_id):
-    task = get_background_task(task_id)
-    if not task:
-        return jsonify({"error": "Task not found"}), 404
-    return jsonify({"task": task})
 
 
 @routes.post("/api/jobs/bulk/score-gpt")
@@ -750,14 +685,6 @@ def api_delete_job(job_id):
     job_service().delete_job(job_id)
     log_event("manual_job_deleted", job_id=job_id, company=job["company"], title=job["title"], url=job["url"])
     return jsonify({"deleted_job_id": job_id, "jobs": console_query_service().jobs(include_filtered=True)})
-
-
-@routes.get("/api/companies/<int:company_id>")
-def api_company_interest(company_id):
-    company = console_query_service().company(company_id)
-    if not company:
-        return jsonify({"error": "Company interest not found"}), 404
-    return jsonify({"company": company})
 
 
 @routes.post("/api/companies")

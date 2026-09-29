@@ -279,7 +279,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
 
 ### T-1.4 — Narrow the HTTP layer
 
-- [ ] **1.4a — Move console and read routes.** Register a small module for
+- [x] **1.4a — Move console and read routes.** Register a small module for
   console, state, and read APIs; migrate its tests to the injected app factory.
 - [ ] **1.4b — Move jobs, companies, and configuration routes.** Register
   these route families with request validation and response mapping only;
