@@ -350,7 +350,7 @@ T-1.1 and use it in extracted workflows so T-2 does not have to rewire them.
   filesystem/transport operations, and application workflow decisions. Assert
   worker/scheduler do not import presentation and application services do not
   depend on Flask or concrete infrastructure.
-- [ ] **1.6b — Run integration and quality evidence.** Verify injected API,
+- [x] **1.6b — Run integration and quality evidence.** Verify injected API,
   worker, and scheduler flows with temporary storage and fake HTTP/Codex/Pandoc
   boundaries. Run `./quality.sh`, confirm at least 80% branch coverage, and
   inspect the source against every T-1 closure criterion.
