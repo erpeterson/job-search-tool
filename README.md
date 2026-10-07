@@ -79,7 +79,7 @@ both locks:
 
 The audit covers the full lock file, so transitive packages exposed to
 untrusted input (Werkzeug, Jinja2, urllib3, soupsieve) are checked too. Last
-run 2026-09-28 against `requirements.lock` and `requirements-dev.lock`: no known
+run 2026-10-07 against `requirements.lock` and `requirements-dev.lock`: no known
 vulnerabilities found, and no findings are accepted.
 
 Ruff includes the `S` (bandit security) and `A` (builtin shadowing) rules; any
