@@ -15,6 +15,11 @@ fi
 
 step() { echo "pre-push: $*"; }
 
+if [ -n "$(git status --porcelain -- prompts)" ]; then
+  echo "pre-push: uncommitted prompt logs in prompts/; commit them so they ship with the code." >&2
+  exit 1
+fi
+
 step "ruff check"
 "$BIN/ruff" check .
 step "ruff format --check"
