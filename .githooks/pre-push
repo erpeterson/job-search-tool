@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Local pre-push gate: mirrors the offline checks in .github/workflows/quality.yml
+# so broken pushes are caught before CI. Bypass in an emergency with `git push --no-verify`.
+# The dependency audit (pip-audit) needs network access and is left to CI.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -x .venv/bin/python ]; then
+  BIN=.venv/bin
+else
+  echo "pre-push: .venv not found; create it first (see README)." >&2
+  exit 1
+fi
+
+step() { echo "pre-push: $*"; }
+
+step "ruff check"
+"$BIN/ruff" check .
+step "ruff format --check"
+"$BIN/ruff" format --check .
+step "pytest (with coverage threshold)"
+"$BIN/python" -m pytest -q
+step "script syntax"
+node --check job_search/web/static/app.js
+bash -n run.sh
+step "all checks passed"

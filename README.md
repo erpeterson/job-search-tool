@@ -88,6 +88,13 @@ suppression is line-level and states its reason.
 Tests run without network access, Codex, or Pandoc; those are replaced by fakes
 in `tests/conftest.py`.
 
+## Local pre-push hook
+
+`.githooks/pre-push` runs the offline CI checks (ruff, format, pytest with
+coverage, script syntax) before every `git push`. Enable it once per clone with
+`git config core.hooksPath .githooks`; bypass in an emergency with
+`git push --no-verify`. `pip-audit` needs network access and stays CI-only.
+
 ## Continuous Integration
 
 `.github/workflows/quality.yml` runs on every push and pull request (and can be
