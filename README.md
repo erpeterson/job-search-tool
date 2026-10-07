@@ -88,9 +88,11 @@ suppression is line-level and states its reason.
 Tests run without network access, Codex, or Pandoc; those are replaced by fakes
 in `tests/conftest.py`.
 
-## Local pre-push hook
+## Local git hooks
 
-`.githooks/pre-push` runs the offline CI checks (ruff, format, pytest with
+`.githooks/pre-commit` stages `prompts/` so prompt logs are always committed with
+the code they generated. `.githooks/pre-push` refuses to push with uncommitted
+prompt logs and runs the offline CI checks (ruff, format, pytest with
 coverage, `pip-audit`, script syntax) before every `git push`. Enable it once per clone with
 `git config core.hooksPath .githooks`; bypass in an emergency with
 `git push --no-verify` (for example when offline, since `pip-audit` needs network).

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Prompt logs must travel with the code they generated: stage any new or changed
+# prompt log before every commit (the Claude hook appends to it on every prompt).
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+git add --all -- prompts
