@@ -124,7 +124,8 @@ def test_state_reports_example_profile(client):
     assert client.get("/api/state").get_json()["profile_is_example"] is True, "the UI banner needs the flag"
 
 
-def test_legacy_level_columns_are_renamed_with_data(tmp_path):
+def test_legacy_level_columns_are_kept_and_exposed_under_domain_names(tmp_path):
+    """Released ``oracle_*`` columns stay in place (rollback-safe); the repository maps them to ``target_*``."""
     import sqlite3
 
     from job_search.data.database import Database
@@ -144,8 +145,18 @@ def test_legacy_level_columns_are_renamed_with_data(tmp_path):
     )
     conn.commit()
     conn.close()
-    Database(path).create_schema()
-    with Database(path).unit_of_work() as uow:
-        row = dict(uow.connection.execute("SELECT * FROM level_equivalencies").fetchone())
-    assert (row["target_level"], row["target_title"]) == ("IC6+", "Arch"), f"data must survive the rename: {row}"
-    assert "oracle_level" not in row, "the legacy column name is gone"
+    database = Database(path)
+    database.create_schema()
+    with database.unit_of_work() as uow:
+        stored = {row[1] for row in uow.connection.execute("PRAGMA table_info(level_equivalencies)")}
+        rows = uow.levels.for_company("co")
+        uow.levels.upsert(
+            {**{k: rows[0][k] for k in rows[0] if k not in ("id", "created_at", "updated_at")}, "target_level": "IC7"},
+            2,
+        )
+        updated = uow.levels.for_company("co")[0]
+    assert {"oracle_level", "oracle_title"} <= stored, "the stored column names must not change"
+    assert not {"target_level", "target_title"} & stored, "no new physical columns, so earlier versions keep working"
+    assert (rows[0]["target_level"], rows[0]["target_title"]) == ("IC6+", "Arch")
+    assert "oracle_level" not in rows[0], "legacy names do not leak past the repository"
+    assert (updated["target_level"], updated["target_title"]) == ("IC7", "Arch"), "upsert writes the stored columns"

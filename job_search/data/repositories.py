@@ -94,6 +94,18 @@ def _row_to_dict(row):
     return dict(row) if row else None
 
 
+def _level_row(row):
+    """Expose the stored ``oracle_*`` columns under the domain names ``target_level``/``target_title``.
+
+    The stored names stay as released so a database migrated by this version still works with
+    earlier versions (rollback); only this repository knows about the difference.
+    """
+    fields = dict(row)
+    fields["target_level"] = fields.pop("oracle_level")
+    fields["target_title"] = fields.pop("oracle_title")
+    return fields
+
+
 def _parse_json_field(value, fallback, table, column, row_id):
     if not value:
         return fallback
@@ -643,7 +655,7 @@ class LevelEquivalencyRepository:
 
     def for_company(self, normalized_company):
         return [
-            _row_to_dict(row)
+            _level_row(row)
             for row in self._conn.execute(
                 """
                 SELECT * FROM level_equivalencies
@@ -666,7 +678,7 @@ class LevelEquivalencyRepository:
                 "ORDER BY normalized_company, LENGTH(normalized_title_pattern) DESC",
                 chunk,
             ):
-                grouped[row["normalized_company"]].append(_row_to_dict(row))
+                grouped[row["normalized_company"]].append(_level_row(row))
         return grouped
 
     def upsert(self, fields, ts):
@@ -674,7 +686,7 @@ class LevelEquivalencyRepository:
             """
             INSERT INTO level_equivalencies(
                 company, normalized_company, title_pattern, normalized_title_pattern,
-                source_level, source_level_title, target_level, target_title, downlevel,
+                source_level, source_level_title, oracle_level, oracle_title, downlevel,
                 source_url, notes, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -683,8 +695,8 @@ class LevelEquivalencyRepository:
                 title_pattern = excluded.title_pattern,
                 source_level = excluded.source_level,
                 source_level_title = excluded.source_level_title,
-                target_level = excluded.target_level,
-                target_title = excluded.target_title,
+                oracle_level = excluded.oracle_level,
+                oracle_title = excluded.oracle_title,
                 downlevel = excluded.downlevel,
                 source_url = excluded.source_url,
                 notes = excluded.notes,
