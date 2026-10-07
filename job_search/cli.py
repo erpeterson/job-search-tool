@@ -23,6 +23,7 @@ from job_search.observability import (
     process_run_id,
     record_exception,
 )
+from job_search.version import build_id
 from job_search.web.app import create_app
 
 EXIT_OK = 0
@@ -36,6 +37,7 @@ def parse_args(argv):
     parser.add_argument("-v", "--verbose", action="store_true", help="Write non-error logs to stdout.")
     parser.add_argument("--host", help="Bind address (overrides JOB_SEARCH_HOST).")
     parser.add_argument("--port", help="Port (overrides JOB_SEARCH_PORT).")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {build_id()}")
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
     prune = commands.add_parser(
         "prune-captures", help="Archive old request/response captures (dry run unless --yes is given)."
@@ -86,8 +88,14 @@ def run(args, environ, serve, out, app_dir):
     app = create_app(container)
     print(f"Job Search Console running at http://{config.host}:{config.port}", file=out)
     print(f"Database: {config.db_path}", file=out)
+    print(f"Version: {build_id(app_dir)}", file=out)
     log_event(
-        "app_started", host=config.host, port=config.port, pid=os.getpid(), started_process_run_id=process_run_id()
+        "app_started",
+        host=config.host,
+        port=config.port,
+        pid=os.getpid(),
+        started_process_run_id=process_run_id(),
+        version=build_id(app_dir),
     )
     outcome = "error"
     try:

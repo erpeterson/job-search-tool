@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 from job_search.data.repositories import UnitOfWork
 from job_search.domain.text import normalize_lookup_text
+from job_search.version import SCHEMA_VERSION
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -249,3 +250,5 @@ class Database:
                     for row in conn.execute("SELECT id, company FROM jobs WHERE normalized_company IS NULL")
                 ],
             )
+            # PRAGMA cannot be parameterized; SCHEMA_VERSION is an int constant.
+            conn.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
