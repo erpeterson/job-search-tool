@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # .claude/hooks/log-prompt.sh
 #
-# Logs every prompt submitted to Claude Code in this repo to prompts/<date>-<session_id>.jsonl,
+# Logs every prompt submitted to Claude Code in this repo to one line per prompt to .ai/prompts.jsonl,
 # along with the model, effort level, tool version and git state it ran against.
 #
 # Register it for three events in .claude/settings.json (see README-prompt-log.md):
@@ -22,7 +22,7 @@ event=$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null) || exit 0
 session=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null) || exit 0
 [ -n "$event" ] && [ -n "$session" ] || exit 0
 
-LOG_DIR="${PROMPT_LOG_DIR:-$CLAUDE_PROJECT_DIR/prompts}"
+LOG_FILE="${PROMPT_LOG_FILE:-$CLAUDE_PROJECT_DIR/.ai/prompts.jsonl}"
 STATE_DIR="$CLAUDE_PROJECT_DIR/.claude/.prompt-log-state"
 state="$STATE_DIR/$session.json"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
@@ -56,13 +56,6 @@ case "$event" in
     ;;
 
   UserPromptSubmit)
-    # Pick this session's log file once, so every prompt in the session lands in the same file.
-    file=$(get_state log_file)
-    if [ -z "$file" ]; then
-      file="$(date -u +%Y-%m-%d)-$session.jsonl"
-      set_state log_file "$file"
-    fi
-
     # Claude Code version, cached per session so we only spawn `claude` once.
     version=$(get_state tool_version)
     if [ -z "$version" ] && command -v claude >/dev/null 2>&1; then
@@ -71,44 +64,39 @@ case "$event" in
     fi
 
     # Git state at the moment the prompt was sent.
-    commit="" branch="" dirty="null"
+    commit="" branch=""
     if git -C "$CLAUDE_PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
       commit=$(git -C "$CLAUDE_PROJECT_DIR" rev-parse HEAD 2>/dev/null)
       branch=$(git -C "$CLAUDE_PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
-      # Ignore the prompt log itself when deciding whether the tree is dirty.
-      if [ -n "$(git -C "$CLAUDE_PROJECT_DIR" status --porcelain -- . ":(exclude)prompts" ":(exclude).claude/.prompt-log-state" 2>/dev/null)" ]; then
-        dirty="true"; else dirty="false"; fi
     fi
 
-    mkdir -p "$LOG_DIR" 2>/dev/null || exit 0
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || exit 0
     jq -c \
       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --arg model "$(get_state model)" \
-      --arg model_source "$(get_state model_source)" \
       --arg effort "${CLAUDE_EFFORT:-}" \
       --arg version "$version" \
       --arg commit "$commit" \
       --arg branch "$branch" \
-      --argjson dirty "$dirty" \
       --arg root "$CLAUDE_PROJECT_DIR" \
       '
       def nz: if . == "" then null else . end;
       {
-        schema: 1,
-        source: "hook",
-        ts: $ts,
-        tool: "claude-code",
-        tool_version: ($version | nz),
-        session_id,
-        prompt_id: (.prompt_id // null),
+        schema_version: 1,
+        timestamp: $ts,
+        provider: "anthropic",
+        client: "claude-code",
+        client_version: ($version | nz),
         model: ($model | nz),
-        model_source: (if $model == "" then "unknown" else $model_source end),
-        effort: ($effort | nz),
+        session_id,
+        turn_id: (.prompt_id // null),
         permission_mode: (.permission_mode // null),
-        git: { commit: ($commit | nz), commit_exact: true, branch: ($branch | nz), dirty: $dirty },
+        effort: ($effort | nz),
         cwd: ((.cwd // "") | ltrimstr($root) | ltrimstr("/") | if . == "" then "." else . end),
+        git: { head: ($commit | nz), branch: ($branch | nz), head_exact: true },
+        source: "hook",
         prompt
-      }' <<<"$input" >>"$LOG_DIR/$file" 2>/dev/null
+      }' <<<"$input" >>"$LOG_FILE" 2>/dev/null
     ;;
 esac
 
