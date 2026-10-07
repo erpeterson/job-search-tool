@@ -105,8 +105,10 @@ class PacketStore:
             raise NotFoundError("Markdown file not found in associated packet.", "packet_markdown_missing")
         return file_path.read_text(encoding="utf-8")
 
-    def publish(self, slug, documents):
+    def publish(self, slug, documents, docx_files=None):
         """Write Markdown documents plus DOCX conversions, publishing the folder atomically.
+
+        ``docx_files`` names the documents that get a DOCX twin (default: all of them).
 
         Returns the final packet directory. Nothing is visible under
         ``applications/`` unless every file was generated successfully.
@@ -122,7 +124,7 @@ class PacketStore:
             staged.mkdir(parents=True)
             for filename, content in documents.items():
                 (staged / filename).write_text(content, encoding="utf-8")
-            for filename in documents:
+            for filename in documents if docx_files is None else docx_files:
                 source = staged / filename
                 self._converter.to_docx(source, source.with_suffix(".docx"))
             staged.replace(packet_dir)

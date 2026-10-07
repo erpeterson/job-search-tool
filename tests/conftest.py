@@ -279,3 +279,19 @@ SCORE_RESPONSE = {
     "downlevel": False,
     "rationale": "Strong fit.",
 }
+
+
+def valid_cv(extra=""):
+    """A CV that passes the example profile's structure rules (sections, length, subsections, preserved roles)."""
+    filler = " ".join(
+        f"Led architecture program {n} spanning platform strategy and delivery effectiveness across several "
+        f"engineering organizations with measurable reliability gains for stakeholder group {n}."
+        for n in range(1, 61)
+    )
+    return (
+        "# Eric Peterson\n\n## Curriculum Vitae \u2014 Senior Technical Architect, Cloud Infrastructure\n\n"
+        f"## Professional Profile\n\n{filler}\n\n## Technical and Leadership Expertise\n\n{filler}\n\n"
+        "## Professional Experience\n\n### Current Role\n\n#### Platform Strategy\n\nDetail.\n\n"
+        "#### Engineering Effectiveness\n\nDetail.\n\n### Early Career\n\nLION Inc. early-career role.\n\n"
+        f"## Education\n\nDegree.\n{extra}"
+    )

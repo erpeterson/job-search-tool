@@ -674,7 +674,7 @@ function applicationPacketForJob(job) {
   return (state.application_packets || []).find(packet => packet.path === job.application_packet_path) || {
     path: job.application_packet_path,
     name: job.application_packet_path.split("/").pop(),
-    markdown_files: ["Job-Brief.md", "Resume.md", "Cover-Letter.md"],
+    markdown_files: ["Job-Brief.md", "CV.md"],
   };
 }
 

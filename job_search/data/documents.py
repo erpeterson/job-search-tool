@@ -23,7 +23,10 @@ class CareerDocuments:
         start = manual.find("# Downstream Artifact Rules")
         if start < 0:
             return ""
-        end = manual.find("# Open Questions", start)
+        # Interview stories are not packet rules; fall back to the next top-level section.
+        end = manual.find("## Interview Stories", start)
+        if end < 0:
+            end = manual.find("# Open Questions", start)
         return manual[start : end if end >= 0 else None].strip()
 
     def master_resume(self):

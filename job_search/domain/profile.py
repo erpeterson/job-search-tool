@@ -46,6 +46,25 @@ class LocationPolicy:
 
 
 @dataclass(frozen=True)
+class CvRules:
+    """Structure and content rules a generated CV must pass; every field is optional in the profile."""
+
+    default_title: str = "Senior Technical Architect"
+    required_sections: tuple = (
+        "Professional Profile",
+        "Technical and Leadership Expertise",
+        "Professional Experience",
+        "Education",
+    )
+    min_words: int = 900
+    min_subsections: int = 2
+    forbidden_phrases: tuple = ("source material", "source documents", "supplied materials", "college period")
+    must_include: tuple = ()
+    # (when the CV mentions this, it must also contain that) pairs, lowercase.
+    required_with: tuple = ()
+
+
+@dataclass(frozen=True)
 class SearchProfile:
     candidate_name: str
     pipelines: dict
@@ -57,6 +76,7 @@ class SearchProfile:
     downlevel_high_score_exception: int
     scoring_instructions: tuple
     refinement_instructions: tuple
+    cv: CvRules = CvRules()
 
     @property
     def pipeline_names(self):
@@ -131,7 +151,41 @@ class SearchProfile:
             ),
             scoring_instructions=reader.texts(root.get("scoring_instructions"), "scoring_instructions"),
             refinement_instructions=reader.texts(root.get("refinement_instructions"), "refinement_instructions"),
+            cv=_cv_rules(reader, root.get("cv")),
         )
+
+
+def _cv_rules(reader, raw):
+    """Optional ``cv`` section; omitted fields keep the ``CvRules`` defaults."""
+    if raw is None:
+        return CvRules()
+    cv = reader.obj(raw, "cv")
+    defaults = CvRules()
+    required_with = reader.obj(cv.get("required_with", {}), "cv.required_with")
+    return CvRules(
+        default_title=reader.text(cv["default_title"], "cv.default_title")
+        if "default_title" in cv
+        else defaults.default_title,
+        required_sections=reader.texts(cv["required_sections"], "cv.required_sections")
+        if "required_sections" in cv
+        else defaults.required_sections,
+        min_words=reader.integer(cv["min_words"], "cv.min_words", 0, 100_000)
+        if "min_words" in cv
+        else defaults.min_words,
+        min_subsections=reader.integer(cv["min_subsections"], "cv.min_subsections", 0, 100)
+        if "min_subsections" in cv
+        else defaults.min_subsections,
+        forbidden_phrases=reader.lower_terms(cv["forbidden_phrases"], "cv.forbidden_phrases")
+        if "forbidden_phrases" in cv
+        else defaults.forbidden_phrases,
+        must_include=reader.texts(cv["must_include"], "cv.must_include")
+        if "must_include" in cv
+        else defaults.must_include,
+        required_with=tuple(
+            (reader.text(when, "cv.required_with (key)").lower(), reader.text(need, f"cv.required_with.{when}").lower())
+            for when, need in required_with.items()
+        ),
+    )
 
 
 class _Reader:
