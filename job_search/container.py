@@ -100,7 +100,7 @@ def build_container(
         pandoc or PandocConverter(timeout_seconds=config.pandoc_timeout_seconds),
     )
     scoring = ScoringService(db, runtime, codex, documents, parse_model_json, profile)
-    packets = PacketService(db, runtime, codex, documents, store, parse_model_json)
+    packets = PacketService(db, runtime, codex, documents, store, parse_model_json, profile)
     search = SearchService(db, runtime, boards, scoring, codex, parse_model_json, profile)
     task_kwargs = {"max_retained": config.max_retained_tasks, "max_running": config.max_running_tasks}
     if thread_factory:

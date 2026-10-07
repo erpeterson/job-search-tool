@@ -114,15 +114,13 @@ def test_invalid_json_packet_response_fails_the_task(client, container, codex_ru
     assert task["error_code"] == "packet_payload_invalid_json", f"expected invalid-JSON failure: {task}"
 
 
-def test_packet_retry_with_a_different_model_fails(client, container, codex_runner):
+def test_packet_repair_with_a_different_model_fails(client, container, codex_runner):
     job_id = insert_job(container)
-    no_attribution = {
-        key: "# Doc\nNo attribution." for key in ("job_brief_markdown", "resume_markdown", "cover_letter_markdown")
-    }
-    codex_runner.respond(no_attribution, model="model-a")
-    codex_runner.respond(no_attribution, model="model-b")
+    weak = {"job_brief_markdown": "# Brief", "cv_markdown": "# Eric Peterson\n\nToo short."}
+    codex_runner.respond(weak, model="model-a")
+    codex_runner.respond(weak, model="model-b")
     task = wait_for_task(client, post(client, f"/api/jobs/{job_id}/application-packet/generate").get_json()["task"])
-    assert task["error_code"] == "packet_model_changed", f"a model switch during retry must fail: {task}"
+    assert task["error_code"] == "packet_model_changed", f"a model switch during repair must fail: {task}"
 
 
 def test_rescrape_and_delete_failure_paths(client, container):

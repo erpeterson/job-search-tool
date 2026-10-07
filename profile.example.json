@@ -91,6 +91,13 @@
       "mexico"
     ]
   },
+  "cv": {
+    "default_title": "Senior Technical Architect, Cloud Infrastructure",
+    "must_include": ["LION Inc."],
+    "required_with": {
+      "World-Wide Technology Solutions": "August 2000"
+    }
+  },
   "downlevel_high_score_exception": 80,
   "scoring_instructions": [
     "Return JSON only.",

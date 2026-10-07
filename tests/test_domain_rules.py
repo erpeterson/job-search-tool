@@ -12,7 +12,7 @@ from job_search.domain.discovery_filters import (
 from job_search.domain.errors import ExternalServiceError
 from job_search.domain.job_filter import filter_decision, thresholds
 from job_search.domain.levels import estimate_level_equivalency, level_assessment_from_equivalency
-from job_search.domain.packets import application_packet_slug, has_model_attribution, validate_packet_payload
+from job_search.domain.packets import application_packet_slug, validate_packet_payload
 from job_search.domain.scoring import score_total
 from job_search.domain.text import (
     append_note_text,
@@ -191,18 +191,10 @@ class TestScoringAndPacketRules:
         )
 
     def test_packet_payload_requires_all_markdown(self):
-        with pytest.raises(ExternalServiceError, match="resume_markdown"):
-            validate_packet_payload({"job_brief_markdown": "x", "cover_letter_markdown": "y"})
+        with pytest.raises(ExternalServiceError, match="cv_markdown"):
+            validate_packet_payload({"job_brief_markdown": "x", "resume_markdown": "y"})
         with pytest.raises(ExternalServiceError):
             validate_packet_payload(["not", "an", "object"])
-
-    def test_model_attribution(self):
-        assert has_model_attribution({"a": "made by m1", "b": "m1"}, "m1"), (
-            "expected has_model_attribution({'a': 'made by m1', 'b': 'm1'}, 'm1')"
-        )
-        assert not has_model_attribution({"a": "made by m1", "b": "none"}, "m1"), (
-            "expected not has_model_attribution({'a': 'made by m1', 'b': 'none'}, 'm1')"
-        )
 
     def test_packet_slug_is_filesystem_safe(self):
         from datetime import datetime
