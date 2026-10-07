@@ -90,9 +90,9 @@ in `tests/conftest.py`.
 
 ## Local git hooks
 
-`.githooks/pre-commit` stages `prompts/` so prompt logs are always committed with
+`.githooks/pre-commit` stages `.ai/prompts.jsonl` so the prompt log are always committed with
 the code they generated. `.githooks/pre-push` refuses to push with uncommitted
-prompt logs and runs the offline CI checks (ruff, format, pytest with
+prompt-log changes and runs the offline CI checks (ruff, format, pytest with
 coverage, `pip-audit`, script syntax) before every `git push`. Enable it once per clone with
 `git config core.hooksPath .githooks`; bypass in an emergency with
 `git push --no-verify` (for example when offline, since `pip-audit` needs network).
