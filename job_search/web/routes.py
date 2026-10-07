@@ -5,6 +5,7 @@ from flask import Blueprint, current_app, jsonify, render_template, request, sen
 from job_search.domain.errors import NotFoundError
 from job_search.domain.rules import JOB_STATUSES, RUBRIC_FIELDS
 from job_search.observability import METRICS
+from job_search.version import SCHEMA_VERSION, __version__, build_id
 from job_search.web import validation as v
 from job_search.web.markdown import markdown_to_html
 
@@ -53,6 +54,17 @@ def api_state():
             "pipelines": c.profile.pipeline_names,
             "rubric_fields": RUBRIC_FIELDS,
             "profile_is_example": c.profile_is_example,
+        }
+    )
+
+
+@bp.get("/api/version")
+def api_version():
+    return jsonify(
+        {
+            "version": __version__,
+            "build": build_id(services().config.app_dir),
+            "schema_version": SCHEMA_VERSION,
         }
     )
 

@@ -237,6 +237,7 @@ error statuses for all routes are `400` (validation), `403` (host/origin),
 | --- | --- | --- | --- | --- |
 | GET | `/` | — | `200` HTML UI | — |
 | GET | `/api/state` | query `include_filtered=1`, `limit` (1-5000, default 2000), `offset` | `200` jobs (summaries), `jobs_total`, companies, searches, runs, discoveries, packets, tasks, settings, masked config | — |
+| GET | `/api/version` | — | `200` `{version, build, schema_version}` identifying the running code | — |
 | GET | `/api/metrics` | — | `200` blame-metric counters | — |
 | GET | `/api/jobs/<job_id>` | — | `200` full job with notes and interactions | `404` |
 | POST | `/api/jobs` | `url`, `pipeline` (required); `company`, `title`, `location`, `status`, `posting_text`, `notes`, `force_refresh` | `201` job, `scrape_error`, `score_error`, `score_task` | `409` duplicate URL (body includes the existing `job`) |
