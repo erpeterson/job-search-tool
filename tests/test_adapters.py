@@ -67,6 +67,16 @@ class TestCodexClient:
             f"runner.calls[0]['command'][:4] did not match; got {runner.calls[0]['command'][:4]!r}"
         )
 
+    def test_schema_is_passed_to_cli_and_keys_the_capture(self, codex):
+        client, runner = codex
+        runner.respond({"ok": True})
+        runner.respond({"ok": True})
+        schema = {"type": "object"}
+        client.call_json("m", {"q": 1}, "op", schema=schema)
+        client.call_json("m", {"q": 1}, "op")
+        assert "--output-schema" in runner.calls[0]["command"], "schema should be passed to the CLI"
+        assert "--output-schema" not in runner.calls[1]["command"], "no schema, no flag (and a distinct capture)"
+
     def test_force_refresh_bypasses_capture(self, codex):
         client, runner = codex
         runner.respond({"n": 1})

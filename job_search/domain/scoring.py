@@ -34,6 +34,28 @@ def level_reference(profile):
     }
 
 
+def scoring_output_schema():
+    """JSON Schema passed to Codex so the score response is structurally valid JSON."""
+    string_list = {"type": "array", "items": {"type": "string"}}
+    properties = {
+        "total_score": {"type": "integer"},
+        "pipeline": {"type": "string"},
+        "scorecard": {
+            "type": "object",
+            "properties": {field: {"type": "integer"} for field in RUBRIC_FIELDS},
+            "required": list(RUBRIC_FIELDS),
+            "additionalProperties": False,
+        },
+        "level_assessment": {"type": "string"},
+        "downlevel": {"type": "boolean"},
+        "rationale": {"type": "string"},
+        "strengths": string_list,
+        "risks": string_list,
+        "recommended_next_step": {"type": "string"},
+    }
+    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+
 def build_scoring_prompt(job, career_context, examples, profile):
     return {
         "task": f"Score this job for {profile.candidate_name}'s job search.",
@@ -114,16 +136,29 @@ class ScoringService:
         """Score a job-like dict with Codex. Does not touch the database."""
         self.ensure_available()
         prompt = build_scoring_prompt(job, self._documents.career_context(), examples, self._profile)
-        result = self._codex.call_json(model, prompt, "score_job", force_refresh=force_refresh)
-        if not result.output_text:
-            raise ExternalServiceError("Codex CLI response did not include text output.", "codex_score_empty")
-        try:
-            parsed = self._parse_json(result.output_text)
-        except json.JSONDecodeError as exc:
-            record_exception(
-                "codex_score_invalid_json", "domain.scoring", "score", exc, response_excerpt=result.output_text[:500]
+        schema = scoring_output_schema()
+        for attempt in (1, 2):
+            result = self._codex.call_json(
+                model, prompt, "score_job", force_refresh=force_refresh or attempt > 1, schema=schema
             )
-            raise ExternalServiceError("Codex CLI response was not valid JSON.", "codex_score_invalid_json") from exc
+            if not result.output_text:
+                raise ExternalServiceError("Codex CLI response did not include text output.", "codex_score_empty")
+            try:
+                parsed = self._parse_json(result.output_text)
+                break
+            except json.JSONDecodeError as exc:
+                record_exception(
+                    "codex_score_invalid_json",
+                    "domain.scoring",
+                    "score",
+                    exc,
+                    response_excerpt=result.output_text[:500],
+                    attempt=attempt,
+                )
+                if attempt > 1:
+                    raise ExternalServiceError(
+                        "Codex CLI response was not valid JSON.", "codex_score_invalid_json"
+                    ) from exc
         return validate_score_payload(parsed)
 
     def check_can_score(self, job_id):

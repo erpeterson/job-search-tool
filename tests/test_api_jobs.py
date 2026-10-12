@@ -88,6 +88,7 @@ class TestCreateJob:
     def test_codex_failure_is_reported_not_fatal(self, client, http, codex_runner, enable_scoring):
         http.route("example.com", POSTING_HTML)
         codex_runner.respond("not json at all")
+        codex_runner.respond("not json at all")
         body = post(client, "/api/jobs", {"url": "https://example.com/jobs/4", "pipeline": "Wildcards"}).get_json()
         task = wait_for_task(client, body["score_task"])
         assert task["status"] == "error", f"the scoring task should fail: {task}"
@@ -240,6 +241,25 @@ class TestJobCrm:
         job = client.get(f"/api/jobs/{job_id}").get_json()["job"]
         assert job["gpt_score"] == 20, f"score should be persisted: {job['gpt_score']}"
         assert job["filtered"] == 1, "downlevel or low Codex score hides the job"
+
+    def test_score_gpt_retries_once_on_invalid_json(self, client, container, codex_runner, enable_scoring):
+        job_id = insert_job(container)
+        codex_runner.respond('{"total_score": 20, "risks": ["unterminated]}')
+        codex_runner.respond({**SCORE_RESPONSE, "total_score": 71})
+        task = wait_for_task(client, post(client, f"/api/jobs/{job_id}/score-gpt").get_json()["task"])
+        assert task["result"]["raw_score"]["total_score"] == 71, f"retry should recover: {task}"
+        assert len(codex_runner.calls) == 2, f"expected exactly one retry, got {len(codex_runner.calls)}"
+        assert all("--output-schema" in call["command"] for call in codex_runner.calls), (
+            "scoring calls must constrain output with a schema"
+        )
+
+    def test_score_gpt_fails_after_second_invalid_json(self, client, container, codex_runner, enable_scoring):
+        job_id = insert_job(container)
+        codex_runner.respond("not json")
+        codex_runner.respond("still not json")
+        task = wait_for_task(client, post(client, f"/api/jobs/{job_id}/score-gpt").get_json()["task"])
+        assert task["error_code"] == "codex_score_invalid_json", f"expected invalid-JSON failure: {task}"
+        assert len(codex_runner.calls) == 2, "only one retry is allowed"
 
 
 class TestCompanies:

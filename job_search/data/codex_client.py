@@ -54,13 +54,17 @@ class CodexClient:
         self._timeout_seconds = timeout_seconds
         self._runner = runner
 
-    def call_json(self, model, prompt, operation, force_refresh=False):
+    def call_json(self, model, prompt, operation, force_refresh=False, schema=None):
         """Run Codex with a JSON prompt and return a ``CodexResult``.
 
         Responses are captured for replay; a cache hit does not invoke Codex.
+        When ``schema`` (a JSON Schema dict) is given it is passed via ``--output-schema`` so the
+        final message is constrained to valid JSON of that shape.
         """
         cli_path = self._runtime.codex_cli_path()
         request_payload = {"adapter_version": ADAPTER_VERSION, "cli_path": cli_path, "model": model, "prompt": prompt}
+        if schema is not None:
+            request_payload["schema"] = schema
         cached = self._captures.read(
             "codex_cli", operation, request_payload, force_refresh=force_refresh, is_success=_codex_succeeded
         )
@@ -92,6 +96,10 @@ class CodexClient:
                 command = [cli_path, "exec", "-C", str(self._workspace_root), "--sandbox", "read-only"]
                 if model:
                     command[2:2] = ["-m", model]
+                if schema is not None:
+                    schema_path = Path(tmpdir) / "output-schema.json"
+                    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+                    command += ["--output-schema", str(schema_path)]
                 command += ["-o", str(output_path), "-"]
                 completed = self._runner(
                     command,
