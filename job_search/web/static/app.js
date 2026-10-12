@@ -27,6 +27,7 @@ let pendingCallLabels = [];
 let bulkSelectedJobIds = new Set();
 let activeBulkTaskId = localStorage.getItem("activeBulkTaskId") || "";
 let bulkTaskPollTimer = null;
+let endBulkTaskActivity = null;
 
 const pretty = s => s.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 const scoreClass = n => n == null ? "" : n >= 70 ? "score-good" : n >= 40 ? "score-warn" : "score-bad";
@@ -122,12 +123,26 @@ function renderGlobalActivity() {
   activity.innerHTML = `<span class="spinner"></span>${escapeHtml(label)}${pendingCallCount > 1 ? ` (${pendingCallCount})` : ""}`;
 }
 
-async function api(path, options = {}) {
-  const { activityLabel: explicitActivityLabel, ...fetchOptions } = options;
-  const label = explicitActivityLabel || activityLabel(path);
+// Shows the global activity pill until the returned function is called.
+function beginActivity(label) {
   pendingCallCount += 1;
   pendingCallLabels.push(label);
   renderGlobalActivity();
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    pendingCallCount = Math.max(0, pendingCallCount - 1);
+    const labelIndex = pendingCallLabels.lastIndexOf(label);
+    if (labelIndex >= 0) pendingCallLabels.splice(labelIndex, 1);
+    renderGlobalActivity();
+  };
+}
+
+// `silent` calls (task status polls) skip the pill; the task's owner holds it open for the whole run.
+async function api(path, options = {}) {
+  const { activityLabel: explicitActivityLabel, silent = false, ...fetchOptions } = options;
+  const endActivity = silent ? () => {} : beginActivity(explicitActivityLabel || activityLabel(path));
   try {
     const response = await fetch(path, {
       headers: { "Content-Type": "application/json" },
@@ -144,10 +159,7 @@ async function api(path, options = {}) {
     if (!isJson) throw new Error(`Unexpected response type from ${path}`);
     return data;
   } finally {
-    pendingCallCount = Math.max(0, pendingCallCount - 1);
-    const labelIndex = pendingCallLabels.lastIndexOf(label);
-    if (labelIndex >= 0) pendingCallLabels.splice(labelIndex, 1);
-    renderGlobalActivity();
+    endActivity();
   }
 }
 
@@ -330,9 +342,14 @@ function renderBulkControls(task = null) {
 // Long-running work (search, scoring, packets) runs as a server task; poll until it finishes.
 async function waitForTask(task, label) {
   let current = task;
-  while (["queued", "running"].includes(current.status)) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    ({ task: current } = await api(`/api/codex-tasks/${current.id}`, { activityLabel: label }));
+  const endActivity = beginActivity(label);
+  try {
+    while (["queued", "running"].includes(current.status)) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      ({ task: current } = await api(`/api/codex-tasks/${current.id}`, { silent: true }));
+    }
+  } finally {
+    endActivity();
   }
   if (current.status === "error") throw new Error(current.message || "Task failed");
   return current;
@@ -341,23 +358,29 @@ async function waitForTask(task, label) {
 function startBulkTaskPolling(taskId) {
   activeBulkTaskId = taskId;
   localStorage.setItem("activeBulkTaskId", taskId);
-  if (bulkTaskPollTimer) clearInterval(bulkTaskPollTimer);
+  stopBulkTaskPolling();
+  endBulkTaskActivity = beginActivity("Bulk Codex task running");
   bulkTaskPollTimer = setInterval(() => pollBulkTask(taskId), 3000);
   pollBulkTask(taskId);
 }
 
+function stopBulkTaskPolling() {
+  if (bulkTaskPollTimer) clearInterval(bulkTaskPollTimer);
+  bulkTaskPollTimer = null;
+  if (endBulkTaskActivity) endBulkTaskActivity();
+  endBulkTaskActivity = null;
+}
+
 async function pollBulkTask(taskId) {
   try {
-    const { task } = await api(`/api/codex-tasks/${taskId}`, { activityLabel: "Checking Codex task" });
+    const { task } = await api(`/api/codex-tasks/${taskId}`, { silent: true });
     renderBulkControls(task);
     if (!["queued", "running"].includes(task.status)) {
-      clearInterval(bulkTaskPollTimer);
-      bulkTaskPollTimer = null;
+      stopBulkTaskPolling();
       await load();
     }
   } catch (err) {
-    if (bulkTaskPollTimer) clearInterval(bulkTaskPollTimer);
-    bulkTaskPollTimer = null;
+    stopBulkTaskPolling();
     renderBulkControls({ operation: "bulk", status: "error", completed: 0, total: 0, skipped: 0, failed: 1, message: err.message });
   }
 }
